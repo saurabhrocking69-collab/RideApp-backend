@@ -171,7 +171,7 @@ app.post('/api/rides/book', async (req, res) => {
       `SELECT u.name, u.phone, d.vehicle_no, d.vehicle_type, d.id 
  FROM drivers d JOIN users u ON d.id = u.id 
  WHERE (d.is_online = false OR d.is_online IS NULL) LIMIT 1`
-      [ride_type]
+      
     );
 
     if (driver.rows.length === 0) {
