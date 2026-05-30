@@ -190,16 +190,12 @@ await db.query(
 );
 
     res.json({
-      message:  'Driver mil gaya!',
-      fare:     '₹' + fare,
-      distance: distance + ' km',
-      driver: {
-        name:       driver.rows[0].name,
-        phone:      driver.rows[0].phone,
-        vehicle_no: driver.rows[0].vehicle_no
-      },
-      ride_id: ride.rows[0].id
-    });
+  message:  'Driver dhundh rahe hain...',
+  fare:     '₹' + fare,
+  distance: distance + ' km',
+  ride_id:  ride.rows[0].id,
+  status:   'requested'
+});
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
