@@ -265,6 +265,41 @@ io.on('connection', (socket) => {
     console.log('🔴 Disconnected:', socket.id);
   });
 });
+/api/driver/pending-ride!
+// ── Driver Pending Ride ─────────────────────────
+app.get('/api/driver/pending-ride', async (req, res) => {
+  const { phone } = req.query;
+  try {
+    const result = await db.query(
+      `SELECT r.* FROM rides r
+       JOIN users u ON r.driver_id = u.id
+       WHERE u.phone = $1 AND r.status = 'matched'
+       ORDER BY r.created_at DESC LIMIT 1`,
+      [phone]
+    );
+    if (result.rows.length > 0) {
+      res.json({ ride: result.rows[0] });
+    } else {
+      res.json({ ride: null });
+    }
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── Driver Accept Ride ──────────────────────────
+app.post('/api/rides/accept', async (req, res) => {
+  const { ride_id, driver_phone } = req.body;
+  try {
+    await db.query(
+      `UPDATE rides SET status = 'started' WHERE id = $1`,
+      [ride_id]
+    );
+    res.json({ success: true, message: 'Ride accepted!' });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
 
 // ── Start Server ────────────────────────────────
 server.listen(process.env.PORT, '0.0.0.0', () => {
