@@ -183,10 +183,11 @@ app.post('/api/rides/book', async (req, res) => {
       });
     }
 
-    await db.query(
-      "UPDATE rides SET driver_id = $1, status = 'matched' WHERE id = $2",
-      [driver.rows[0].id, ride.rows[0].id]
-    );
+    // Driver ko request bhejo — accept ka wait karo
+await db.query(
+  "UPDATE rides SET driver_id = $1, status = 'requested' WHERE id = $2",
+  [driver.rows[0].id, ride.rows[0].id]
+);
 
     res.json({
       message:  'Driver mil gaya!',
@@ -273,7 +274,7 @@ app.get('/api/driver/pending-ride', async (req, res) => {
     const result = await db.query(
       `SELECT r.* FROM rides r
        JOIN users u ON r.driver_id = u.id
-       WHERE u.phone = $1 AND r.status = 'matched'
+       WHERE u.phone = $1 AND r.status = 'requested'
        ORDER BY r.created_at DESC LIMIT 1`,
       [phone]
     );
@@ -292,10 +293,29 @@ app.post('/api/rides/accept', async (req, res) => {
   const { ride_id, driver_phone } = req.body;
   try {
     await db.query(
-      `UPDATE rides SET status = 'started' WHERE id = $1`,
+      `UPDATE rides SET status = 'matched' WHERE id = $1`,
       [ride_id]
     );
     res.json({ success: true, message: 'Ride accepted!' });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+// ── Ride Status Check ───────────────────────────
+app.get('/api/rides/status/:rideId', async (req, res) => {
+  try {
+    const result = await db.query(
+      `SELECT r.*, u.name as driver_name, u.phone as driver_phone,
+              d.vehicle_no
+       FROM rides r
+       LEFT JOIN users u ON r.driver_id = u.id
+       LEFT JOIN drivers d ON r.driver_id = d.id
+       WHERE r.id = $1`,
+      [req.params.rideId]
+    );
+    if (result.rows.length === 0)
+      return res.status(404).json({ error: 'Ride nahi mili' });
+    res.json({ ride: result.rows[0] });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
