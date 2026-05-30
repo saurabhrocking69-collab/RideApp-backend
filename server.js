@@ -15,13 +15,19 @@ app.use(cors());
 app.use(express.json());
 
 // ── PostgreSQL ──────────────────────────────────
-const db = new Pool({ connectionString: process.env.DATABASE_URL });
+const db = new Pool({ 
+  connectionString: process.env.DATABASE_PUBLIC_URL || process.env.DATABASE_URL,
+  ssl: process.env.DATABASE_PUBLIC_URL ? { rejectUnauthorized: false } : false
+});
 db.connect()
   .then(() => console.log('✅ PostgreSQL connected!'))
   .catch(err => console.log('❌ PostgreSQL error:', err.message));
 
 // ── Redis ───────────────────────────────────────
-const redis = createClient({ url: process.env.REDIS_URL });
+const redis = createClient({ 
+  url: process.env.REDIS_URL,
+  socket: { tls: process.env.REDIS_URL?.includes('rediss') }
+});
 redis.connect();
 redis.on('ready', () => console.log('✅ Redis connected!'));
 redis.on('error', (err) => console.log('❌ Redis error:', err.message));
