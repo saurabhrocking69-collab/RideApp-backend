@@ -265,7 +265,7 @@ io.on('connection', (socket) => {
     console.log('🔴 Disconnected:', socket.id);
   });
 });
-/api/driver/pending-ride!
+/api/driver/pending-ride
 // ── Driver Pending Ride ─────────────────────────
 app.get('/api/driver/pending-ride', async (req, res) => {
   const { phone } = req.query;
