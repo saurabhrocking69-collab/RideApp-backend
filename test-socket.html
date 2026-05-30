@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Socket Test</title>
+  <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
+</head>
+<body>
+  <h2>🚖 RideApp Socket Test</h2>
+  <button onclick="goOnline()">🟢 Driver Online</button>
+  <button onclick="sendLocation()">📍 Location Bhejo</button>
+  <div id="log" style="margin-top:20px;font-family:monospace"></div>
+
+  <script>
+    const socket = io('http://localhost:3000');
+    const log    = document.getElementById('log');
+
+    socket.on('connect', () => {
+      log.innerHTML += '<p>✅ Server se connected! ID: ' + socket.id + '</p>';
+    });
+
+    function goOnline() {
+      socket.emit('driverOnline', { driverId: 'test-driver-123' });
+      log.innerHTML += '<p>🟢 Driver Online bheja!</p>';
+    }
+
+    function sendLocation() {
+      const lat = 26.8467 + (Math.random() * 0.01);
+      const lng = 80.9462 + (Math.random() * 0.01);
+      socket.emit('locationUpdate', { 
+        driverId: 'test-driver-123', lat, lng 
+      });
+      log.innerHTML += `<p>📍 Location bheja: ${lat.toFixed(4)}, ${lng.toFixed(4)}</p>`;
+    }
+
+    socket.on('driverMoved_test-driver-123', (data) => {
+      log.innerHTML += `<p>🗺️ Location mila: ${data.lat.toFixed(4)}, ${data.lng.toFixed(4)}</p>`;
+    });
+  </script>
+</body>
+</html>
