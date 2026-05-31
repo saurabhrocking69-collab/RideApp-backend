@@ -7,10 +7,14 @@ const { createClient } = require('redis');
 const jwt          = require('jsonwebtoken');
 
 const Razorpay = require('razorpay');
-const razorpay = new Razorpay({
-  key_id: process.env.rzp_test_SvuB3YVt1TXPde,
-  key_secret: process.env.ZxWBc9q1xQOoiDi0UWDhzgqP
-});
+console.log('🔑 RZP KEY:', process.env.RAZORPAY_KEY_ID ? 'MILA' : 'NAHI MILA');
+let razorpay = null;
+if (process.env.RAZORPAY_KEY_ID) {
+  razorpay = new Razorpay({
+    key_id: process.env.RAZORPAY_KEY_ID,
+    key_secret: process.env.RAZORPAY_KEY_SECRET
+  });
+}
 
 const app    = express();
 const server = http.createServer(app);
