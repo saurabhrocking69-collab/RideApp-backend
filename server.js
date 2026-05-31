@@ -5,7 +5,6 @@ const { Server }   = require('socket.io');
 const { Pool }     = require('pg');
 const { createClient } = require('redis');
 const jwt          = require('jsonwebtoken');
-require('dotenv').config({ override: false });
 
 const Razorpay = require('razorpay');
 const razorpay = new Razorpay({
