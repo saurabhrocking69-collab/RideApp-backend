@@ -6,9 +6,10 @@ const { Pool }     = require('pg');
 const { createClient } = require('redis');
 const jwt          = require('jsonwebtoken');
 require('dotenv').config();
+
 const Razorpay = require('razorpay');
 const razorpay = new Razorpay({
-  key_id: process.env.rzp_test_SvuB3YVt1TXPde
+  key_id: process.env.rzp_test_SvuB3YVt1TXPde,
   key_secret: process.env.ZxWBc9q1xQOoiDi0UWDhzgqP
 });
 
