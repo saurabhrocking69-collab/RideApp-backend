@@ -500,6 +500,48 @@ app.get('/api/driver/history', async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
+// ══════════════════════════════════════════════════
+//  LIVE LOCATION TRACKING APIs
+//  server.js mein server.listen se PEHLE paste karo
+// ══════════════════════════════════════════════════
+
+// In-memory store for driver locations (fast access)
+const driverLocations = {};
+
+// ── Driver: apni location update kare ───────────────
+app.post('/api/driver/update-location', async (req, res) => {
+  const { phone, lat, lng } = req.body;
+  try {
+    driverLocations[phone] = {
+      lat, lng,
+      updated: Date.now()
+    };
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── Customer: driver ki live location le ────────────
+app.get('/api/rides/driver-location/:rideId', async (req, res) => {
+  try {
+    // Ride se driver ka phone nikalo
+    const result = await db.query(
+      `SELECT u.phone FROM rides r
+       JOIN users u ON r.driver_id = u.id
+       WHERE r.id = $1`,
+      [req.params.rideId]
+    );
+    if (result.rows.length === 0)
+      return res.json({ location: null });
+
+    const driverPhone = result.rows[0].phone;
+    const loc = driverLocations[driverPhone] || null;
+    res.json({ location: loc });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
 
 // ── Start Server ────────────────────────────────
 server.listen(process.env.PORT, '0.0.0.0', () => {
