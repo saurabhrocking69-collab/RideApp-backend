@@ -6,6 +6,11 @@ const { Pool }     = require('pg');
 const { createClient } = require('redis');
 const jwt          = require('jsonwebtoken');
 require('dotenv').config();
+const Razorpay = require('razorpay');
+const razorpay = new Razorpay({
+  key_id: process.env.rzp_test_SvuB3YVt1TXPde,
+  key_secret: process.env.ZxWBc9q1xQOoiDi0UWDhzgqP
+});
 
 const app    = express();
 const server = http.createServer(app);
@@ -388,6 +393,45 @@ app.post('/api/rides/cancel', async (req, res) => {
     res.json({ success: true, message: 'Trip cancel ki', reason });
   } catch (err) {
     res.status(500).json({ error: err.message });
+  }
+});
+// ══════════════════════════════════════════════════
+//  RAZORPAY PAYMENT APIs
+//  server.js mein server.listen se PEHLE paste karo
+// ══════════════════════════════════════════════════
+
+// ── Payment Order banao ─────────────────────────────
+app.post('/api/payment/create-order', async (req, res) => {
+  const { amount, ride_id } = req.body;
+  try {
+    const order = await razorpay.orders.create({
+      amount: Math.round(amount * 100), // paise mein
+      currency: 'INR',
+      receipt: 'ride_' + ride_id,
+    });
+    res.json({
+      success: true,
+      order_id: order.id,
+      amount: order.amount,
+      key_id: process.env.RAZORPAY_KEY_ID
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ── Payment Verify karo ─────────────────────────────
+app.post('/api/payment/verify', async (req, res) => {
+  const { ride_id, payment_id, amount, method } = req.body;
+  try {
+    await db.query(
+      `INSERT INTO payments (ride_id, amount, method, status)
+       VALUES ($1, $2, $3, 'completed')`,
+      [ride_id, amount, method || 'online']
+    );
+    res.json({ success: true, message: 'Payment successful!' });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
   }
 });
 
