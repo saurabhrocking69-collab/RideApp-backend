@@ -438,6 +438,68 @@ app.post('/api/payment/verify', async (req, res) => {
     res.status(500).json({ success: false, error: err.message });
   }
 });
+// ══════════════════════════════════════════════════
+//  RIDE HISTORY API
+//  server.js mein server.listen se PEHLE paste karo
+// ══════════════════════════════════════════════════
+
+// ── Passenger Ride History ──────────────────────────
+app.get('/api/rides/history', async (req, res) => {
+  const { phone } = req.query;
+  try {
+    const result = await db.query(
+      `SELECT r.id, r.pickup, r.drop_location, r.fare, r.ride_type,
+              r.status, r.created_at,
+              d.name AS driver_name
+       FROM rides r
+       JOIN users u ON r.passenger_id = u.id
+       LEFT JOIN users d ON r.driver_id = d.id
+       WHERE u.phone = $1
+       ORDER BY r.created_at DESC
+       LIMIT 50`,
+      [phone]
+    );
+    res.json({ rides: result.rows });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── Driver Ride History + Stats ─────────────────────
+app.get('/api/driver/history', async (req, res) => {
+  const { phone } = req.query;
+  try {
+    const rides = await db.query(
+      `SELECT r.id, r.pickup, r.drop_location, r.fare, r.ride_type,
+              r.status, r.created_at,
+              p.name AS passenger_name
+       FROM rides r
+       JOIN users d ON r.driver_id = d.id
+       LEFT JOIN users p ON r.passenger_id = p.id
+       WHERE d.phone = $1 AND r.status = 'completed'
+       ORDER BY r.created_at DESC
+       LIMIT 50`,
+      [phone]
+    );
+
+    // Wallet balance
+    const wallet = await db.query(
+      `SELECT w.balance, w.total_earned
+       FROM driver_wallet w
+       JOIN users d ON w.driver_id = d.id
+       WHERE d.phone = $1`,
+      [phone]
+    );
+
+    res.json({
+      rides: rides.rows,
+      wallet: wallet.rows[0] || { balance: 0, total_earned: 0 },
+      total_trips: rides.rows.length
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
 
 // ── Start Server ────────────────────────────────
 server.listen(process.env.PORT, '0.0.0.0', () => {
