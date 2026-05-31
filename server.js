@@ -288,11 +288,12 @@ app.get('/api/driver/pending-ride', async (req, res) => {
 app.post('/api/rides/accept', async (req, res) => {
   const { ride_id, driver_phone } = req.body;
   try {
+    const otp = Math.floor(1000 + Math.random() * 9000).toString();
     await db.query(
-      `UPDATE rides SET status = 'matched' WHERE id = $1`,
-      [ride_id]
+      `UPDATE rides SET status = 'matched', start_otp = $2 WHERE id = $1`,
+      [ride_id, otp]
     );
-    res.json({ success: true, message: 'Ride accepted!' });
+    res.json({ success: true, message: 'Ride accepted!', otp });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -357,8 +358,15 @@ app.post('/api/rides/arrived', async (req, res) => {
 
 // ── Driver: Trip shuru karo ─────────────────────────
 app.post('/api/rides/start', async (req, res) => {
-  const { ride_id } = req.body;
+  const { ride_id, otp } = req.body;
   try {
+    const check = await db.query(
+      'SELECT start_otp FROM rides WHERE id = $1',
+      [ride_id]
+    );
+    if (check.rows[0]?.start_otp !== otp) {
+      return res.status(400).json({ success: false, message: 'Galat OTP!' });
+    }
     await db.query(
       "UPDATE rides SET status = 'started' WHERE id = $1",
       [ride_id]
