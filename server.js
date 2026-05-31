@@ -316,6 +316,72 @@ app.get('/api/rides/status/:rideId', async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
+// ══════════════════════════════════════════════════
+//  PHASE 1 — TRIP STATUS MANAGEMENT APIs
+//  server.js mein app.listen se PEHLE paste karo
+// ══════════════════════════════════════════════════
+
+// ── Driver: Active Ride dekho ───────────────────────
+app.get('/api/driver/active-ride', async (req, res) => {
+  const { phone } = req.query;
+  try {
+    const result = await db.query(
+      `SELECT r.*, p.name AS passenger_name, p.phone AS passenger_phone
+       FROM rides r
+       JOIN users d ON r.driver_id = d.id
+       LEFT JOIN users p ON r.passenger_id = p.id
+       WHERE d.phone = $1
+         AND r.status IN ('matched','arrived','started')
+       ORDER BY r.created_at DESC LIMIT 1`,
+      [phone]
+    );
+    res.json({ ride: result.rows[0] || null });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── Driver: Pickup pe pahunch gaya ──────────────────
+app.post('/api/rides/arrived', async (req, res) => {
+  const { ride_id } = req.body;
+  try {
+    await db.query(
+      "UPDATE rides SET status = 'arrived' WHERE id = $1",
+      [ride_id]
+    );
+    res.json({ success: true, message: 'Pickup pe pahunch gaye!' });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── Driver: Trip shuru karo ─────────────────────────
+app.post('/api/rides/start', async (req, res) => {
+  const { ride_id } = req.body;
+  try {
+    await db.query(
+      "UPDATE rides SET status = 'started' WHERE id = $1",
+      [ride_id]
+    );
+    res.json({ success: true, message: 'Trip shuru!' });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── Driver: Trip cancel karo ────────────────────────
+app.post('/api/rides/cancel', async (req, res) => {
+  const { ride_id, reason } = req.body;
+  try {
+    await db.query(
+      "UPDATE rides SET status = 'cancelled' WHERE id = $1",
+      [ride_id]
+    );
+    res.json({ success: true, message: 'Trip cancel ki', reason });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
 
 // ── Start Server ────────────────────────────────
 server.listen(process.env.PORT, '0.0.0.0', () => {
