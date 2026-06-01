@@ -904,6 +904,71 @@ app.post('/api/admin/verify-driver', async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
+// ══════════════════════════════════════════════════
+//  SCRATCH CARD APIs
+//  server.js mein server.listen se PEHLE paste karo
+// ══════════════════════════════════════════════════
+
+// ── Ride ke baad scratch card generate karo ─────────
+app.post('/api/scratch-card/create', async (req, res) => {
+  const { phone, ride_id } = req.body;
+  try {
+    const user = await db.query('SELECT id FROM users WHERE phone = $1', [phone]);
+    if (user.rows.length === 0) return res.json({ success: false });
+    const userId = user.rows[0].id;
+
+    // Random reward: zyada chance chhote reward ka (realistic)
+    const rand = Math.random();
+    let reward;
+    if (rand < 0.50) reward = Math.floor(Math.random() * 5) + 1;      // ₹1-5 (50%)
+    else if (rand < 0.80) reward = Math.floor(Math.random() * 10) + 5; // ₹5-15 (30%)
+    else if (rand < 0.95) reward = Math.floor(Math.random() * 20) + 15;// ₹15-35 (15%)
+    else reward = Math.floor(Math.random() * 50) + 50;                 // ₹50-100 (5%)
+
+    const card = await db.query(
+      `INSERT INTO scratch_cards (user_id, ride_id, reward_amount)
+       VALUES ($1, $2, $3) RETURNING id, reward_amount`,
+      [userId, ride_id || null, reward]
+    );
+    res.json({ success: true, card_id: card.rows[0].id, reward: parseFloat(card.rows[0].reward_amount) });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── Scratch karo → reward wallet mein add ───────────
+app.post('/api/scratch-card/scratch', async (req, res) => {
+  const { card_id, phone } = req.body;
+  try {
+    const card = await db.query('SELECT * FROM scratch_cards WHERE id = $1', [card_id]);
+    if (card.rows.length === 0) return res.json({ success: false, message: 'Card nahi mila' });
+    if (card.rows[0].is_scratched) return res.json({ success: false, message: 'Pehle hi scratch ho chuka' });
+
+    const reward = parseFloat(card.rows[0].reward_amount);
+    const userId = card.rows[0].user_id;
+
+    // Card scratched mark karo
+    await db.query('UPDATE scratch_cards SET is_scratched = true WHERE id = $1', [card_id]);
+
+    // Wallet mein reward add karo
+    await db.query(
+      'INSERT INTO customer_wallet (user_id) VALUES ($1) ON CONFLICT (user_id) DO NOTHING',
+      [userId]
+    );
+    const wallet = await db.query(
+      'UPDATE customer_wallet SET balance = balance + $1 WHERE user_id = $2 RETURNING balance',
+      [reward, userId]
+    );
+    await db.query(
+      "INSERT INTO transactions (user_id, type, amount, description) VALUES ($1, 'credit', $2, 'Scratch card reward')",
+      [userId, reward]
+    );
+
+    res.json({ success: true, reward, balance: parseFloat(wallet.rows[0].balance) });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
 // ── Start Server ────────────────────────────────
 server.listen(process.env.PORT, '0.0.0.0', () => {
   console.log('🚀 Server running on port ' + process.env.PORT);

@@ -16,4 +16,3 @@ async function test() {
     console.log('ERROR:', e.message);
   }
 }
-test();
