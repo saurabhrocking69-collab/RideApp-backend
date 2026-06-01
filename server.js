@@ -861,6 +861,49 @@ app.get('/api/driver/verification-status', async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
+// ══════════════════════════════════════════════════
+//  ADMIN DRIVER VERIFICATION APIs
+//  server.js mein server.listen se PEHLE paste karo
+// ══════════════════════════════════════════════════
+
+// ── Admin: Pending/all drivers with documents ───────
+app.get('/api/admin/driver-verifications', async (req, res) => {
+  try {
+    const result = await db.query(
+      `SELECT u.id, u.name, u.phone,
+              d.vehicle_type, d.vehicle_no, d.dl_name, d.dl_photo,
+              d.vehicle_photo, d.rc_photo, d.aadhaar_number, d.aadhaar_photo,
+              d.face_photo, d.verification_status, d.admin_message
+       FROM drivers d
+       JOIN users u ON d.id = u.id
+       ORDER BY 
+         CASE d.verification_status 
+           WHEN 'pending' THEN 1 
+           WHEN 'rejected' THEN 2 
+           WHEN 'approved' THEN 3 
+           ELSE 4 END,
+         u.name`
+    );
+    res.json({ drivers: result.rows });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── Admin: Approve / Reject / Suspend driver ────────
+app.post('/api/admin/verify-driver', async (req, res) => {
+  const { driver_id, status, message } = req.body;
+  // status: 'approved' | 'rejected' | 'suspended'
+  try {
+    await db.query(
+      'UPDATE drivers SET verification_status = $1, admin_message = $2 WHERE id = $3',
+      [status, message || null, driver_id]
+    );
+    res.json({ success: true, message: `Driver ${status} ho gaya` });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
 // ── Start Server ────────────────────────────────
 server.listen(process.env.PORT, '0.0.0.0', () => {
   console.log('🚀 Server running on port ' + process.env.PORT);
