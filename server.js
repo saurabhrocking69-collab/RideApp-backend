@@ -6,6 +6,13 @@ const { Pool }     = require('pg');
 const { createClient } = require('redis');
 const jwt          = require('jsonwebtoken');
 
+const cloudinary = require('cloudinary').v2;
+cloudinary.config({
+  cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
+  api_key: process.env.CLOUDINARY_API_KEY,
+  api_secret: process.env.CLOUDINARY_API_SECRET
+});
+
 const Razorpay = require('razorpay');
 console.log('🔑 RZP KEY:', process.env.RAZORPAY_KEY_ID ? 'MILA' : 'NAHI MILA');
 let razorpay = null;
@@ -751,6 +758,105 @@ app.post('/api/driver/payout', async (req, res) => {
       [amount, driver.rows[0].driver_id]
     );
     res.json({ success: true, balance: parseFloat(result.rows[0].balance), message: 'Payout request submitted!' });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+// ══════════════════════════════════════════════════
+//  DRIVER DOCUMENT UPLOAD + REGISTRATION APIs
+//  server.js mein server.listen se PEHLE paste karo
+//  (cloudinary config top pe hona chahiye)
+// ══════════════════════════════════════════════════
+
+// ── Photo upload to Cloudinary ──────────────────────
+// App base64 image bhejega, yeh Cloudinary pe upload karke URL dega
+app.post('/api/upload', async (req, res) => {
+  const { image } = req.body; // base64 data URI: "data:image/jpeg;base64,..."
+  try {
+    if (!image) return res.status(400).json({ error: 'Image nahi mili' });
+    const result = await cloudinary.uploader.upload(image, {
+      folder: 'rideapp_drivers',
+      resource_type: 'image'
+    });
+    res.json({ success: true, url: result.secure_url });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── Driver Registration (Spero Buddy) ───────────────
+app.post('/api/driver/register-buddy', async (req, res) => {
+  const {
+    phone, name, vehicle_type, vehicle_no,
+    dl_name, dl_photo, vehicle_photo, rc_photo,
+    aadhaar_number, aadhaar_photo, face_photo
+  } = req.body;
+  try {
+    // User exist karta hai? (phone se)
+    let user = await db.query('SELECT id FROM users WHERE phone = $1', [phone]);
+    let userId;
+    if (user.rows.length === 0) {
+      // Naya user banao (driver role)
+      const newUser = await db.query(
+        "INSERT INTO users (name, phone, role) VALUES ($1, $2, 'driver') RETURNING id",
+        [name || dl_name, phone]
+      );
+      userId = newUser.rows[0].id;
+    } else {
+      userId = user.rows[0].id;
+      // Role driver karo
+      await db.query("UPDATE users SET role = 'driver', name = $1 WHERE id = $2", [name || dl_name, userId]);
+    }
+
+    // Driver record banao ya update karo
+    const existing = await db.query('SELECT id FROM drivers WHERE id = $1', [userId]);
+    if (existing.rows.length === 0) {
+      await db.query(
+        `INSERT INTO drivers (id, vehicle_type, vehicle_no, dl_name, dl_photo,
+            vehicle_photo, rc_photo, aadhaar_number, aadhaar_photo, face_photo,
+            verification_status, is_online, rating)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'pending',false,5.0)`,
+        [userId, vehicle_type, vehicle_no || null, dl_name, dl_photo,
+         vehicle_photo, rc_photo || null, aadhaar_number, aadhaar_photo, face_photo]
+      );
+    } else {
+      await db.query(
+        `UPDATE drivers SET vehicle_type=$2, vehicle_no=$3, dl_name=$4, dl_photo=$5,
+            vehicle_photo=$6, rc_photo=$7, aadhaar_number=$8, aadhaar_photo=$9,
+            face_photo=$10, verification_status='pending', admin_message=NULL
+         WHERE id=$1`,
+        [userId, vehicle_type, vehicle_no || null, dl_name, dl_photo,
+         vehicle_photo, rc_photo || null, aadhaar_number, aadhaar_photo, face_photo]
+      );
+    }
+
+    // Driver wallet ensure karo
+    await db.query(
+      'INSERT INTO driver_wallet (driver_id) VALUES ($1) ON CONFLICT (driver_id) DO NOTHING',
+      [userId]
+    );
+
+    res.json({ success: true, message: 'Registration submit ho gaya! Verification pending.', status: 'pending' });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── Driver: apna verification status check kare ─────
+app.get('/api/driver/verification-status', async (req, res) => {
+  const { phone } = req.query;
+  try {
+    const result = await db.query(
+      `SELECT d.verification_status, d.admin_message
+       FROM drivers d JOIN users u ON d.id = u.id
+       WHERE u.phone = $1`,
+      [phone]
+    );
+    if (result.rows.length === 0) return res.json({ status: null });
+    res.json({
+      status: result.rows[0].verification_status,
+      message: result.rows[0].admin_message
+    });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
