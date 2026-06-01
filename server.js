@@ -626,7 +626,133 @@ app.get('/api/admin/customers', async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
+// ══════════════════════════════════════════════════
+//  WALLET APIs
+//  server.js mein server.listen se PEHLE paste karo
+// ══════════════════════════════════════════════════
 
+// ── Customer: Wallet balance dekho ──────────────────
+app.get('/api/wallet/balance', async (req, res) => {
+  const { phone } = req.query;
+  try {
+    const user = await db.query('SELECT id FROM users WHERE phone = $1', [phone]);
+    if (user.rows.length === 0) return res.json({ balance: 0 });
+    const userId = user.rows[0].id;
+
+    // Wallet nahi hai toh banao
+    let wallet = await db.query('SELECT balance FROM customer_wallet WHERE user_id = $1', [userId]);
+    if (wallet.rows.length === 0) {
+      await db.query('INSERT INTO customer_wallet (user_id) VALUES ($1)', [userId]);
+      return res.json({ balance: 0 });
+    }
+    res.json({ balance: parseFloat(wallet.rows[0].balance) });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── Customer: Wallet mein paisa add karo ────────────
+app.post('/api/wallet/add', async (req, res) => {
+  const { phone, amount } = req.body;
+  try {
+    const user = await db.query('SELECT id FROM users WHERE phone = $1', [phone]);
+    if (user.rows.length === 0) return res.status(404).json({ error: 'User nahi mila' });
+    const userId = user.rows[0].id;
+
+    // Wallet ensure karo
+    await db.query(
+      'INSERT INTO customer_wallet (user_id) VALUES ($1) ON CONFLICT (user_id) DO NOTHING',
+      [userId]
+    );
+    // Balance badhao
+    const result = await db.query(
+      'UPDATE customer_wallet SET balance = balance + $1, updated_at = NOW() WHERE user_id = $2 RETURNING balance',
+      [amount, userId]
+    );
+    // Transaction record
+    await db.query(
+      "INSERT INTO transactions (user_id, type, amount, description) VALUES ($1, 'credit', $2, 'Wallet recharge')",
+      [userId, amount]
+    );
+    res.json({ success: true, balance: parseFloat(result.rows[0].balance) });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── Customer: Wallet se ride pay karo ───────────────
+app.post('/api/wallet/pay', async (req, res) => {
+  const { phone, amount, ride_id } = req.body;
+  try {
+    const user = await db.query('SELECT id FROM users WHERE phone = $1', [phone]);
+    if (user.rows.length === 0) return res.status(404).json({ error: 'User nahi mila' });
+    const userId = user.rows[0].id;
+
+    const wallet = await db.query('SELECT balance FROM customer_wallet WHERE user_id = $1', [userId]);
+    const balance = wallet.rows[0] ? parseFloat(wallet.rows[0].balance) : 0;
+
+    if (balance < amount) {
+      return res.json({ success: false, message: 'Wallet mein paisa kam hai', balance });
+    }
+
+    const result = await db.query(
+      'UPDATE customer_wallet SET balance = balance - $1, updated_at = NOW() WHERE user_id = $2 RETURNING balance',
+      [amount, userId]
+    );
+    await db.query(
+      "INSERT INTO transactions (user_id, type, amount, description) VALUES ($1, 'debit', $2, 'Ride payment')",
+      [userId, amount]
+    );
+    await db.query(
+      "INSERT INTO payments (ride_id, amount, method, status) VALUES ($1, $2, 'wallet', 'completed')",
+      [ride_id, amount]
+    );
+    res.json({ success: true, balance: parseFloat(result.rows[0].balance) });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── Transactions history ────────────────────────────
+app.get('/api/wallet/transactions', async (req, res) => {
+  const { phone } = req.query;
+  try {
+    const user = await db.query('SELECT id FROM users WHERE phone = $1', [phone]);
+    if (user.rows.length === 0) return res.json({ transactions: [] });
+    const result = await db.query(
+      'SELECT type, amount, description, created_at FROM transactions WHERE user_id = $1 ORDER BY created_at DESC LIMIT 50',
+      [user.rows[0].id]
+    );
+    res.json({ transactions: result.rows });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── Driver: Payout request ──────────────────────────
+app.post('/api/driver/payout', async (req, res) => {
+  const { phone, amount } = req.body;
+  try {
+    const driver = await db.query(
+      `SELECT w.driver_id, w.balance FROM driver_wallet w
+       JOIN users u ON w.driver_id = u.id WHERE u.phone = $1`,
+      [phone]
+    );
+    if (driver.rows.length === 0) return res.status(404).json({ error: 'Driver nahi mila' });
+    const balance = parseFloat(driver.rows[0].balance);
+
+    if (balance < amount) {
+      return res.json({ success: false, message: 'Balance kam hai', balance });
+    }
+    const result = await db.query(
+      'UPDATE driver_wallet SET balance = balance - $1, total_withdrawn = total_withdrawn + $1 WHERE driver_id = $2 RETURNING balance',
+      [amount, driver.rows[0].driver_id]
+    );
+    res.json({ success: true, balance: parseFloat(result.rows[0].balance), message: 'Payout request submitted!' });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
 // ── Start Server ────────────────────────────────
 server.listen(process.env.PORT, '0.0.0.0', () => {
   console.log('🚀 Server running on port ' + process.env.PORT);
