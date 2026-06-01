@@ -969,6 +969,44 @@ app.post('/api/scratch-card/scratch', async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
+// ══════════════════════════════════════════════════
+//  DRIVER LOGIN API (real driver)
+//  server.js mein server.listen se PEHLE paste karo
+// ══════════════════════════════════════════════════
+
+// ── Driver login — phone se data + status ───────────
+app.post('/api/driver/login', async (req, res) => {
+  const { phone } = req.body;
+  try {
+    const result = await db.query(
+      `SELECT u.id, u.name, u.phone,
+              d.vehicle_type, d.vehicle_no, d.dl_name,
+              d.verification_status, d.admin_message, d.rating
+       FROM users u
+       JOIN drivers d ON u.id = d.id
+       WHERE u.phone = $1`,
+      [phone]
+    );
+    if (result.rows.length === 0) {
+      return res.json({ success: false, message: 'Yeh number registered nahi hai. Pehle Spero Buddy banein.' });
+    }
+    const d = result.rows[0];
+    res.json({
+      success: true,
+      driver: {
+        name: d.name || d.dl_name,
+        phone: d.phone,
+        vehicle_type: d.vehicle_type,
+        vehicle_no: d.vehicle_no,
+        rating: d.rating || 5.0,
+        status: d.verification_status,
+        admin_message: d.admin_message
+      }
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
 // ── Start Server ────────────────────────────────
 server.listen(process.env.PORT, '0.0.0.0', () => {
   console.log('🚀 Server running on port ' + process.env.PORT);
