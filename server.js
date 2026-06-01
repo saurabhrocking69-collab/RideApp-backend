@@ -542,6 +542,90 @@ app.get('/api/rides/driver-location/:rideId', async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
+// ══════════════════════════════════════════════════
+//  ADMIN DASHBOARD APIs
+//  server.js mein server.listen se PEHLE paste karo
+// ══════════════════════════════════════════════════
+
+// ── Admin: Dashboard Stats ──────────────────────────
+app.get('/api/admin/stats', async (req, res) => {
+  try {
+    const users    = await db.query("SELECT COUNT(*) FROM users WHERE role = 'passenger'");
+    const drivers  = await db.query("SELECT COUNT(*) FROM drivers");
+    const rides    = await db.query("SELECT COUNT(*) FROM rides");
+    const completed= await db.query("SELECT COUNT(*) FROM rides WHERE status = 'completed'");
+    const revenue  = await db.query("SELECT COALESCE(SUM(fare),0) AS total FROM rides WHERE status = 'completed'");
+    const todayRides = await db.query("SELECT COUNT(*) FROM rides WHERE created_at >= CURRENT_DATE");
+
+    res.json({
+      total_customers: parseInt(users.rows[0].count),
+      total_drivers:   parseInt(drivers.rows[0].count),
+      total_rides:     parseInt(rides.rows[0].count),
+      completed_rides: parseInt(completed.rows[0].count),
+      total_revenue:   parseFloat(revenue.rows[0].total),
+      today_rides:     parseInt(todayRides.rows[0].count)
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── Admin: All Rides ────────────────────────────────
+app.get('/api/admin/rides', async (req, res) => {
+  try {
+    const result = await db.query(
+      `SELECT r.id, r.pickup, r.drop_location, r.fare, r.ride_type,
+              r.status, r.created_at,
+              p.name AS passenger_name, p.phone AS passenger_phone,
+              d.name AS driver_name
+       FROM rides r
+       LEFT JOIN users p ON r.passenger_id = p.id
+       LEFT JOIN users d ON r.driver_id = d.id
+       ORDER BY r.created_at DESC
+       LIMIT 100`
+    );
+    res.json({ rides: result.rows });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── Admin: All Drivers ──────────────────────────────
+app.get('/api/admin/drivers', async (req, res) => {
+  try {
+    const result = await db.query(
+      `SELECT u.name, u.phone, d.vehicle_type, d.vehicle_no,
+              d.is_online, d.rating,
+              COALESCE(w.balance, 0) AS balance,
+              COALESCE(w.total_earned, 0) AS total_earned
+       FROM drivers d
+       JOIN users u ON d.id = u.id
+       LEFT JOIN driver_wallet w ON d.id = w.driver_id
+       ORDER BY u.name`
+    );
+    res.json({ drivers: result.rows });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── Admin: All Customers ────────────────────────────
+app.get('/api/admin/customers', async (req, res) => {
+  try {
+    const result = await db.query(
+      `SELECT u.name, u.phone, u.created_at,
+              COUNT(r.id) AS total_rides
+       FROM users u
+       LEFT JOIN rides r ON r.passenger_id = u.id
+       WHERE u.role = 'passenger'
+       GROUP BY u.id, u.name, u.phone, u.created_at
+       ORDER BY u.created_at DESC`
+    );
+    res.json({ customers: result.rows });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
 
 // ── Start Server ────────────────────────────────
 server.listen(process.env.PORT, '0.0.0.0', () => {
