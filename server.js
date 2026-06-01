@@ -614,11 +614,13 @@ app.get('/api/admin/customers', async (req, res) => {
   try {
     const result = await db.query(
       `SELECT u.name, u.phone, u.created_at,
-              COUNT(r.id) AS total_rides
+              COUNT(r.id) AS total_rides,
+              COALESCE(w.balance, 0) AS wallet_balance
        FROM users u
        LEFT JOIN rides r ON r.passenger_id = u.id
+       LEFT JOIN customer_wallet w ON w.user_id = u.id
        WHERE u.role = 'passenger'
-       GROUP BY u.id, u.name, u.phone, u.created_at
+       GROUP BY u.id, u.name, u.phone, u.created_at, w.balance
        ORDER BY u.created_at DESC`
     );
     res.json({ customers: result.rows });
