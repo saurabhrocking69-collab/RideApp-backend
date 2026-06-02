@@ -309,10 +309,19 @@ app.get('/api/driver/pending-ride', async (req, res) => {
 app.post('/api/rides/accept', async (req, res) => {
   const { ride_id, driver_phone } = req.body;
   try {
+    // Driver ID nikalo
+    const driver = await db.query(
+      'SELECT id FROM users WHERE phone = $1', [driver_phone]
+    );
+    if (driver.rows.length === 0)
+      return res.status(404).json({ success: false, message: 'Driver nahi mila' });
+
     const otp = Math.floor(1000 + Math.random() * 9000).toString();
+
+    // Driver assign karo + status matched + OTP set karo
     await db.query(
-      `UPDATE rides SET status = 'matched', start_otp = $2 WHERE id = $1`,
-      [ride_id, otp]
+      `UPDATE rides SET status = 'matched', start_otp = $1, driver_id = $2 WHERE id = $3`,
+      [otp, driver.rows[0].id, ride_id]
     );
     res.json({ success: true, message: 'Ride accepted!', otp });
   } catch (err) {
