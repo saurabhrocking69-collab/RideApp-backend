@@ -1034,6 +1034,45 @@ app.post('/api/driver/toggle-online', async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
+// ── Rating save karo ────────────────────────────────
+app.post('/api/rides/rate', async (req, res) => {
+  const { ride_id, rating, review, tip } = req.body;
+  try {
+    // Ride mein rating save karo
+    await db.query(
+      `UPDATE rides SET rating = $1, review = $2 WHERE id = $3`,
+      [rating, review || null, ride_id]
+    );
+
+    // Driver ki average rating update karo
+    const rideData = await db.query(
+      `SELECT driver_id FROM rides WHERE id = $1`, [ride_id]
+    );
+    if (rideData.rows[0]?.driver_id) {
+      await db.query(
+        `UPDATE drivers SET rating = (
+          SELECT ROUND(AVG(rating)::numeric, 1)
+          FROM rides
+          WHERE driver_id = $1 AND rating IS NOT NULL
+        ) WHERE id = $1`,
+        [rideData.rows[0].driver_id]
+      );
+    }
+
+    // Tip wallet mein add karo (driver ke)
+    if (tip && tip > 0 && rideData.rows[0]?.driver_id) {
+      await db.query(
+        `UPDATE driver_wallet SET balance = balance + $1, total_earned = total_earned + $1
+         WHERE driver_id = $2`,
+        [tip, rideData.rows[0].driver_id]
+      );
+    }
+
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
 // ── Start Server ────────────────────────────────
 server.listen(process.env.PORT, '0.0.0.0', () => {
   console.log('🚀 Server running on port ' + process.env.PORT);
