@@ -196,6 +196,10 @@ app.post('/api/rides/book', async (req, res) => {
       ride_id:  ride.rows[0].id,
       status:   'requested'
     });
+    } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
 
 // ── Ride Complete ───────────────────────────────
 app.post('/api/rides/complete', async (req, res) => {
