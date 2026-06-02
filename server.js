@@ -1007,6 +1007,19 @@ app.post('/api/driver/login', async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
+app.post('/api/driver/toggle-online', async (req, res) => {
+  const { phone, is_online } = req.body;
+  try {
+    await db.query(
+      `UPDATE drivers SET is_online = $1
+       WHERE id = (SELECT id FROM users WHERE phone = $2)`,
+      [is_online, phone]
+    );
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
 // ── Start Server ────────────────────────────────
 server.listen(process.env.PORT, '0.0.0.0', () => {
   console.log('🚀 Server running on port ' + process.env.PORT);
