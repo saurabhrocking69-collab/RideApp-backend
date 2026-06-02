@@ -283,13 +283,33 @@ io.on('connection', (socket) => {
 app.get('/api/driver/pending-ride', async (req, res) => {
   const { phone } = req.query;
   try {
-    const result = await db.query(
-      `SELECT r.* FROM rides r
-       JOIN users u ON r.driver_id = u.id
-       WHERE u.phone = $1 AND r.status = 'requested'
-       ORDER BY r.created_at DESC LIMIT 1`,
+    // Driver ka vehicle type nikalo
+    const driverResult = await db.query(
+      `SELECT d.vehicle_type FROM drivers d
+       JOIN users u ON d.id = u.id
+       WHERE u.phone = $1`,
       [phone]
     );
+    if (driverResult.rows.length === 0) {
+      return res.json({ ride: null });
+    }
+    const vehicleType = driverResult.rows[0].vehicle_type;
+
+    // Vehicle type match karke unassigned ride dhundho
+    const result = await db.query(
+      `SELECT r.*, 
+              p.name AS passenger_name,
+              p.phone AS passenger_phone
+       FROM rides r
+       JOIN users p ON r.passenger_id = p.id
+       WHERE r.status = 'requested'
+       AND r.driver_id IS NULL
+       AND r.ride_type = $1
+       ORDER BY r.created_at ASC
+       LIMIT 1`,
+      [vehicleType]
+    );
+
     if (result.rows.length > 0) {
       res.json({ ride: result.rows[0] });
     } else {
@@ -299,6 +319,7 @@ app.get('/api/driver/pending-ride', async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
+
 
 // ── Driver Accept Ride ──────────────────────────
 app.post('/api/rides/accept', async (req, res) => {

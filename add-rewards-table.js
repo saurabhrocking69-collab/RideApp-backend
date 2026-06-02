@@ -4,9 +4,11 @@ const db = new Pool({
   ssl: { rejectUnauthorized: false }
 });
 
-async function setup() {
-  try {
-    await db.query(`
+console.log('Connecting...');
+db.query('SELECT NOW()')
+  .then(r => {
+    console.log('✅ Connected! Time:', r.rows[0].now);
+    return db.query(`
       CREATE TABLE IF NOT EXISTS scratch_cards (
         id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
         user_id UUID REFERENCES users(id),
@@ -16,11 +18,6 @@ async function setup() {
         created_at TIMESTAMP DEFAULT NOW()
       )
     `);
-    console.log('✅ scratch_cards table ready');
-    db.end();
-  } catch (e) {
-    console.log('Error:', e.message);
-    db.end();
-  }
-}
-  
+  })
+  .then(() => { console.log('✅ scratch_cards table ready!'); db.end(); })
+  .catch(e => { console.log('❌ Error:', e.message); db.end(); });
