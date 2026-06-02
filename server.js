@@ -596,7 +596,7 @@ app.get('/api/admin/rides', async (req, res) => {
   try {
     const result = await db.query(
       `SELECT r.id, r.pickup, r.drop_location, r.fare, r.ride_type,
-              r.status, r.created_at,
+              r.status, r.created_at, r.rating, r.review,
               p.name AS passenger_name, p.phone AS passenger_phone,
               d.name AS driver_name
        FROM rides r
