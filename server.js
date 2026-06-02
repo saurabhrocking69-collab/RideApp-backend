@@ -183,39 +183,19 @@ app.post('/api/rides/book', async (req, res) => {
       [passenger.rows[0].id, pickup, drop_location, ride_type, fare]
     );
 
-    const driver = await db.query(
-      `SELECT u.name, u.phone, d.vehicle_no, d.vehicle_type, d.id 
- FROM drivers d JOIN users u ON d.id = u.id 
- WHERE (d.is_online = false OR d.is_online IS NULL) LIMIT 1`
-      
+  // Driver assign nahi karte — sirf status requested set karo
+    await db.query(
+      "UPDATE rides SET status = 'requested' WHERE id = $1",
+      [ride.rows[0].id]
     );
 
-    if (driver.rows.length === 0) {
-      return res.json({
-        message: 'Ride booked! Driver dhundh rahe hain...',
-        ride: ride.rows[0],
-        fare: '₹' + fare,
-        distance: distance + ' km'
-      });
-    }
-
-    // Driver ko request bhejo — accept ka wait karo
-await db.query(
-  "UPDATE rides SET driver_id = $1, status = 'requested' WHERE id = $2",
-  [driver.rows[0].id, ride.rows[0].id]
-);
-
     res.json({
-  message:  'Driver dhundh rahe hain...',
-  fare:     '₹' + fare,
-  distance: distance + ' km',
-  ride_id:  ride.rows[0].id,
-  status:   'requested'
-});
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
+      message:  'Driver dhundh rahe hain...',
+      fare:     '₹' + fare,
+      distance: distance + ' km',
+      ride_id:  ride.rows[0].id,
+      status:   'requested'
+    });
 
 // ── Ride Complete ───────────────────────────────
 app.post('/api/rides/complete', async (req, res) => {
