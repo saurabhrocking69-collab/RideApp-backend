@@ -1073,6 +1073,17 @@ app.post('/api/rides/rate', async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
+// Auto-cancel stale rides (older than 5 min)
+setInterval(async () => {
+  try {
+    await db.query(`
+      UPDATE rides SET status = 'cancelled'
+      WHERE status = 'requested'
+      AND driver_id IS NULL
+      AND created_at < NOW() - INTERVAL '5 minutes'
+    `);
+  } catch (_e) {}
+}, 60000);
 // ── Start Server ────────────────────────────────
 server.listen(process.env.PORT, '0.0.0.0', () => {
   console.log('🚀 Server running on port ' + process.env.PORT);
