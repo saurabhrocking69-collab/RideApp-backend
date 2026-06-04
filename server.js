@@ -192,8 +192,9 @@ app.post('/api/rides/book', async (req, res) => {
     console.log('Distance:', distance, 'km | Fare: ₹' + fare);
 
     const ride = await db.query(
-      "INSERT INTO rides (passenger_id, pickup, drop_location, ride_type, fare, status) VALUES ($1, $2, $3, $4, $5, 'searching') RETURNING *",
-      [passenger.rows[0].id, pickup, drop_location, ride_type, fare]
+      `INSERT INTO rides (passenger_id, pickup, drop_location, ride_type, fare, status, pickup_lat, pickup_lng, drop_lat, drop_lng, discount, promo_code)
+       VALUES ($1, $2, $3, $4, $5, 'searching', $6, $7, $8, $9, $10, $11) RETURNING *`,
+      [passenger.rows[0].id, pickup, drop_location, ride_type, fare, pickup_lat || null, pickup_lng || null, drop_lat || null, drop_lng || null, discount || 0, promo_code || null]
     );
 
   // Driver assign nahi karte — sirf status requested set karo
