@@ -171,10 +171,23 @@ app.post('/api/rides/book', async (req, res) => {
     if (passenger.rows.length === 0)
       return res.status(404).json({ error: 'Passenger nahi mila' });
 
-    const rates    = { auto: 12, bike: 8, taxi: 18 };
-    const base     = { auto: 25, bike: 20, taxi: 40 };
     const distance = req.body.distance || 5;
-    const fare     = Math.round(base[ride_type] + (distance * rates[ride_type]));
+    
+    // DB se fare settings lo
+    const fareRes = await db.query(
+      'SELECT * FROM fare_settings WHERE vehicle_type = $1', [ride_type]
+    );
+    const fareSettings = fareRes.rows[0] || { base_fare: 25, per_km_rate: 12, night_multiplier: 1.5, night_start: '22:00', night_end: '06:00' };
+    
+    // Night time check karo
+    const now = new Date();
+    const hour = now.getHours();
+    const nightStart = parseInt(fareSettings.night_start.split(':')[0]);
+    const nightEnd = parseInt(fareSettings.night_end.split(':')[0]);
+    const isNight = hour >= nightStart || hour < nightEnd;
+    
+    let fare = Math.round(parseFloat(fareSettings.base_fare) + (distance * parseFloat(fareSettings.per_km_rate)));
+    if (isNight) fare = Math.round(fare * parseFloat(fareSettings.night_multiplier));
 
     console.log('Distance:', distance, 'km | Fare: ₹' + fare);
 
@@ -1084,6 +1097,34 @@ setInterval(async () => {
     `);
   } catch (_e) {}
 }, 60000);
+// ── Fare Settings APIs ──────────────────────────
+
+// Get fare settings (customer app ke liye)
+app.get('/api/fare-settings', async (req, res) => {
+  try {
+    const result = await db.query('SELECT * FROM fare_settings ORDER BY vehicle_type');
+    res.json({ fares: result.rows });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Admin: Update fare settings
+app.post('/api/admin/fare-settings', async (req, res) => {
+  const { vehicle_type, base_fare, per_km_rate, night_multiplier, night_start, night_end } = req.body;
+  try {
+    await db.query(
+      `UPDATE fare_settings 
+       SET base_fare = $1, per_km_rate = $2, night_multiplier = $3,
+           night_start = $4, night_end = $5, updated_at = NOW()
+       WHERE vehicle_type = $6`,
+      [base_fare, per_km_rate, night_multiplier, night_start, night_end, vehicle_type]
+    );
+    res.json({ success: true, message: 'Fare updated!' });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
 // ── Start Server ────────────────────────────────
 server.listen(process.env.PORT, '0.0.0.0', () => {
   console.log('🚀 Server running on port ' + process.env.PORT);
