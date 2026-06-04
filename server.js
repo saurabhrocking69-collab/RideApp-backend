@@ -163,7 +163,7 @@ app.post('/api/driver/register', async (req, res) => {
 
 // ── Ride Book ───────────────────────────────────
 app.post('/api/rides/book', async (req, res) => {
-  const { passenger_phone, pickup, drop_location, ride_type } = req.body;
+  const { passenger_phone, pickup, drop_location, ride_type, pickup_lat, pickup_lng, drop_lat, drop_lng, discount, promo_code } = req.body;
   try {
     const passenger = await db.query(
       'SELECT * FROM users WHERE phone = $1', [passenger_phone]
@@ -1124,6 +1124,316 @@ app.post('/api/admin/fare-settings', async (req, res) => {
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
+});
+// ══════════════════════════════════════════════════
+//  NEW FEATURES APIs — server.listen se PEHLE paste karo
+// ══════════════════════════════════════════════════
+
+// ─────────────────────────────────────────────────
+//  1. PROMO CODES
+// ─────────────────────────────────────────────────
+app.post('/api/promo/validate', async (req, res) => {
+  const { code, fare, phone } = req.body;
+  try {
+    const promo = await db.query(
+      `SELECT * FROM promo_codes WHERE UPPER(code) = UPPER($1) AND active = true`,
+      [code]
+    );
+    if (promo.rows.length === 0) return res.json({ valid: false, message: 'Galat promo code' });
+    const p = promo.rows[0];
+
+    if (p.expires_at && new Date(p.expires_at) < new Date())
+      return res.json({ valid: false, message: 'Promo code expire ho gaya' });
+    if (p.used_count >= p.usage_limit)
+      return res.json({ valid: false, message: 'Promo code limit khatam' });
+    if (parseFloat(fare) < parseFloat(p.min_fare))
+      return res.json({ valid: false, message: `Minimum ₹${p.min_fare} ki ride chahiye` });
+
+    // Check user already used
+    const user = await db.query('SELECT id FROM users WHERE phone = $1', [phone]);
+    if (user.rows.length > 0) {
+      const used = await db.query(
+        'SELECT id FROM promo_usage WHERE user_id = $1 AND promo_code = $2',
+        [user.rows[0].id, code.toUpperCase()]
+      );
+      if (used.rows.length > 0)
+        return res.json({ valid: false, message: 'Aap yeh code pehle use kar chuke' });
+    }
+
+    let discount = p.discount_type === 'percent'
+      ? Math.round(parseFloat(fare) * parseFloat(p.discount_value) / 100)
+      : parseFloat(p.discount_value);
+    if (discount > parseFloat(p.max_discount)) discount = parseFloat(p.max_discount);
+
+    res.json({ valid: true, discount, final_fare: Math.max(0, Math.round(parseFloat(fare) - discount)), message: `₹${discount} discount!` });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/promo/apply', async (req, res) => {
+  const { code, phone, ride_id, discount } = req.body;
+  try {
+    const user = await db.query('SELECT id FROM users WHERE phone = $1', [phone]);
+    if (user.rows.length === 0) return res.json({ success: false });
+    await db.query(
+      `INSERT INTO promo_usage (user_id, promo_code, ride_id, discount_applied) VALUES ($1, $2, $3, $4)`,
+      [user.rows[0].id, code.toUpperCase(), ride_id || null, discount]
+    );
+    await db.query(`UPDATE promo_codes SET used_count = used_count + 1 WHERE UPPER(code) = UPPER($1)`, [code]);
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Admin: list/add/toggle promo codes
+app.get('/api/admin/promos', async (req, res) => {
+  try {
+    const r = await db.query('SELECT * FROM promo_codes ORDER BY created_at DESC');
+    res.json({ promos: r.rows });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/api/admin/promos', async (req, res) => {
+  const { code, discount_type, discount_value, max_discount, min_fare, usage_limit } = req.body;
+  try {
+    await db.query(
+      `INSERT INTO promo_codes (code, discount_type, discount_value, max_discount, min_fare, usage_limit)
+       VALUES ($1,$2,$3,$4,$5,$6)
+       ON CONFLICT (code) DO UPDATE SET discount_type=$2, discount_value=$3, max_discount=$4, min_fare=$5, usage_limit=$6, active=true`,
+      [code.toUpperCase(), discount_type, discount_value, max_discount || 100, min_fare || 0, usage_limit || 1000]
+    );
+    res.json({ success: true, message: 'Promo code saved!' });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/api/admin/promos/toggle', async (req, res) => {
+  const { code, active } = req.body;
+  try {
+    await db.query('UPDATE promo_codes SET active = $1 WHERE code = $2', [active, code]);
+    res.json({ success: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ─────────────────────────────────────────────────
+//  2. REFERRAL SYSTEM
+// ─────────────────────────────────────────────────
+function genReferralCode(name) {
+  const base = (name || 'USER').substring(0, 4).toUpperCase().replace(/[^A-Z]/g, '');
+  return base + Math.floor(1000 + Math.random() * 9000);
+}
+
+app.get('/api/referral/my-code', async (req, res) => {
+  const { phone } = req.query;
+  try {
+    const user = await db.query('SELECT id, name, referral_code FROM users WHERE phone = $1', [phone]);
+    if (user.rows.length === 0) return res.json({ code: null });
+    let code = user.rows[0].referral_code;
+    if (!code) {
+      code = genReferralCode(user.rows[0].name);
+      await db.query('UPDATE users SET referral_code = $1 WHERE id = $2', [code, user.rows[0].id]);
+    }
+    // Count referrals
+    const count = await db.query('SELECT COUNT(*) FROM referrals WHERE referrer_id = $1', [user.rows[0].id]);
+    const earned = await db.query("SELECT COALESCE(SUM(reward_amount),0) AS total FROM referrals WHERE referrer_id = $1 AND status = 'completed'", [user.rows[0].id]);
+    res.json({ code, total_referrals: parseInt(count.rows[0].count), total_earned: parseFloat(earned.rows[0].total) });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/api/referral/apply', async (req, res) => {
+  const { phone, referral_code } = req.body;
+  try {
+    const newUser = await db.query('SELECT id FROM users WHERE phone = $1', [phone]);
+    if (newUser.rows.length === 0) return res.json({ success: false, message: 'User nahi mila' });
+
+    const referrer = await db.query('SELECT id FROM users WHERE referral_code = $1', [referral_code.toUpperCase()]);
+    if (referrer.rows.length === 0) return res.json({ success: false, message: 'Galat referral code' });
+    if (referrer.rows[0].id === newUser.rows[0].id) return res.json({ success: false, message: 'Apna hi code use nahi kar sakte' });
+
+    // Already referred?
+    const exists = await db.query('SELECT id FROM referrals WHERE referred_id = $1', [newUser.rows[0].id]);
+    if (exists.rows.length > 0) return res.json({ success: false, message: 'Aap pehle referral use kar chuke' });
+
+    await db.query(
+      `INSERT INTO referrals (referrer_id, referred_id, referral_code, reward_amount, status) VALUES ($1,$2,$3,50,'completed')`,
+      [referrer.rows[0].id, newUser.rows[0].id, referral_code.toUpperCase()]
+    );
+
+    // Reward dono ko ₹50 wallet
+    for (const uid of [referrer.rows[0].id, newUser.rows[0].id]) {
+      await db.query('INSERT INTO customer_wallet (user_id) VALUES ($1) ON CONFLICT (user_id) DO NOTHING', [uid]);
+      await db.query('UPDATE customer_wallet SET balance = balance + 50 WHERE user_id = $1', [uid]);
+      await db.query("INSERT INTO transactions (user_id, type, amount, description) VALUES ($1,'credit',50,'Referral reward')", [uid]);
+    }
+    res.json({ success: true, message: '₹50 reward dono ko mil gaya!' });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ─────────────────────────────────────────────────
+//  3. CHAT
+// ─────────────────────────────────────────────────
+app.post('/api/chat/send', async (req, res) => {
+  const { ride_id, sender, message } = req.body;
+  try {
+    await db.query('INSERT INTO chat_messages (ride_id, sender, message) VALUES ($1,$2,$3)', [ride_id, sender, message]);
+    res.json({ success: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.get('/api/chat/:rideId', async (req, res) => {
+  try {
+    const r = await db.query('SELECT sender, message, created_at FROM chat_messages WHERE ride_id = $1 ORDER BY created_at ASC', [req.params.rideId]);
+    res.json({ messages: r.rows });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ─────────────────────────────────────────────────
+//  4. GPS RANGE CHECK (pickup 15m, drop 10m)
+// ─────────────────────────────────────────────────
+function distanceMeters(lat1, lon1, lat2, lon2) {
+  const R = 6371000;
+  const dLat = (lat2 - lat1) * Math.PI / 180;
+  const dLon = (lon2 - lon1) * Math.PI / 180;
+  const a = Math.sin(dLat/2)**2 + Math.cos(lat1*Math.PI/180)*Math.cos(lat2*Math.PI/180)*Math.sin(dLon/2)**2;
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+}
+
+app.post('/api/rides/check-range', async (req, res) => {
+  const { ride_id, driver_lat, driver_lng, type } = req.body; // type: 'pickup' | 'drop'
+  try {
+    const ride = await db.query('SELECT pickup_lat, pickup_lng, drop_lat, drop_lng FROM rides WHERE id = $1', [ride_id]);
+    if (ride.rows.length === 0) return res.json({ in_range: false });
+    const r = ride.rows[0];
+    let targetLat, targetLng, maxDist;
+    if (type === 'pickup') { targetLat = r.pickup_lat; targetLng = r.pickup_lng; maxDist = 15; }
+    else { targetLat = r.drop_lat; targetLng = r.drop_lng; maxDist = 10; }
+
+    if (!targetLat || !targetLng) return res.json({ in_range: true, distance: 0, note: 'No coords - allowed' });
+
+    const dist = distanceMeters(driver_lat, driver_lng, parseFloat(targetLat), parseFloat(targetLng));
+    res.json({ in_range: dist <= maxDist, distance: Math.round(dist), max: maxDist });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ─────────────────────────────────────────────────
+//  5. DRIVER DAILY TARGET
+// ─────────────────────────────────────────────────
+app.get('/api/driver/target', async (req, res) => {
+  const { phone } = req.query;
+  try {
+    const target = await db.query('SELECT * FROM driver_targets WHERE active = true LIMIT 1');
+    const t = target.rows[0] || { rides_target: 10, bonus_amount: 200 };
+    const today = await db.query(
+      `SELECT COUNT(*) FROM rides r JOIN users u ON r.driver_id = u.id
+       WHERE u.phone = $1 AND r.status = 'completed' AND r.created_at >= CURRENT_DATE`,
+      [phone]
+    );
+    const done = parseInt(today.rows[0].count);
+    res.json({
+      target: t.rides_target,
+      bonus: parseFloat(t.bonus_amount),
+      completed: done,
+      remaining: Math.max(0, t.rides_target - done),
+      achieved: done >= t.rides_target
+    });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ─────────────────────────────────────────────────
+//  6. SAVED PLACES
+// ─────────────────────────────────────────────────
+app.get('/api/places/saved', async (req, res) => {
+  const { phone } = req.query;
+  try {
+    const user = await db.query('SELECT id FROM users WHERE phone = $1', [phone]);
+    if (user.rows.length === 0) return res.json({ places: [] });
+    const r = await db.query('SELECT id, label, address, lat, lng FROM saved_places WHERE user_id = $1', [user.rows[0].id]);
+    res.json({ places: r.rows });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/api/places/save', async (req, res) => {
+  const { phone, label, address, lat, lng } = req.body;
+  try {
+    const user = await db.query('SELECT id FROM users WHERE phone = $1', [phone]);
+    if (user.rows.length === 0) return res.json({ success: false });
+    await db.query(
+      'INSERT INTO saved_places (user_id, label, address, lat, lng) VALUES ($1,$2,$3,$4,$5)',
+      [user.rows[0].id, label, address, lat || null, lng || null]
+    );
+    res.json({ success: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/api/places/delete', async (req, res) => {
+  const { id } = req.body;
+  try {
+    await db.query('DELETE FROM saved_places WHERE id = $1', [id]);
+    res.json({ success: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ─────────────────────────────────────────────────
+//  7. SOS ALERT
+// ─────────────────────────────────────────────────
+app.post('/api/sos', async (req, res) => {
+  const { phone, ride_id, lat, lng, type } = req.body;
+  try {
+    const user = await db.query('SELECT id FROM users WHERE phone = $1', [phone]);
+    await db.query(
+      'INSERT INTO sos_alerts (user_id, ride_id, lat, lng, type) VALUES ($1,$2,$3,$4,$5)',
+      [user.rows[0]?.id || null, ride_id || null, lat || null, lng || null, type || 'emergency']
+    );
+    console.log('🆘 SOS ALERT:', phone, lat, lng);
+    res.json({ success: true, message: 'Emergency alert bheja gaya', helplines: { police: '100', ambulance: '108', women: '1091' } });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ─────────────────────────────────────────────────
+//  8. ADMIN NOTIFICATIONS + ANALYTICS
+// ─────────────────────────────────────────────────
+app.post('/api/admin/notify', async (req, res) => {
+  const { target, title, message } = req.body;
+  try {
+    await db.query('INSERT INTO notifications (target, title, message) VALUES ($1,$2,$3)', [target || 'all', title, message]);
+    res.json({ success: true, message: 'Notification bheja gaya' });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.get('/api/notifications', async (req, res) => {
+  const { target } = req.query;
+  try {
+    const r = await db.query(
+      `SELECT title, message, created_at FROM notifications WHERE target = 'all' OR target = $1 ORDER BY created_at DESC LIMIT 10`,
+      [target || 'all']
+    );
+    res.json({ notifications: r.rows });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.get('/api/admin/analytics', async (req, res) => {
+  try {
+    const daily = await db.query(`
+      SELECT DATE(created_at) AS day, COUNT(*) AS rides, COALESCE(SUM(fare),0) AS revenue
+      FROM rides WHERE status = 'completed' AND created_at >= CURRENT_DATE - INTERVAL '7 days'
+      GROUP BY DATE(created_at) ORDER BY day
+    `);
+    const byType = await db.query(`
+      SELECT ride_type, COUNT(*) AS count FROM rides WHERE status = 'completed' GROUP BY ride_type
+    `);
+    res.json({ daily: daily.rows, by_type: byType.rows });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Admin: set driver target
+app.post('/api/admin/set-target', async (req, res) => {
+  const { rides_target, bonus_amount } = req.body;
+  try {
+    await db.query('UPDATE driver_targets SET active = false');
+    await db.query('INSERT INTO driver_targets (rides_target, bonus_amount, active) VALUES ($1,$2,true)', [rides_target, bonus_amount]);
+    res.json({ success: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
 });
 // ── Start Server ────────────────────────────────
 server.listen(process.env.PORT, '0.0.0.0', () => {
