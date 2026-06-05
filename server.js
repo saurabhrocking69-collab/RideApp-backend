@@ -38,6 +38,69 @@ const db = new Pool({
 db.connect()
   .then(() => console.log('✅ PostgreSQL connected!'))
   .catch(err => console.log('❌ PostgreSQL error:', err.message));
+// ══════════════════════════════════════════════════
+//  PRODUCTION-SCALE MATCHING SYSTEM
+//  server.js ke TOP mein (baaki APIs se pehle) paste karo
+//  Yeh helper functions hain + updated APIs
+// ══════════════════════════════════════════════════
+
+// ─── GEOHASH: location ko grid cell mein convert ───
+// Precision 6 = ~1.2km x 0.6km cells
+const GEOHASH_BASE32 = '0123456789bcdefghjkmnpqrstuvwxyz';
+function encodeGeohash(lat, lng, precision = 6) {
+  let idx = 0, bit = 0, evenBit = true, geohash = '';
+  let latMin = -90, latMax = 90, lngMin = -180, lngMax = 180;
+  while (geohash.length < precision) {
+    if (evenBit) {
+      const mid = (lngMin + lngMax) / 2;
+      if (lng >= mid) { idx = idx * 2 + 1; lngMin = mid; } else { idx = idx * 2; lngMax = mid; }
+    } else {
+      const mid = (latMin + latMax) / 2;
+      if (lat >= mid) { idx = idx * 2 + 1; latMin = mid; } else { idx = idx * 2; latMax = mid; }
+    }
+    evenBit = !evenBit;
+    if (++bit === 5) { geohash += GEOHASH_BASE32[idx]; bit = 0; idx = 0; }
+  }
+  return geohash;
+}
+
+// ─── Neighbor cells (3x3 grid around center) ───
+// Simple approach: thoda precision kam karke wider area cover
+function getNearbyCells(lat, lng) {
+  // Center cell + approximate neighbors by shifting lat/lng
+  const cells = new Set();
+  const delta = 0.011; // ~1.2km in degrees
+  for (let dLat = -1; dLat <= 1; dLat++) {
+    for (let dLng = -1; dLng <= 1; dLng++) {
+      cells.add(encodeGeohash(lat + dLat * delta, lng + dLng * delta, 6));
+    }
+  }
+  return Array.from(cells);
+}
+
+// ─── Haversine distance (km) ───
+function haversineKm(lat1, lon1, lat2, lon2) {
+  const R = 6371;
+  const dLat = (lat2 - lat1) * Math.PI / 180;
+  const dLon = (lon2 - lon1) * Math.PI / 180;
+  const a = Math.sin(dLat/2)**2 + Math.cos(lat1*Math.PI/180)*Math.cos(lat2*Math.PI/180)*Math.sin(dLon/2)**2;
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+}
+
+// ─── DRIVER SCORE (multi-factor) ───
+function calculateDriverScore(driver, distanceKm) {
+  // Distance: 0km=1.0, 5km=0.0
+  const distScore = Math.max(0, 1 - distanceKm / 5);
+  // Rating: 5star=1.0, 1star=0.2
+  const ratingScore = (parseFloat(driver.rating) || 4) / 5;
+  // Acceptance: 100%=1.0
+  const accScore = (parseFloat(driver.acceptance_rate) || 100) / 100;
+  // Idle: zyada idle = zyada score (fairness). idle_mins capped at 30
+  const idleMins = driver.idle_since ? Math.min(30, (Date.now() - new Date(driver.idle_since).getTime()) / 60000) : 0;
+  const idleScore = idleMins / 30;
+
+  return (distScore * 0.40) + (ratingScore * 0.20) + (accScore * 0.20) + (idleScore * 0.20);
+}
 
 // ── Redis ───────────────────────────────────────
 const redis = createClient({ 
@@ -277,8 +340,9 @@ io.on('connection', (socket) => {
   });
 });
 
-// ── Driver Pending Ride ─────────────────────────
-app.get('/api/driver/pending-ride', async (req, res) => {
+
+// ── Driver Pending Ride (Smart Matching) ─────────
+app.get('/api/driver/pending-ride-OLD', async (req, res) => {
   const { phone } = req.query;
   try {
     // Driver ka vehicle type nikalo
@@ -293,7 +357,14 @@ app.get('/api/driver/pending-ride', async (req, res) => {
     }
     const vehicleType = driverResult.rows[0].vehicle_type;
 
-    // Vehicle type match karke unassigned ride dhundho
+    // Driver ki current location
+    const locResult = await db.query(
+      `SELECT lat, lng FROM driver_locations WHERE phone = $1`,
+      [phone]
+    );
+    const driverLoc = locResult.rows[0];
+
+    // Saari matching unassigned rides
     const result = await db.query(
       `SELECT r.*, 
               p.name AS passenger_name,
@@ -303,16 +374,41 @@ app.get('/api/driver/pending-ride', async (req, res) => {
        WHERE r.status = 'requested'
        AND r.driver_id IS NULL
        AND r.ride_type = $1
-       ORDER BY r.created_at ASC
-       LIMIT 1`,
+       ORDER BY r.created_at ASC`,
       [vehicleType]
     );
 
-    if (result.rows.length > 0) {
-      res.json({ ride: result.rows[0] });
-    } else {
-      res.json({ ride: null });
+    if (result.rows.length === 0) {
+      return res.json({ ride: null });
     }
+
+    // Agar driver location hai, nearest ride dhundho (within 5km)
+    if (driverLoc && driverLoc.lat) {
+      const haversine = (lat1, lon1, lat2, lon2) => {
+        const R = 6371;
+        const dLat = (lat2 - lat1) * Math.PI / 180;
+        const dLon = (lon2 - lon1) * Math.PI / 180;
+        const a = Math.sin(dLat/2)**2 + Math.cos(lat1*Math.PI/180)*Math.cos(lat2*Math.PI/180)*Math.sin(dLon/2)**2;
+        return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+      };
+
+      let nearest = null;
+      let minDist = Infinity;
+      for (const ride of result.rows) {
+        if (ride.pickup_lat && ride.pickup_lng) {
+          const dist = haversine(parseFloat(driverLoc.lat), parseFloat(driverLoc.lng), parseFloat(ride.pickup_lat), parseFloat(ride.pickup_lng));
+          if (dist < minDist) { minDist = dist; nearest = ride; }
+        }
+      }
+      // Nearest ride within 5km, warna oldest
+      if (nearest && minDist <= 5) {
+        nearest.distance_to_pickup = minDist.toFixed(1) + ' km';
+        return res.json({ ride: nearest });
+      }
+    }
+
+    // Fallback — oldest ride (agar location nahi ya koi coords nahi)
+    res.json({ ride: result.rows[0] });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -544,13 +640,17 @@ app.get('/api/driver/history', async (req, res) => {
 const driverLocations = {};
 
 // ── Driver: apni location update kare ───────────────
-app.post('/api/driver/update-location', async (req, res) => {
+app.post('/api/driver/update-location-OLD', async (req, res) => {
   const { phone, lat, lng } = req.body;
   try {
-    driverLocations[phone] = {
-      lat, lng,
-      updated: Date.now()
-    };
+    driverLocations[phone] = { lat, lng, updated: Date.now() };
+    // DB mein bhi save karo (matching ke liye)
+    await db.query(
+      `INSERT INTO driver_locations (phone, lat, lng, updated_at)
+       VALUES ($1, $2, $3, NOW())
+       ON CONFLICT (phone) DO UPDATE SET lat = $2, lng = $3, updated_at = NOW()`,
+      [phone, lat, lng]
+    );
     res.json({ success: true });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -558,7 +658,7 @@ app.post('/api/driver/update-location', async (req, res) => {
 });
 
 // ── Customer: driver ki live location le ────────────
-app.get('/api/rides/driver-location/:rideId', async (req, res) => {
+app.get('/api/rides/driver-location-OLD/:rideId', async (req, res) => {
   try {
     // Ride se driver ka phone nikalo
     const result = await db.query(
@@ -1435,6 +1535,276 @@ app.post('/api/admin/set-target', async (req, res) => {
     await db.query('INSERT INTO driver_targets (rides_target, bonus_amount, active) VALUES ($1,$2,true)', [rides_target, bonus_amount]);
     res.json({ success: true });
   } catch (err) { res.status(500).json({ error: err.message }); }
+});
+// ══════════════════════════════════════════════════
+//  CANCELLATION SYSTEM APIs — server.listen se PEHLE paste karo
+//  (Purane /api/rides/cancel ko isse REPLACE karo agar hai)
+// ══════════════════════════════════════════════════
+
+// ── Smart Cancellation (customer ya driver) ──────
+app.post('/api/rides/cancel-smart', async (req, res) => {
+  const { ride_id, cancelled_by, reason, phone } = req.body;
+  try {
+    // Ride details lo
+    const rideRes = await db.query(
+      `SELECT *, EXTRACT(EPOCH FROM (NOW() - created_at)) AS seconds_since_book FROM rides WHERE id = $1`,
+      [ride_id]
+    );
+    if (rideRes.rows.length === 0) return res.json({ success: false, message: 'Ride nahi mili' });
+    const ride = rideRes.rows[0];
+    const secondsAfterBook = Math.round(ride.seconds_since_book || 0);
+
+    let penalty = 0;
+    let message = 'Ride cancel ho gayi';
+
+    // ─── CUSTOMER CANCEL ───
+    if (cancelled_by === 'customer') {
+      // Daily cancel count
+      const today = new Date().toISOString().split('T')[0];
+      let cm = await db.query('SELECT * FROM customer_metrics WHERE phone = $1', [phone]);
+      if (cm.rows.length === 0) {
+        await db.query('INSERT INTO customer_metrics (phone) VALUES ($1)', [phone]);
+        cm = await db.query('SELECT * FROM customer_metrics WHERE phone = $1', [phone]);
+      }
+      let metrics = cm.rows[0];
+      let cancelsToday = metrics.last_cancel_date && metrics.last_cancel_date.toISOString().split('T')[0] === today ? metrics.cancels_today : 0;
+
+      // Penalty rules
+      if (secondsAfterBook <= 60) {
+        penalty = 0; message = 'Free cancellation (1 min ke andar)';
+      } else if (ride.driver_id) {
+        // Driver assign ho gaya tha
+        if (cancelsToday >= 3) { penalty = 20; message = 'Cancel fee ₹20 (aaj 3 se zyada cancel)'; }
+        else { penalty = ride.status === 'arrived' ? 30 : 15; message = `Cancel fee ₹${penalty}`; }
+      }
+
+      // Update customer metrics
+      const newTrust = Math.max(0, (metrics.trust_score || 100) - (penalty > 0 ? 5 : 2));
+      await db.query(
+        `UPDATE customer_metrics SET total_cancels = total_cancels + 1, cancels_today = $1, last_cancel_date = $2, trust_score = $3, is_flagged = $4 WHERE phone = $5`,
+        [cancelsToday + 1, today, newTrust, newTrust < 50, phone]
+      );
+    }
+
+    // ─── DRIVER CANCEL ───
+    if (cancelled_by === 'driver') {
+      const today = new Date().toISOString().split('T')[0];
+      let dm = await db.query('SELECT * FROM driver_metrics WHERE phone = $1', [phone]);
+      if (dm.rows.length === 0) {
+        await db.query('INSERT INTO driver_metrics (phone) VALUES ($1)', [phone]);
+        dm = await db.query('SELECT * FROM driver_metrics WHERE phone = $1', [phone]);
+      }
+      let metrics = dm.rows[0];
+      let cancelsToday = metrics.last_cancel_date && metrics.last_cancel_date.toISOString().split('T')[0] === today ? metrics.cancels_today : 0;
+      cancelsToday += 1;
+
+      const totalCancelled = (metrics.rides_cancelled || 0) + 1;
+      const totalAccepted = metrics.rides_accepted || 1;
+      const cancelRate = (totalCancelled / (totalAccepted + totalCancelled)) * 100;
+
+      let suspendedUntil = null;
+      if (cancelRate > 25 || cancelsToday >= 5) {
+        suspendedUntil = new Date(Date.now() + 2 * 60 * 60 * 1000); // 2 hours
+        message = '⚠️ Bahut zyada cancel! 2 ghante suspend.';
+      } else if (cancelRate > 15) {
+        message = '⚠️ Warning: Cancel rate zyada hai, kam rides milengi';
+      }
+
+      await db.query(
+        `UPDATE driver_metrics SET rides_cancelled = $1, cancels_today = $2, last_cancel_date = $3, cancellation_rate = $4, suspended_until = $5 WHERE phone = $6`,
+        [totalCancelled, cancelsToday, today, cancelRate.toFixed(2), suspendedUntil, phone]
+      );
+    }
+
+    // Ride cancel karo
+    await db.query(`UPDATE rides SET status = 'cancelled' WHERE id = $1`, [ride_id]);
+
+    // Log cancellation
+    await db.query(
+      `INSERT INTO cancellations (ride_id, cancelled_by, reason, seconds_after_book, penalty_applied) VALUES ($1, $2, $3, $4, $5)`,
+      [ride_id, cancelled_by, reason || '', secondsAfterBook, penalty]
+    );
+
+    res.json({ success: true, penalty, message });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── Driver suspension check (login/online ke time) ──
+app.get('/api/driver/check-suspension', async (req, res) => {
+  const { phone } = req.query;
+  try {
+    const dm = await db.query('SELECT suspended_until, cancellation_rate, acceptance_rate FROM driver_metrics WHERE phone = $1', [phone]);
+    if (dm.rows.length === 0) return res.json({ suspended: false });
+    const m = dm.rows[0];
+    if (m.suspended_until && new Date(m.suspended_until) > new Date()) {
+      const minsLeft = Math.ceil((new Date(m.suspended_until) - new Date()) / 60000);
+      return res.json({ suspended: true, minutes_left: minsLeft, message: `${minsLeft} min baad online ho sakte ho` });
+    }
+    res.json({ suspended: false, cancellation_rate: m.cancellation_rate, acceptance_rate: m.acceptance_rate });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── Customer cancel check (booking se pehle) ─────
+app.get('/api/customer/cancel-status', async (req, res) => {
+  const { phone } = req.query;
+  try {
+    const cm = await db.query('SELECT * FROM customer_metrics WHERE phone = $1', [phone]);
+    if (cm.rows.length === 0) return res.json({ free_cancels_left: 3, trust_score: 100, flagged: false });
+    const m = cm.rows[0];
+    const today = new Date().toISOString().split('T')[0];
+    const cancelsToday = m.last_cancel_date && m.last_cancel_date.toISOString().split('T')[0] === today ? m.cancels_today : 0;
+    res.json({ free_cancels_left: Math.max(0, 3 - cancelsToday), trust_score: m.trust_score, flagged: m.is_flagged });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── Track ride offered/accepted (matching metrics) ──
+app.post('/api/driver/track-metric', async (req, res) => {
+  const { phone, action } = req.body; // action: 'offered' | 'accepted'
+  try {
+    let dm = await db.query('SELECT * FROM driver_metrics WHERE phone = $1', [phone]);
+    if (dm.rows.length === 0) await db.query('INSERT INTO driver_metrics (phone) VALUES ($1)', [phone]);
+    if (action === 'offered') await db.query('UPDATE driver_metrics SET rides_offered = rides_offered + 1 WHERE phone = $1', [phone]);
+    if (action === 'accepted') {
+      await db.query('UPDATE driver_metrics SET rides_accepted = rides_accepted + 1, idle_since = NOW() WHERE phone = $1', [phone]);
+      // Recalc acceptance rate
+      const m = (await db.query('SELECT rides_offered, rides_accepted FROM driver_metrics WHERE phone = $1', [phone])).rows[0];
+      if (m && m.rides_offered > 0) {
+        const accRate = (m.rides_accepted / m.rides_offered) * 100;
+        await db.query('UPDATE driver_metrics SET acceptance_rate = $1 WHERE phone = $2', [Math.min(100, accRate).toFixed(2), phone]);
+      }
+    }
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── Admin: cancellation analytics ────────────────
+app.get('/api/admin/cancellation-stats', async (req, res) => {
+  try {
+    const byType = await db.query(`SELECT cancelled_by, COUNT(*) AS count FROM cancellations GROUP BY cancelled_by`);
+    const topReasons = await db.query(`SELECT reason, COUNT(*) AS count FROM cancellations WHERE reason != '' GROUP BY reason ORDER BY count DESC LIMIT 5`);
+    const flaggedCustomers = await db.query(`SELECT phone, total_cancels, trust_score FROM customer_metrics WHERE is_flagged = true ORDER BY total_cancels DESC LIMIT 10`);
+    const highCancelDrivers = await db.query(`SELECT phone, rides_cancelled, cancellation_rate FROM driver_metrics WHERE cancellation_rate > 15 ORDER BY cancellation_rate DESC LIMIT 10`);
+    res.json({ by_type: byType.rows, top_reasons: topReasons.rows, flagged_customers: flaggedCustomers.rows, high_cancel_drivers: highCancelDrivers.rows });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+// ══════════════════════════════════════════════════
+//  UPDATED MATCHING APIs
+//  Purane update-location aur pending-ride ko REPLACE karo
+// ══════════════════════════════════════════════════
+
+// ─── Driver location update (with geocell) ───
+app.post('/api/driver/update-location', async (req, res) => {
+  const { phone, lat, lng } = req.body;
+  try {
+    driverLocations[phone] = { lat, lng, updated: Date.now() };
+    const geocell = encodeGeohash(parseFloat(lat), parseFloat(lng), 6);
+    await db.query(
+      `INSERT INTO driver_locations (phone, lat, lng, geocell, updated_at)
+       VALUES ($1, $2, $3, $4, NOW())
+       ON CONFLICT (phone) DO UPDATE SET lat = $2, lng = $3, geocell = $4, updated_at = NOW()`,
+      [phone, lat, lng, geocell]
+    );
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ─── Smart pending-ride (geohash + scoring + fairness) ───
+app.get('/api/driver/pending-ride', async (req, res) => {
+  const { phone } = req.query;
+  try {
+    // Suspension check
+    const susp = await db.query('SELECT suspended_until FROM driver_metrics WHERE phone = $1', [phone]);
+    if (susp.rows[0]?.suspended_until && new Date(susp.rows[0].suspended_until) > new Date()) {
+      return res.json({ ride: null, suspended: true });
+    }
+
+    // Driver vehicle type + metrics
+    const driverResult = await db.query(
+      `SELECT d.vehicle_type, d.rating FROM drivers d JOIN users u ON d.id = u.id WHERE u.phone = $1`,
+      [phone]
+    );
+    if (driverResult.rows.length === 0) return res.json({ ride: null });
+    const vehicleType = driverResult.rows[0].vehicle_type;
+    const driverRating = driverResult.rows[0].rating;
+
+    // Driver metrics
+    const dm = await db.query('SELECT * FROM driver_metrics WHERE phone = $1', [phone]);
+    const metrics = dm.rows[0] || { acceptance_rate: 100, idle_since: new Date() };
+
+    // Driver location + geocell
+    const locRes = await db.query('SELECT lat, lng, geocell FROM driver_locations WHERE phone = $1', [phone]);
+    const driverLoc = locRes.rows[0];
+
+    // Matching unassigned rides
+    const ridesRes = await db.query(
+      `SELECT r.*, p.name AS passenger_name, p.phone AS passenger_phone
+       FROM rides r JOIN users p ON r.passenger_id = p.id
+       WHERE r.status = 'requested' AND r.driver_id IS NULL AND r.ride_type = $1
+       ORDER BY r.created_at ASC`,
+      [vehicleType]
+    );
+    if (ridesRes.rows.length === 0) return res.json({ ride: null });
+
+    // Agar location nahi → oldest ride
+    if (!driverLoc || !driverLoc.lat) return res.json({ ride: ridesRes.rows[0] });
+
+    // Nearby cells of driver
+    const nearbyCells = getNearbyCells(parseFloat(driverLoc.lat), parseFloat(driverLoc.lng));
+
+    // Best ride pick karo — nearest within range
+    let bestRide = null, minDist = Infinity;
+    for (const ride of ridesRes.rows) {
+      if (ride.pickup_lat && ride.pickup_lng) {
+        const dist = haversineKm(parseFloat(driverLoc.lat), parseFloat(driverLoc.lng), parseFloat(ride.pickup_lat), parseFloat(ride.pickup_lng));
+        if (dist < minDist && dist <= 5) { minDist = dist; bestRide = ride; }
+      }
+    }
+
+    if (bestRide) {
+      bestRide.distance_to_pickup = minDist.toFixed(1) + ' km';
+      // Track offered
+      await db.query(`INSERT INTO driver_metrics (phone, rides_offered) VALUES ($1, 1) ON CONFLICT (phone) DO UPDATE SET rides_offered = driver_metrics.rides_offered + 1`, [phone]);
+      return res.json({ ride: bestRide });
+    }
+
+    // Koi nearby nahi → oldest fallback
+    res.json({ ride: ridesRes.rows[0] });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ─── Driver location for customer (DB based now) ───
+app.get('/api/rides/driver-location/:rideId', async (req, res) => {
+  try {
+    const result = await db.query(
+      `SELECT u.phone FROM rides r JOIN users u ON r.driver_id = u.id WHERE r.id = $1`,
+      [req.params.rideId]
+    );
+    if (result.rows.length === 0) return res.json({ location: null });
+    const driverPhone = result.rows[0].phone;
+    // Memory first (fast), DB fallback
+    let loc = driverLocations[driverPhone];
+    if (!loc) {
+      const dbLoc = await db.query('SELECT lat, lng, updated_at FROM driver_locations WHERE phone = $1', [driverPhone]);
+      if (dbLoc.rows[0]) loc = { lat: parseFloat(dbLoc.rows[0].lat), lng: parseFloat(dbLoc.rows[0].lng), updated: new Date(dbLoc.rows[0].updated_at).getTime() };
+    }
+    res.json({ location: loc || null });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 // ── Start Server ────────────────────────────────
 server.listen(process.env.PORT, '0.0.0.0', () => {
