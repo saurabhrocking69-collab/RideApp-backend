@@ -1806,6 +1806,28 @@ app.get('/api/rides/driver-location/:rideId', async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
+// ── Fare Estimate (booking se pehle) ─────────────
+app.post('/api/fare-estimate', async (req, res) => {
+  const { ride_type, distance } = req.body;
+  try {
+    const fareRes = await db.query('SELECT * FROM fare_settings WHERE vehicle_type = $1', [ride_type]);
+    const f = fareRes.rows[0] || { base_fare: 25, per_km_rate: 12, night_multiplier: 1.5, night_start: '22:00', night_end: '06:00' };
+    const dist = parseFloat(distance) || 3;
+
+    const now = new Date();
+    const hour = now.getHours();
+    const nightStart = parseInt(String(f.night_start).split(':')[0]);
+    const nightEnd = parseInt(String(f.night_end).split(':')[0]);
+    const isNight = hour >= nightStart || hour < nightEnd;
+
+    let fare = Math.round(parseFloat(f.base_fare) + (dist * parseFloat(f.per_km_rate)));
+    if (isNight) fare = Math.round(fare * parseFloat(f.night_multiplier));
+
+    res.json({ fare, is_night: isNight, base: parseFloat(f.base_fare), per_km: parseFloat(f.per_km_rate) });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
 // ── Start Server ────────────────────────────────
 server.listen(process.env.PORT, '0.0.0.0', () => {
   console.log('🚀 Server running on port ' + process.env.PORT);
