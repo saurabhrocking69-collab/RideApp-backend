@@ -1574,8 +1574,8 @@ app.post('/api/rides/cancel-smart', async (req, res) => {
         penalty = 0; message = 'Free cancellation (1 min ke andar)';
       } else if (ride.driver_id) {
         // Driver assign ho gaya tha
-        if (cancelsToday >= 3) { penalty = 20; message = 'Cancel fee ₹20 (aaj 3 se zyada cancel)'; }
-        else { penalty = ride.status === 'arrived' ? 30 : 15; message = `Cancel fee ₹${penalty}`; }
+        if (cancelsToday >= 3) { penalty = 10; message = 'Cancel fee ₹10 (aaj 3 se zyada cancel)'; }
+        else { penalty = ride.status === 'arrived' ? 15 : 10; message = `Cancel fee ₹${penalty}`; }
       }
 
       // Update customer metrics
