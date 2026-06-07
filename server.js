@@ -467,10 +467,14 @@ app.get('/api/driver/active-ride', async (req, res) => {
   const { phone } = req.query;
   try {
     const result = await db.query(
-      `SELECT r.*, p.name AS passenger_name, p.phone AS passenger_phone
+      `SELECT r.*, 
+              p.name AS passenger_name, 
+              p.phone AS passenger_phone,
+              d2.vehicle_no
        FROM rides r
        JOIN users d ON r.driver_id = d.id
-       LEFT JOIN users p ON r.passenger_id = p.id
+       LEFT JOIN users p ON r.passenger_id::text = p.id::text
+       LEFT JOIN drivers d2 ON r.driver_id = d2.id
        WHERE d.phone = $1
          AND r.status IN ('matched','arrived','started')
        ORDER BY r.created_at DESC LIMIT 1`,
