@@ -286,7 +286,7 @@ app.post('/api/rides/book', async (req, res) => {
 });
 
 // ── Ride Complete ───────────────────────────────
-app.post('/api/rides/complete', async (req, res) => {
+app.post('/api/rides/complete-OLD', async (req, res) => {
   const { ride_id, payment_method } = req.body;
   try {
     const ride = await db.query('SELECT * FROM rides WHERE id = $1', [ride_id]);
@@ -1839,6 +1839,120 @@ app.post('/api/fare-estimate', async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
+
+// ══════════════════════════════════════════════════
+//  PAYMENT FLOW APIs
+// ══════════════════════════════════════════════════
+
+// ── Driver: Trip complete (payment pending) ───────
+app.post('/api/rides/complete', async (req, res) => {
+  const { ride_id } = req.body;
+  try {
+    await db.query(
+      `UPDATE rides SET status = 'completed', payment_status = 'pending' WHERE id = $1`,
+      [ride_id]
+    );
+    res.json({ success: true, message: 'Trip complete! Payment ka intezaar karo.' });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── Customer: Payment karo ────────────────────────
+app.post('/api/rides/payment-complete', async (req, res) => {
+  const { ride_id, payment_method, phone } = req.body;
+  try {
+    const rideRes = await db.query('SELECT * FROM rides WHERE id = $1', [ride_id]);
+    if (rideRes.rows.length === 0) return res.json({ success: false, message: 'Ride nahi mili' });
+    const ride = rideRes.rows[0];
+    const fare = parseFloat(ride.fare);
+    const commission = Math.round(fare * 0.15 * 100) / 100;
+
+    // Payment method ke hisaab se
+    if (payment_method === 'cash') {
+      // Cash — driver confirm karega
+      await db.query(
+        `UPDATE rides SET payment_method = 'cash', payment_status = 'cash_pending' WHERE id = $1`,
+        [ride_id]
+      );
+      // Commission pending mein add
+      await db.query(
+        `INSERT INTO driver_commissions (driver_phone, ride_id, fare, commission, payment_method, status)
+         SELECT u.phone, $1, $2, $3, 'cash', 'pending'
+         FROM rides r JOIN users u ON r.driver_id = u.id WHERE r.id = $1`,
+        [ride_id, fare, commission]
+      );
+      return res.json({ success: true, status: 'cash_pending', message: 'Driver ko cash do!' });
+    }
+
+    // Wallet/Online — auto complete
+    await db.query(
+      `UPDATE rides SET payment_method = $1, payment_status = 'completed', commission_amount = $2, commission_status = 'collected' WHERE id = $3`,
+      [payment_method, commission, ride_id]
+    );
+    // Commission record
+    await db.query(
+      `INSERT INTO driver_commissions (driver_phone, ride_id, fare, commission, payment_method, status)
+       SELECT u.phone, $1, $2, $3, $4, 'collected'
+       FROM rides r JOIN users u ON r.driver_id = u.id WHERE r.id = $1`,
+      [ride_id, fare, commission, payment_method]
+    );
+    res.json({ success: true, status: 'completed', message: 'Payment complete!' });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── Driver: Cash payment confirm ──────────────────
+app.post('/api/rides/cash-confirm', async (req, res) => {
+  const { ride_id, phone } = req.body;
+  try {
+    const rideRes = await db.query('SELECT * FROM rides WHERE id = $1', [ride_id]);
+    const fare = parseFloat(rideRes.rows[0].fare);
+    const commission = Math.round(fare * 0.15 * 100) / 100;
+    await db.query(
+      `UPDATE rides SET payment_status = 'completed', commission_amount = $1 WHERE id = $2`,
+      [commission, ride_id]
+    );
+    await db.query(
+      `UPDATE driver_commissions SET status = 'collected' WHERE ride_id = $1`,
+      [ride_id]
+    );
+    res.json({ success: true, message: 'Cash payment confirmed!' });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── Payment status check (driver polling) ─────────
+app.get('/api/rides/payment-status/:rideId', async (req, res) => {
+  try {
+    const result = await db.query(
+      `SELECT payment_status, payment_method, fare FROM rides WHERE id = $1`,
+      [req.params.rideId]
+    );
+    if (result.rows.length === 0) return res.json({ status: 'not_found' });
+    res.json(result.rows[0]);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── Admin: Commission stats ────────────────────────
+app.get('/api/admin/commissions', async (req, res) => {
+  try {
+    const total = await db.query(`SELECT SUM(commission) as total, COUNT(*) as count FROM driver_commissions WHERE status = 'collected'`);
+    const pending = await db.query(`SELECT SUM(commission) as total, COUNT(*) as count FROM driver_commissions WHERE status = 'pending'`);
+    const byMethod = await db.query(`SELECT payment_method, SUM(commission) as total, COUNT(*) as count FROM driver_commissions GROUP BY payment_method`);
+    const recent = await db.query(`SELECT * FROM driver_commissions ORDER BY created_at DESC LIMIT 10`);
+    res.json({ collected: total.rows[0], pending: pending.rows[0], by_method: byMethod.rows, recent: recent.rows });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+
+
 // ── Start Server ────────────────────────────────
 server.listen(process.env.PORT, '0.0.0.0', () => {
   console.log('🚀 Server running on port ' + process.env.PORT);
