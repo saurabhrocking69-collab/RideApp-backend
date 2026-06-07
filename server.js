@@ -187,10 +187,17 @@ app.post('/api/auth/verify-otp', async (req, res) => {
 
   let user = await db.query('SELECT * FROM users WHERE phone = $1', [phone]);
   if (user.rows.length === 0) {
+    // Naya user — register karo
     user = await db.query(
       "INSERT INTO users (phone, name, role) VALUES ($1, $2, 'passenger') RETURNING *",
       [phone, name || 'User']
     );
+  } else {
+    // Pehle se registered — naam update karo agar naya naam diya
+    if (name && name.trim() !== '' && name !== 'Rider') {
+      await db.query('UPDATE users SET name = $1 WHERE phone = $2', [name.trim(), phone]);
+      user.rows[0].name = name.trim();
+    }
   }
   await redis.del('otp:' + phone);
   const token = jwt.sign(
