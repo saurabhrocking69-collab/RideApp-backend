@@ -194,19 +194,18 @@ app.post('/api/auth/send-otp', async (req, res) => {
   await redis.setEx('otp:sent:' + phone, 60, '1');    // 60 sec resend block
   await redis.del('otp:attempts:' + phone);            // Reset attempts
 
-  // Fast2SMS se real OTP bhejo
+  // 2Factor se real OTP bhejo
   try {
-    const smsRes = await fetch(`https://www.fast2sms.com/dev/bulkV2?authorization=${process.env.FAST2SMS_KEY}&route=otp&variables_values=${otp}&flash=0&numbers=${phone}`);
+    const smsRes = await fetch(`https://2factor.in/API/V1/${process.env.TWOFACTOR_KEY}/SMS/${phone}/${otp}/OTP1`);
     const smsData = await smsRes.json();
-    console.log('📱 Fast2SMS response:', smsData);
+    console.log('📱 2Factor response:', smsData);
 
-    if (smsData.return === true) {
-      // Production — OTP mat bhejo response mein
+    if (smsData.Status === 'Success') {
+      console.log('✅ OTP sent to', phone);
       res.json({ message: 'OTP bheja gaya', success: true });
     } else {
-      // SMS fail — fallback test OTP
       console.log('⚠️ SMS fail, test OTP:', otp);
-      res.json({ message: 'OTP bheja gaya', success: true, otp }); // Remove in production
+      res.json({ message: 'OTP bheja gaya', success: true, otp }); // Fallback
     }
   } catch (err) {
     console.log('SMS error:', err.message, '| Test OTP:', otp);
