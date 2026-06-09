@@ -1609,14 +1609,17 @@ app.post('/api/admin/set-target', async (req, res) => {
 //  CANCELLATION SYSTEM APIs — server.listen se PEHLE paste karo
 //  (Purane /api/rides/cancel ko isse REPLACE karo agar hai)
 // ══════════════════════════════════════════════════
-
 // ── Smart Cancellation (customer ya driver) ──────
 app.post('/api/rides/cancel-smart', async (req, res) => {
   const { ride_id, cancelled_by, reason, phone } = req.body;
   try {
-    // Ride details lo
     const rideRes = await db.query(
-      `SELECT *, EXTRACT(EPOCH FROM (NOW() - created_at)) AS seconds_since_book FROM rides WHERE id = $1`,
+      `SELECT r.*, EXTRACT(EPOCH FROM (NOW() - r.created_at)) AS seconds_since_book,
+              p.phone AS passenger_phone, u.phone AS driver_phone
+       FROM rides r
+       LEFT JOIN users p ON r.passenger_id = p.id
+       LEFT JOIN users u ON r.driver_id = u.id
+       WHERE r.id = $1`,
       [ride_id]
     );
     if (rideRes.rows.length === 0) return res.json({ success: false, message: 'Ride nahi mili' });
@@ -1628,7 +1631,6 @@ app.post('/api/rides/cancel-smart', async (req, res) => {
 
     // ─── CUSTOMER CANCEL ───
     if (cancelled_by === 'customer') {
-      // Daily cancel count
       const today = new Date().toISOString().split('T')[0];
       let cm = await db.query('SELECT * FROM customer_metrics WHERE phone = $1', [phone]);
       if (cm.rows.length === 0) {
@@ -1638,21 +1640,28 @@ app.post('/api/rides/cancel-smart', async (req, res) => {
       let metrics = cm.rows[0];
       let cancelsToday = metrics.last_cancel_date && metrics.last_cancel_date.toISOString().split('T')[0] === today ? metrics.cancels_today : 0;
 
-      // Penalty rules
       if (secondsAfterBook <= 60) {
         penalty = 0; message = 'Free cancellation (1 min ke andar)';
       } else if (ride.driver_id) {
-        // Driver assign ho gaya tha
         if (cancelsToday >= 3) { penalty = 10; message = 'Cancel fee ₹10 (aaj 3 se zyada cancel)'; }
         else { penalty = ride.status === 'arrived' ? 15 : 10; message = `Cancel fee ₹${penalty}`; }
       }
 
-      // Update customer metrics
       const newTrust = Math.max(0, (metrics.trust_score || 100) - (penalty > 0 ? 5 : 2));
       await db.query(
         `UPDATE customer_metrics SET total_cancels = total_cancels + 1, cancels_today = $1, last_cancel_date = $2, trust_score = $3, is_flagged = $4 WHERE phone = $5`,
         [cancelsToday + 1, today, newTrust, newTrust < 50, phone]
       );
+
+      // Driver ko notification — ride cancel ho gayi
+      if (ride.driver_phone) {
+        try {
+          await db.query(
+            `INSERT INTO notifications (user_phone, title, body, created_at) VALUES ($1, $2, $3, NOW())`,
+            [ride.driver_phone, '🚫 Ride Cancel', `Customer ne ride cancel kar di. Reason: ${reason || 'N/A'}`]
+          );
+        } catch (_e) {}
+      }
     }
 
     // ─── DRIVER CANCEL ───
@@ -1673,7 +1682,7 @@ app.post('/api/rides/cancel-smart', async (req, res) => {
 
       let suspendedUntil = null;
       if (cancelRate > 25 || cancelsToday >= 5) {
-        suspendedUntil = new Date(Date.now() + 2 * 60 * 60 * 1000); // 2 hours
+        suspendedUntil = new Date(Date.now() + 2 * 60 * 60 * 1000);
         message = '⚠️ Bahut zyada cancel! 2 ghante suspend.';
       } else if (cancelRate > 15) {
         message = '⚠️ Warning: Cancel rate zyada hai, kam rides milengi';
@@ -1683,6 +1692,16 @@ app.post('/api/rides/cancel-smart', async (req, res) => {
         `UPDATE driver_metrics SET rides_cancelled = $1, cancels_today = $2, last_cancel_date = $3, cancellation_rate = $4, suspended_until = $5 WHERE phone = $6`,
         [totalCancelled, cancelsToday, today, cancelRate.toFixed(2), suspendedUntil, phone]
       );
+
+      // Customer ko notification — driver ne cancel kiya
+      if (ride.passenger_phone) {
+        try {
+          await db.query(
+            `INSERT INTO notifications (user_phone, title, body, created_at) VALUES ($1, $2, $3, NOW())`,
+            [ride.passenger_phone, '🚫 Driver ne Cancel Kiya', `Driver ne aapki ride cancel kar di. Reason: ${reason || 'N/A'}. Naya driver dhundh rahe hain...`]
+          );
+        } catch (_e) {}
+      }
     }
 
     // Ride cancel karo
