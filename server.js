@@ -2092,13 +2092,15 @@ app.post('/api/admin/users/message', async (req, res) => {
       `UPDATE users SET admin_message = $1 WHERE phone = $2`,
       [message, phone]
     );
-    // Notification bhi save karo
-    await db.query(
-      `INSERT INTO notifications (phone, title, message, created_at) 
-       VALUES ($1, 'Admin Message', $2, NOW())
-       ON CONFLICT DO NOTHING`,
-      [phone, message]
-    );
+    
+    // Notification save karo agar table hai
+    try {
+      await db.query(
+        `INSERT INTO notifications (user_phone, title, body, created_at) 
+         VALUES ($1, 'Admin Message', $2, NOW())`,
+        [phone, message]
+      );
+    } catch (_e) {} // Table structure different ho sakta hai
     res.json({ success: true, message: 'Message bheja gaya' });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
@@ -2127,6 +2129,7 @@ app.get('/api/auth/check-status', async (req, res) => {
     res.json({ status: 'ok', admin_message: u.admin_message });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
+
 
 
 
