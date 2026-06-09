@@ -2009,6 +2009,125 @@ app.get('/api/admin/commissions', async (req, res) => {
   }
 });
 
+// ══════════════════════════════════════════════════
+//  USER MANAGEMENT APIs (Admin)
+// ══════════════════════════════════════════════════
+
+// ── All users list (admin) ────────────────────────
+app.get('/api/admin/users', async (req, res) => {
+  try {
+    const users = await db.query(`
+      SELECT u.*, 
+        COALESCE(r.total_rides, 0) as total_rides,
+        COALESCE(r.total_fare, 0) as total_fare,
+        cm.trust_score, cm.total_cancels, cm.is_flagged
+      FROM users u
+      LEFT JOIN (
+        SELECT passenger_id, COUNT(*) as total_rides, SUM(fare) as total_fare
+        FROM rides WHERE status = 'completed'
+        GROUP BY passenger_id
+      ) r ON u.id = r.passenger_id
+      LEFT JOIN customer_metrics cm ON u.phone = cm.phone
+      WHERE u.role = 'passenger'
+      ORDER BY u.created_at DESC
+    `);
+    res.json({ users: users.rows });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ── Suspend user ──────────────────────────────────
+app.post('/api/admin/users/suspend', async (req, res) => {
+  const { phone, hours, reason } = req.body;
+  try {
+    const suspendedUntil = hours ? new Date(Date.now() + hours * 60 * 60 * 1000) : null;
+    await db.query(
+      `UPDATE users SET is_suspended = true, suspended_until = $1, suspend_reason = $2 WHERE phone = $3`,
+      [suspendedUntil, reason || 'Admin action', phone]
+    );
+    res.json({ success: true, message: hours ? `${hours} ghante ke liye suspend kiya` : 'Suspend kiya' });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ── Unsuspend user ────────────────────────────────
+app.post('/api/admin/users/unsuspend', async (req, res) => {
+  const { phone } = req.body;
+  try {
+    await db.query(
+      `UPDATE users SET is_suspended = false, suspended_until = NULL, suspend_reason = NULL WHERE phone = $1`,
+      [phone]
+    );
+    res.json({ success: true, message: 'Unsuspend kiya' });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ── Block user ────────────────────────────────────
+app.post('/api/admin/users/block', async (req, res) => {
+  const { phone, reason } = req.body;
+  try {
+    await db.query(
+      `UPDATE users SET is_blocked = true, block_reason = $1 WHERE phone = $2`,
+      [reason || 'Admin action', phone]
+    );
+    res.json({ success: true, message: 'Block kiya' });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ── Unblock user ──────────────────────────────────
+app.post('/api/admin/users/unblock', async (req, res) => {
+  const { phone } = req.body;
+  try {
+    await db.query(
+      `UPDATE users SET is_blocked = false, block_reason = NULL WHERE phone = $1`,
+      [phone]
+    );
+    res.json({ success: true, message: 'Unblock kiya' });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ── Send message to user ──────────────────────────
+app.post('/api/admin/users/message', async (req, res) => {
+  const { phone, message } = req.body;
+  try {
+    await db.query(
+      `UPDATE users SET admin_message = $1 WHERE phone = $2`,
+      [message, phone]
+    );
+    // Notification bhi save karo
+    await db.query(
+      `INSERT INTO notifications (phone, title, message, created_at) 
+       VALUES ($1, 'Admin Message', $2, NOW())
+       ON CONFLICT DO NOTHING`,
+      [phone, message]
+    );
+    res.json({ success: true, message: 'Message bheja gaya' });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ── Check suspension (login ke time) ─────────────
+app.get('/api/auth/check-status', async (req, res) => {
+  const { phone } = req.query;
+  try {
+    const user = await db.query(
+      `SELECT is_suspended, suspended_until, suspend_reason, is_blocked, block_reason, admin_message FROM users WHERE phone = $1`,
+      [phone]
+    );
+    if (user.rows.length === 0) return res.json({ status: 'ok' });
+    const u = user.rows[0];
+
+    // Auto unsuspend check
+    if (u.is_suspended && u.suspended_until && new Date(u.suspended_until) < new Date()) {
+      await db.query(`UPDATE users SET is_suspended = false, suspended_until = NULL WHERE phone = $1`, [phone]);
+      return res.json({ status: 'ok' });
+    }
+    if (u.is_blocked) return res.json({ status: 'blocked', reason: u.block_reason });
+    if (u.is_suspended) {
+      const minsLeft = u.suspended_until ? Math.ceil((new Date(u.suspended_until) - new Date()) / 60000) : 0;
+      return res.json({ status: 'suspended', reason: u.suspend_reason, mins_left: minsLeft });
+    }
+    res.json({ status: 'ok', admin_message: u.admin_message });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
 
 
 // ── Start Server ────────────────────────────────
