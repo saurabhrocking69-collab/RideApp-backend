@@ -168,38 +168,96 @@ app.get('/test-db', async (req, res) => {
   res.json({ users_count: result.rows[0].count });
 });
 
-// ── OTP Send ────────────────────────────────────
+// ── OTP Send (Fast2SMS) ─────────────────────────
 app.post('/api/auth/send-otp', async (req, res) => {
   const { phone } = req.body;
-  if (!phone) return res.status(400).json({ error: 'Phone number do' });
+  if (!phone || phone.length !== 10) return res.status(400).json({ error: 'Sahi phone number do' });
+
+  // Block check (3 wrong attempts)
+  const blocked = await redis.get('otp:block:' + phone);
+  if (blocked) {
+    const ttl = await redis.ttl('otp:block:' + phone);
+    const mins = Math.ceil(ttl / 60);
+    return res.status(429).json({ error: `Bahut zyada attempts! ${mins} min baad try karo` });
+  }
+
+  // Resend throttle (60 sec)
+  const existing = await redis.get('otp:' + phone);
+  const recentSend = await redis.get('otp:sent:' + phone);
+  if (recentSend) {
+    const ttl = await redis.ttl('otp:sent:' + phone);
+    return res.status(429).json({ error: `${ttl} second baad resend karo` });
+  }
+
   const otp = Math.floor(100000 + Math.random() * 900000).toString();
-  await redis.setEx('otp:' + phone, 300, otp);
-  console.log('📱 OTP for ' + phone + ': ' + otp);
-  res.json({ message: 'OTP bheja gaya', otp });
+  await redis.setEx('otp:' + phone, 300, otp);        // 5 min expire
+  await redis.setEx('otp:sent:' + phone, 60, '1');    // 60 sec resend block
+  await redis.del('otp:attempts:' + phone);            // Reset attempts
+
+  // Fast2SMS se real OTP bhejo
+  try {
+    const smsRes = await fetch(`https://www.fast2sms.com/dev/bulkV2?authorization=${process.env.FAST2SMS_KEY}&route=otp&variables_values=${otp}&flash=0&numbers=${phone}`);
+    const smsData = await smsRes.json();
+    console.log('📱 Fast2SMS response:', smsData);
+
+    if (smsData.return === true) {
+      // Production — OTP mat bhejo response mein
+      res.json({ message: 'OTP bheja gaya', success: true });
+    } else {
+      // SMS fail — fallback test OTP
+      console.log('⚠️ SMS fail, test OTP:', otp);
+      res.json({ message: 'OTP bheja gaya', success: true, otp }); // Remove in production
+    }
+  } catch (err) {
+    console.log('SMS error:', err.message, '| Test OTP:', otp);
+    res.json({ message: 'OTP bheja gaya', success: true, otp }); // Fallback
+  }
 });
 
 // ── OTP Verify ──────────────────────────────────
 app.post('/api/auth/verify-otp', async (req, res) => {
   const { phone, otp, name } = req.body;
+
+  // Block check
+  const blocked = await redis.get('otp:block:' + phone);
+  if (blocked) {
+    const ttl = await redis.ttl('otp:block:' + phone);
+    return res.status(429).json({ error: `Account blocked! ${Math.ceil(ttl/60)} min baad try karo` });
+  }
+
   const savedOtp = await redis.get('otp:' + phone);
-  if (!savedOtp) return res.status(400).json({ error: 'OTP expire ho gaya' });
-  if (savedOtp !== otp) return res.status(400).json({ error: 'Wrong OTP' });
+  if (!savedOtp) return res.status(400).json({ error: 'OTP expire ho gaya! Dobara bhejwao' });
+
+  // Wrong OTP attempts track
+  if (savedOtp !== otp) {
+    const attempts = await redis.incr('otp:attempts:' + phone);
+    await redis.expire('otp:attempts:' + phone, 300);
+    if (attempts >= 3) {
+      await redis.setEx('otp:block:' + phone, 1800, '1'); // 30 min block
+      await redis.del('otp:' + phone);
+      return res.status(429).json({ error: '3 baar galat OTP! 30 min ke liye block ho gaya' });
+    }
+    return res.status(400).json({ error: `Galat OTP! ${3 - attempts} aur chances bache hain` });
+  }
+
+  // OTP sahi — cleanup
+  await redis.del('otp:' + phone);
+  await redis.del('otp:attempts:' + phone);
+  await redis.del('otp:sent:' + phone);
 
   let user = await db.query('SELECT * FROM users WHERE phone = $1', [phone]);
   if (user.rows.length === 0) {
-    // Naya user — register karo
     user = await db.query(
       "INSERT INTO users (phone, name, role) VALUES ($1, $2, 'passenger') RETURNING *",
       [phone, name || 'User']
     );
   } else {
-    // Pehle se registered — naam update karo agar naya naam diya
     if (name && name.trim() !== '' && name !== 'Rider') {
       await db.query('UPDATE users SET name = $1 WHERE phone = $2', [name.trim(), phone]);
       user.rows[0].name = name.trim();
     }
   }
-  await redis.del('otp:' + phone);
+
   const token = jwt.sign(
     { id: user.rows[0].id, phone },
     process.env.JWT_SECRET,
