@@ -2149,7 +2149,19 @@ app.get('/api/auth/check-status', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-
+// ── Latest notification for user ─────────────────
+app.get('/api/notifications/latest', async (req, res) => {
+  const { phone } = req.query;
+  try {
+    const result = await db.query(
+      `SELECT * FROM notifications WHERE user_phone = $1 ORDER BY created_at DESC LIMIT 1`,
+      [phone]
+    );
+    res.json({ notification: result.rows[0] || null });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
 
 
 // ── Start Server ────────────────────────────────
