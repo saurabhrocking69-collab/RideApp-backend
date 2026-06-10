@@ -6,27 +6,22 @@ const db = new Pool({
 
 async function debug() {
   try {
-    // Latest matched/arrived/started ride
-    const ride = await db.query(`
-      SELECT r.id, r.passenger_id, r.driver_id, r.status
-      FROM rides r
-      ORDER BY r.created_at DESC LIMIT 3
+    // Kitni stale rides hain?
+    const stale = await db.query(`
+      SELECT status, COUNT(*) as count
+      FROM rides
+      WHERE status IN ('requested', 'searching', 'matched', 'arrived', 'started')
+      GROUP BY status
     `);
-    console.log('=== LATEST RIDES ===');
-    ride.rows.forEach(r => console.log(r));
+    console.log('=== ACTIVE/STALE RIDES ===');
+    stale.rows.forEach(r => console.log(r.status, ':', r.count));
 
-    // Test JOIN directly
-    console.log('\n=== JOIN TEST ===');
-    const join = await db.query(`
-      SELECT r.id, r.status,
-             p.name AS passenger_name, p.phone AS passenger_phone,
-             d.name AS driver_name, d.phone AS driver_phone
-      FROM rides r
-      LEFT JOIN users p ON r.passenger_id = p.id
-      LEFT JOIN users d ON r.driver_id = d.id
-      ORDER BY r.created_at DESC LIMIT 3
+    // Sab stale rides cancel karo (cleanup)
+    const result = await db.query(`
+      UPDATE rides SET status = 'cancelled'
+      WHERE status IN ('requested', 'searching', 'matched', 'arrived', 'started')
     `);
-    join.rows.forEach(r => console.log(r));
+    console.log('\n✅ Cleaned:', result.rowCount, 'stale rides cancelled');
     db.end();
   } catch (e) {
     console.log('Error:', e.message);

@@ -497,6 +497,15 @@ app.post('/api/rides/accept', async (req, res) => {
       `UPDATE rides SET status = 'matched', start_otp = $1, driver_id = $2 WHERE id = $3`,
       [otp, driver.rows[0].id, ride_id]
     );
+    // Customer ko notification bhejo
+    const rideData = await db.query(
+      `SELECT u.phone as passenger_phone, u.fcm_token as passenger_token 
+       FROM rides r JOIN users u ON r.passenger_id = u.id WHERE r.id = $1`,
+      [ride_id]
+    );
+    if (rideData.rows[0]?.passenger_phone) {
+      sendFCM(rideData.rows[0].passenger_phone, '🚗 Driver Mil Gaya!', 'Aapka driver aa raha hai. OTP ready karo!');
+    }
     res.json({ success: true, message: 'Ride accepted!', otp });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -558,6 +567,14 @@ app.post('/api/rides/arrived', async (req, res) => {
       "UPDATE rides SET status = 'arrived' WHERE id = $1",
       [ride_id]
     );
+    // Customer ko notify karo
+    const arrData = await db.query(
+      `SELECT u.phone as passenger_phone FROM rides r JOIN users u ON r.passenger_id = u.id WHERE r.id = $1`,
+      [ride_id]
+    );
+    if (arrData.rows[0]?.passenger_phone) {
+      sendFCM(arrData.rows[0].passenger_phone, '🚗 Driver  Aa gaya!', 'Aapka driver pickup pe hai. OTP batao aur trip shuru karo!');
+    }
     res.json({ success: true, message: 'Pickup pe pahunch gaye!' });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -1928,6 +1945,19 @@ app.post('/api/rides/complete', async (req, res) => {
       `UPDATE rides SET status = 'completed', payment_status = 'pending' WHERE id = $1`,
       [ride_id]
     );
+    // Dono ko notify karo
+    const compData = await db.query(
+      `SELECT p.phone as passenger_phone, d.phone as driver_phone
+       FROM rides r 
+       JOIN users p ON r.passenger_id = p.id
+       JOIN users d ON r.driver_id = d.id
+       WHERE r.id = $1`,
+      [ride_id]
+    );
+    if (compData.rows[0]) {
+      sendFCM(compData.rows[0].passenger_phone, '🏁 Trip Complete!', 'Aapki trip complete hui. Payment karo aur driver ko rate karo!');
+      sendFCM(compData.rows[0].driver_phone, '✅ Trip Complete!', 'Payment ka intezaar karo.');
+    }
     res.json({ success: true, message: 'Trip complete! Payment ka intezaar karo.' });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -2161,7 +2191,45 @@ app.get('/api/notifications/latest', async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
+// ══════════════════════════════════════════════════
+//  FCM — Push Notifications
+// ══════════════════════════════════════════════════
 
+// ── FCM token save karo ───────────────────────────
+app.post('/api/auth/save-fcm-token', async (req, res) => {
+  const { phone, token, role } = req.body;
+  try {
+    await db.query(
+      `UPDATE users SET fcm_token = $1 WHERE phone = $2`,
+      [token, phone]
+    );
+    res.json({ success: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ── Send FCM notification ─────────────────────────
+async function sendFCM(phone, title, body) {
+  try {
+    const user = await db.query('SELECT fcm_token FROM users WHERE phone = $1', [phone]);
+    const token = user.rows[0]?.fcm_token;
+    if (!token) return;
+
+    await fetch('https://exp.host/--/api/v2/push/send', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        to: token,
+        title,
+        body,
+        sound: 'default',
+        priority: 'high',
+      })
+    });
+    console.log('✅ FCM sent to', phone);
+  } catch (e) {
+    console.log('FCM error:', e.message);
+  }
+}
 
 // ── Start Server ────────────────────────────────
 server.listen(process.env.PORT, '0.0.0.0', () => {
