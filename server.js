@@ -2015,22 +2015,24 @@ app.post('/api/rides/payment-complete', async (req, res) => {
   }
 });
 
-// ── Driver: Cash payment confirm ──────────────────
+// ── Driver: Cash/UPI-direct payment confirm ────────
 app.post('/api/rides/cash-confirm', async (req, res) => {
-  const { ride_id, phone } = req.body;
+  const { ride_id, phone, payment_method } = req.body;
+  // upi_direct = customer ne driver ka QR scan kiya / UPI pe diya
+  const method = payment_method === 'upi_direct' ? 'upi' : 'cash';
   try {
     const rideRes = await db.query('SELECT * FROM rides WHERE id = $1', [ride_id]);
     const fare = parseFloat(rideRes.rows[0].fare);
     const commission = Math.round(fare * 0.15 * 100) / 100;
     await db.query(
-      `UPDATE rides SET payment_status = 'completed', commission_amount = $1 WHERE id = $2`,
-      [commission, ride_id]
+      `UPDATE rides SET payment_status = 'completed', payment_method = $1, commission_amount = $2 WHERE id = $3`,
+      [method, commission, ride_id]
     );
     await db.query(
-      `UPDATE driver_commissions SET status = 'collected' WHERE ride_id = $1`,
-      [ride_id]
+      `UPDATE driver_commissions SET status = 'collected', payment_method = $1 WHERE ride_id = $2`,
+      [method, ride_id]
     );
-    res.json({ success: true, message: 'Cash payment confirmed!' });
+    res.json({ success: true, message: 'Payment confirmed!' });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
