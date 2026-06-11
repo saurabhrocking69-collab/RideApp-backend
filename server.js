@@ -522,7 +522,7 @@ app.get('/api/rides/status/:rideId', async (req, res) => {
   try {
     const result = await db.query(
       `SELECT r.*, u.name as driver_name, u.phone as driver_phone,
-              d.vehicle_no
+              d.vehicle_no, d.upi_id as driver_upi_id
        FROM rides r
        LEFT JOIN users u ON r.driver_id = u.id
        LEFT JOIN drivers d ON r.driver_id = d.id
@@ -535,6 +535,31 @@ app.get('/api/rides/status/:rideId', async (req, res) => {
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
+});
+
+// ── Driver: Save / Update UPI ID ────────────────
+app.post('/api/driver/upi', async (req, res) => {
+  const { phone, upi_id } = req.body;
+  try {
+    await db.query('ALTER TABLE drivers ADD COLUMN IF NOT EXISTS upi_id VARCHAR(100)');
+    const result = await db.query(
+      `UPDATE drivers SET upi_id=$1 WHERE id=(SELECT id FROM users WHERE phone=$2) RETURNING upi_id`,
+      [upi_id, phone]
+    );
+    if (result.rows.length === 0) return res.status(404).json({ error: 'Driver nahi mila' });
+    res.json({ success: true, upi_id: result.rows[0].upi_id });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ── Driver: Get own UPI ID ───────────────────────
+app.get('/api/driver/upi', async (req, res) => {
+  const { phone } = req.query;
+  try {
+    const r = await db.query(
+      `SELECT d.upi_id FROM drivers d JOIN users u ON d.id=u.id WHERE u.phone=$1`, [phone]
+    );
+    res.json({ upi_id: r.rows[0]?.upi_id || '' });
+  } catch (err) { res.status(500).json({ error: err.message }); }
 });
 // ══════════════════════════════════════════════════
 //  PHASE 1 — TRIP STATUS MANAGEMENT APIs
@@ -2477,6 +2502,8 @@ app.post('/api/hourly/cancel', async (req, res) => {
 const RAZORPAY_ME_URL = 'https://razorpay.me/@rajawat101';
 
 // Ensure razorpay_topups table exists
+db.query('ALTER TABLE drivers ADD COLUMN IF NOT EXISTS upi_id VARCHAR(100)').catch(() => {});
+
 db.query(`CREATE TABLE IF NOT EXISTS razorpay_topups (
   id SERIAL PRIMARY KEY,
   user_phone VARCHAR(15),
