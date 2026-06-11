@@ -2,14 +2,18 @@ const admin = require('firebase-admin');
 
 // Firebase Admin initialize
 try {
-  const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT || '{}');
-  admin.initializeApp({
-    credential: admin.credential.cert(serviceAccount),
-  });
-  console.log('✅ Firebase Admin initialized');
+  const sa = process.env.FIREBASE_SERVICE_ACCOUNT;
+  if (sa) {
+    const serviceAccount = JSON.parse(sa);
+    admin.initializeApp({ credential: admin.credential.cert(serviceAccount) });
+    console.log('✅ Firebase Admin initialized');
+  } else {
+    console.log('⚠️ FIREBASE_SERVICE_ACCOUNT not set');
+  }
 } catch (e) {
   console.log('⚠️ Firebase Admin error:', e.message);
 }
+
 const express      = require('express');
 const cors         = require('cors');
 const http         = require('http');
