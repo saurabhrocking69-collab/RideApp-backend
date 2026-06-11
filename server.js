@@ -2471,6 +2471,351 @@ app.post('/api/hourly/cancel', async (req, res) => {
   finally { client.release(); }
 });
 
+// ══════════════════════════════════════════════════
+//  WALLET TOPUP via Razorpay.me + Full History APIs
+// ══════════════════════════════════════════════════
+const RAZORPAY_ME_URL = 'https://razorpay.me/@rajawat101';
+
+// Ensure razorpay_topups table exists
+db.query(`CREATE TABLE IF NOT EXISTS razorpay_topups (
+  id SERIAL PRIMARY KEY,
+  user_phone VARCHAR(15),
+  amount DECIMAL(10,2),
+  payment_id VARCHAR(100),
+  status VARCHAR(20) DEFAULT 'pending',
+  created_at TIMESTAMP DEFAULT NOW()
+)`).catch(e => console.log('razorpay_topups:', e.message));
+
+// GET /api/wallet/topup/url — returns Razorpay.me link for given amount
+app.get('/api/wallet/topup/url', (req, res) => {
+  const { amount } = req.query;
+  const paise = Math.round(parseFloat(amount || 0) * 100);
+  if (paise < 100) return res.status(400).json({ error: 'Minimum ₹1 chahiye' });
+  const url = `${RAZORPAY_ME_URL}?amount=${paise}`;
+  res.json({ url, amount: parseFloat(amount), paise });
+});
+
+// POST /api/wallet/topup/confirm — credit wallet after Razorpay.me payment
+app.post('/api/wallet/topup/confirm', async (req, res) => {
+  const { phone, amount, payment_id } = req.body;
+  const client = await db.connect();
+  try {
+    if (!phone || !amount || amount <= 0) return res.status(400).json({ error: 'Invalid request' });
+    // Check duplicate payment_id
+    if (payment_id) {
+      const dup = await client.query("SELECT id FROM razorpay_topups WHERE payment_id=$1 AND status='confirmed'", [payment_id]);
+      if (dup.rows.length > 0) return res.json({ success: false, error: 'Payment ID already used' });
+    }
+    await client.query('BEGIN');
+    const user = await client.query('SELECT id FROM users WHERE phone=$1', [phone]);
+    if (!user.rows[0]) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'User nahi mila' }); }
+    const userId = user.rows[0].id;
+    await client.query('INSERT INTO customer_wallet (user_id) VALUES ($1) ON CONFLICT (user_id) DO NOTHING', [userId]);
+    const w = await client.query('UPDATE customer_wallet SET balance=balance+$1, updated_at=NOW() WHERE user_id=$2 RETURNING balance', [amount, userId]);
+    await client.query("INSERT INTO transactions (user_id,type,amount,description) VALUES ($1,'credit',$2,$3)", [userId, amount, payment_id ? `Wallet recharge via Razorpay (${payment_id})` : 'Wallet recharge']);
+    await client.query('INSERT INTO razorpay_topups (user_phone,amount,payment_id,status) VALUES ($1,$2,$3,$4)', [phone, amount, payment_id || null, payment_id ? 'confirmed' : 'unverified']);
+    await client.query('COMMIT');
+    res.json({ success: true, balance: parseFloat(w.rows[0].balance), message: `₹${amount} wallet mein add ho gaya!` });
+  } catch (err) { await client.query('ROLLBACK'); res.status(500).json({ error: err.message }); }
+  finally { client.release(); }
+});
+
+// GET /api/wallet/customer/detail — full customer wallet info
+app.get('/api/wallet/customer/detail', async (req, res) => {
+  const { phone } = req.query;
+  try {
+    const user = await db.query('SELECT id, name FROM users WHERE phone=$1', [phone]);
+    if (!user.rows[0]) return res.json({ balance: 0, transactions: [] });
+    const userId = user.rows[0].id;
+    const w = await db.query('SELECT balance FROM customer_wallet WHERE user_id=$1', [userId]);
+    const txns = await db.query(
+      `SELECT id, type, amount, description, created_at FROM transactions WHERE user_id=$1 ORDER BY created_at DESC LIMIT 100`,
+      [userId]
+    );
+    const stats = await db.query(
+      `SELECT
+        COALESCE(SUM(CASE WHEN type='credit' THEN amount ELSE 0 END),0) AS total_credited,
+        COALESCE(SUM(CASE WHEN type='debit' THEN amount ELSE 0 END),0) AS total_spent,
+        COALESCE(SUM(CASE WHEN type='credit' AND description LIKE '%reward%' THEN amount ELSE 0 END),0) AS total_rewards,
+        COALESCE(SUM(CASE WHEN type='credit' AND description LIKE '%Referral%' THEN amount ELSE 0 END),0) AS referral_earned,
+        COALESCE(SUM(CASE WHEN type='credit' AND description LIKE '%refund%' THEN amount ELSE 0 END),0) AS total_refunds
+       FROM transactions WHERE user_id=$1`,
+      [userId]
+    );
+    res.json({
+      name: user.rows[0].name,
+      balance: parseFloat(w.rows[0]?.balance || 0),
+      transactions: txns.rows,
+      stats: stats.rows[0],
+    });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// GET /api/wallet/driver/detail — full driver wallet info
+app.get('/api/wallet/driver/detail', async (req, res) => {
+  const { phone } = req.query;
+  try {
+    const user = await db.query('SELECT u.id, u.name, d.vehicle_type, d.vehicle_no FROM users u JOIN drivers d ON u.id=d.id WHERE u.phone=$1', [phone]);
+    if (!user.rows[0]) return res.json({ balance: 0, transactions: [] });
+    const driverId = user.rows[0].id;
+    const w = await db.query('SELECT balance, total_earned, COALESCE(total_withdrawn,0) AS total_withdrawn FROM driver_wallet WHERE driver_id=$1', [driverId]);
+    // Driver txns — from rides completed + hourly
+    const rides = await db.query(
+      `SELECT r.id, r.fare, r.payment_method, r.ride_type, r.created_at, p.name AS passenger_name
+       FROM rides r
+       JOIN users d ON r.driver_id=d.id
+       LEFT JOIN users p ON r.passenger_id=p.id
+       WHERE d.phone=$1 AND r.status='completed'
+       ORDER BY r.created_at DESC LIMIT 50`,
+      [phone]
+    );
+    const hourly = await db.query(
+      `SELECT id, base_fare, total_fare, driver_earning, vehicle_type, package_hours, customer_phone, created_at
+       FROM hourly_bookings WHERE driver_phone=$1 AND status='completed'
+       ORDER BY created_at DESC LIMIT 30`,
+      [phone]
+    );
+    const payouts = await db.query(
+      `SELECT amount, created_at FROM driver_commissions WHERE driver_phone=$1 ORDER BY created_at DESC LIMIT 20`,
+      [phone]
+    ).catch(() => ({ rows: [] }));
+    res.json({
+      name: user.rows[0].name,
+      vehicle_type: user.rows[0].vehicle_type,
+      vehicle_no: user.rows[0].vehicle_no,
+      wallet: { balance: parseFloat(w.rows[0]?.balance||0), total_earned: parseFloat(w.rows[0]?.total_earned||0), total_withdrawn: parseFloat(w.rows[0]?.total_withdrawn||0) },
+      rides: rides.rows,
+      hourly_rides: hourly.rows,
+      payouts: payouts.rows,
+    });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ══════════════════════════════════════════════════
+//  ADMIN DASHBOARD API + HTML PORTAL
+// ══════════════════════════════════════════════════
+
+// GET /api/admin/dashboard — full platform stats
+app.get('/api/admin/dashboard', async (req, res) => {
+  try {
+    const [users, drivers, rides, revenue, wallets, hourly, topups] = await Promise.all([
+      db.query("SELECT COUNT(*) AS total FROM users WHERE role='passenger'"),
+      db.query("SELECT COUNT(*) AS total, COUNT(CASE WHEN is_online THEN 1 END) AS online FROM drivers"),
+      db.query("SELECT COUNT(*) AS total, COUNT(CASE WHEN status='completed' THEN 1 END) AS completed, COALESCE(SUM(CASE WHEN status='completed' THEN fare END),0) AS gross_revenue FROM rides"),
+      db.query("SELECT COALESCE(SUM(commission_amount),0) AS platform_commission FROM rides WHERE status='completed'"),
+      db.query("SELECT (SELECT COALESCE(SUM(balance),0) FROM customer_wallet) AS customer_wallets, (SELECT COALESCE(SUM(balance),0) FROM driver_wallet) AS driver_wallets"),
+      db.query("SELECT COUNT(*) AS total, COUNT(CASE WHEN status='completed' THEN 1 END) AS completed, COALESCE(SUM(CASE WHEN status='completed' THEN total_fare END),0) AS hourly_revenue FROM hourly_bookings"),
+      db.query("SELECT COALESCE(SUM(amount),0) AS total FROM razorpay_topups WHERE status IN ('confirmed','unverified')"),
+    ]);
+    res.json({
+      customers: parseInt(users.rows[0].total),
+      drivers: { total: parseInt(drivers.rows[0].total), online: parseInt(drivers.rows[0].online) },
+      rides: { total: parseInt(rides.rows[0].total), completed: parseInt(rides.rows[0].completed), gross_revenue: parseFloat(rides.rows[0].gross_revenue) },
+      hourly: { total: parseInt(hourly.rows[0].total), completed: parseInt(hourly.rows[0].completed), revenue: parseFloat(hourly.rows[0].hourly_revenue) },
+      platform_commission: parseFloat(revenue.rows[0].platform_commission),
+      wallets: { customer_total: parseFloat(wallets.rows[0]?.customer_wallets||0), driver_total: parseFloat(wallets.rows[0]?.driver_wallets||0) },
+      topup_total: parseFloat(topups.rows[0].total),
+    });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// GET /api/admin/all-transactions — all platform transactions
+app.get('/api/admin/all-transactions', async (req, res) => {
+  const { limit = 100, offset = 0, type } = req.query;
+  try {
+    let q = `SELECT t.id, t.type, t.amount, t.description, t.created_at, u.name, u.phone
+             FROM transactions t JOIN users u ON t.user_id=u.id`;
+    const params = [];
+    if (type) { q += ` WHERE t.type=$1`; params.push(type); }
+    q += ` ORDER BY t.created_at DESC LIMIT $${params.length+1} OFFSET $${params.length+2}`;
+    params.push(limit, offset);
+    const result = await db.query(q, params);
+    const count = await db.query(`SELECT COUNT(*) FROM transactions${type ? " WHERE type=$1" : ""}`, type ? [type] : []);
+    res.json({ transactions: result.rows, total: parseInt(count.rows[0].count) });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// GET /api/admin/topups — all Razorpay topup records
+app.get('/api/admin/topups', async (req, res) => {
+  try {
+    const r = await db.query('SELECT * FROM razorpay_topups ORDER BY created_at DESC LIMIT 200');
+    res.json({ topups: r.rows });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// POST /api/admin/topups/verify/:id — admin manually verifies a payment
+app.post('/api/admin/topups/verify/:id', async (req, res) => {
+  try {
+    await db.query("UPDATE razorpay_topups SET status='verified' WHERE id=$1", [req.params.id]);
+    res.json({ success: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ── Admin HTML Portal ────────────────────────────
+app.get('/admin', (req, res) => {
+  res.send(`<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>RideApp Admin Portal</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:'Segoe UI',sans-serif;background:#f0f2f5;color:#1a1a2e}
+.header{background:#1a1a2e;padding:18px 28px;display:flex;align-items:center;justify-content:space-between}
+.logo{color:#fff;font-size:22px;font-weight:800;letter-spacing:-0.5px}
+.logo span{color:#e94560}
+.badge{background:#e94560;color:#fff;border-radius:8px;padding:4px 12px;font-size:12px;font-weight:700}
+.main{max-width:1200px;margin:0 auto;padding:24px}
+.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:16px;margin-bottom:28px}
+.stat-card{background:#fff;border-radius:16px;padding:22px;box-shadow:0 2px 12px rgba(0,0,0,.07)}
+.stat-icon{font-size:28px;margin-bottom:8px}
+.stat-value{font-size:30px;font-weight:800;color:#1a1a2e}
+.stat-label{font-size:13px;color:#888;margin-top:4px}
+.stat-card.red .stat-value{color:#e94560}
+.stat-card.green .stat-value{color:#4CAF50}
+.stat-card.blue .stat-value{color:#2196F3}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:20px;margin-bottom:24px}
+@media(max-width:768px){.grid2{grid-template-columns:1fr}}
+.card{background:#fff;border-radius:16px;padding:20px;box-shadow:0 2px 12px rgba(0,0,0,.07)}
+.card-title{font-size:15px;font-weight:700;margin-bottom:16px;color:#1a1a2e;display:flex;align-items:center;gap:8px}
+table{width:100%;border-collapse:collapse;font-size:13px}
+th{text-align:left;padding:10px 12px;background:#f8f9fa;color:#666;font-weight:600;border-bottom:2px solid #f0f0f0}
+td{padding:10px 12px;border-bottom:1px solid #f8f9fa;vertical-align:middle}
+tr:hover td{background:#fafafa}
+.badge-credit{background:#e8f5e9;color:#2e7d32;border-radius:6px;padding:2px 8px;font-size:11px;font-weight:700}
+.badge-debit{background:#ffebee;color:#c62828;border-radius:6px;padding:2px 8px;font-size:11px;font-weight:700}
+.badge-pending{background:#fff3e0;color:#e65100;border-radius:6px;padding:2px 8px;font-size:11px}
+.badge-verified{background:#e8f5e9;color:#2e7d32;border-radius:6px;padding:2px 8px;font-size:11px}
+.badge-unverified{background:#fff3e0;color:#e65100;border-radius:6px;padding:2px 8px;font-size:11px}
+.tabs{display:flex;gap:8px;margin-bottom:20px;flex-wrap:wrap}
+.tab{padding:8px 18px;border-radius:24px;cursor:pointer;font-size:13px;font-weight:600;border:none;background:#f0f0f0;color:#666}
+.tab.active{background:#1a1a2e;color:#fff}
+.section{display:none}.section.active{display:block}
+.refresh-btn{background:#e94560;color:#fff;border:none;border-radius:10px;padding:8px 18px;cursor:pointer;font-size:13px;font-weight:600;margin-left:auto}
+.refresh-btn:hover{opacity:.85}
+.verify-btn{background:#4CAF50;color:#fff;border:none;border-radius:6px;padding:4px 10px;cursor:pointer;font-size:11px;font-weight:600}
+.verify-btn:hover{opacity:.85}
+.loading{text-align:center;color:#999;padding:30px}
+.amount-green{color:#2e7d32;font-weight:700}
+.amount-red{color:#c62828;font-weight:700}
+.chip{display:inline-block;padding:2px 8px;border-radius:12px;font-size:10px;font-weight:700}
+.online{background:#e8f5e9;color:#2e7d32}
+.offline{background:#f5f5f5;color:#999}
+</style>
+</head>
+<body>
+<div class="header">
+  <div class="logo">Ride<span>App</span> Admin</div>
+  <div style="display:flex;gap:12px;align-items:center">
+    <span class="badge" id="last-refresh">Loading...</span>
+    <button class="refresh-btn" onclick="loadAll()">⟳ Refresh</button>
+  </div>
+</div>
+<div class="main">
+  <div class="stats" id="stats-grid"><div class="loading">Loading dashboard...</div></div>
+  <div class="tabs">
+    <button class="tab active" onclick="showSection('transactions')">📋 Transactions</button>
+    <button class="tab" onclick="showSection('customers')">👥 Customers</button>
+    <button class="tab" onclick="showSection('drivers')">🚗 Drivers</button>
+    <button class="tab" onclick="showSection('topups')">💳 Topups</button>
+  </div>
+  <div id="transactions" class="section active">
+    <div class="card"><div class="card-title">📋 All Transactions <button class="refresh-btn" onclick="loadTransactions()">Reload</button></div>
+    <div style="overflow-x:auto"><table id="txn-table"><thead><tr><th>Date</th><th>User</th><th>Phone</th><th>Type</th><th>Amount</th><th>Description</th></tr></thead><tbody id="txn-body"><tr><td colspan=6 class=loading>Loading...</td></tr></tbody></table></div></div>
+  </div>
+  <div id="customers" class="section">
+    <div class="card"><div class="card-title">👥 All Customers</div>
+    <div style="overflow-x:auto"><table id="cust-table"><thead><tr><th>Name</th><th>Phone</th><th>Total Rides</th><th>Wallet Balance</th><th>Joined</th></tr></thead><tbody id="cust-body"><tr><td colspan=5 class=loading>Loading...</td></tr></tbody></table></div></div>
+  </div>
+  <div id="drivers" class="section">
+    <div class="card"><div class="card-title">🚗 All Drivers</div>
+    <div style="overflow-x:auto"><table id="drv-table"><thead><tr><th>Name</th><th>Phone</th><th>Vehicle</th><th>Status</th><th>Balance</th><th>Total Earned</th></tr></thead><tbody id="drv-body"><tr><td colspan=6 class=loading>Loading...</td></tr></tbody></table></div></div>
+  </div>
+  <div id="topups" class="section">
+    <div class="card"><div class="card-title">💳 Razorpay Topups</div>
+    <div style="overflow-x:auto"><table id="topup-table"><thead><tr><th>Date</th><th>Phone</th><th>Amount</th><th>Payment ID</th><th>Status</th><th>Action</th></tr></thead><tbody id="topup-body"><tr><td colspan=6 class=loading>Loading...</td></tr></tbody></table></div></div>
+  </div>
+</div>
+<script>
+const API = '';
+function showSection(id) {
+  document.querySelectorAll('.section').forEach(s => s.classList.remove('active'));
+  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+  document.getElementById(id).classList.add('active');
+  event.target.classList.add('active');
+  if (id==='customers' && document.getElementById('cust-body').children[0]?.colSpan) loadCustomers();
+  if (id==='drivers' && document.getElementById('drv-body').children[0]?.colSpan) loadDrivers();
+  if (id==='topups' && document.getElementById('topup-body').children[0]?.colSpan) loadTopups();
+}
+function fmt(d){return new Date(d).toLocaleString('en-IN',{day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'})}
+function rupee(n){return '₹'+parseFloat(n||0).toFixed(0)}
+
+async function loadDashboard() {
+  const d = await fetch(API+'/api/admin/dashboard').then(r=>r.json());
+  document.getElementById('stats-grid').innerHTML = \`
+    <div class="stat-card red"><div class="stat-icon">👥</div><div class="stat-value">\${d.customers}</div><div class="stat-label">Total Customers</div></div>
+    <div class="stat-card"><div class="stat-icon">🚗</div><div class="stat-value">\${d.drivers.total}</div><div class="stat-label">Drivers · \${d.drivers.online} online</div></div>
+    <div class="stat-card blue"><div class="stat-icon">🛺</div><div class="stat-value">\${d.rides.completed}</div><div class="stat-label">Completed Rides</div></div>
+    <div class="stat-card green"><div class="stat-icon">💰</div><div class="stat-value">\${rupee(d.rides.gross_revenue)}</div><div class="stat-label">Gross Revenue</div></div>
+    <div class="stat-card red"><div class="stat-icon">🏦</div><div class="stat-value">\${rupee(d.platform_commission)}</div><div class="stat-label">Platform Commission</div></div>
+    <div class="stat-card"><div class="stat-icon">⏱️</div><div class="stat-value">\${d.hourly.completed}</div><div class="stat-label">Hourly Rides · \${rupee(d.hourly.revenue)}</div></div>
+    <div class="stat-card blue"><div class="stat-icon">💳</div><div class="stat-value">\${rupee(d.topup_total)}</div><div class="stat-label">Total Topups</div></div>
+    <div class="stat-card"><div class="stat-icon">👛</div><div class="stat-value">\${rupee(d.wallets.customer_total)}</div><div class="stat-label">Customer Wallets</div></div>
+    <div class="stat-card green"><div class="stat-icon">🏧</div><div class="stat-value">\${rupee(d.wallets.driver_total)}</div><div class="stat-label">Driver Wallets</div></div>
+  \`;
+}
+async function loadTransactions() {
+  const d = await fetch(API+'/api/admin/all-transactions?limit=200').then(r=>r.json());
+  document.getElementById('txn-body').innerHTML = d.transactions.map(t=>\`<tr>
+    <td>\${fmt(t.created_at)}</td><td>\${t.name||'-'}</td><td>\${t.phone}</td>
+    <td><span class="badge-\${t.type}">\${t.type.toUpperCase()}</span></td>
+    <td class="\${t.type==='credit'?'amount-green':'amount-red'}">\${rupee(t.amount)}</td>
+    <td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="\${t.description}">\${t.description}</td>
+  </tr>\`).join('');
+}
+async function loadCustomers() {
+  const d = await fetch(API+'/api/admin/customers').then(r=>r.json());
+  document.getElementById('cust-body').innerHTML = d.customers.map(c=>\`<tr>
+    <td>\${c.name||'-'}</td><td>\${c.phone}</td><td>\${c.total_rides}</td>
+    <td class="amount-green">\${rupee(c.wallet_balance)}</td>
+    <td>\${fmt(c.created_at)}</td>
+  </tr>\`).join('');
+}
+async function loadDrivers() {
+  const d = await fetch(API+'/api/admin/drivers').then(r=>r.json());
+  document.getElementById('drv-body').innerHTML = d.drivers.map(dr=>\`<tr>
+    <td>\${dr.name||'-'}</td><td>\${dr.phone}</td>
+    <td>\${dr.vehicle_type} · \${dr.vehicle_no||'-'}</td>
+    <td><span class="chip \${dr.is_online?'online':'offline'}">\${dr.is_online?'🟢 Online':'⚫ Offline'}</span></td>
+    <td class="amount-green">\${rupee(dr.balance)}</td>
+    <td class="amount-green">\${rupee(dr.total_earned)}</td>
+  </tr>\`).join('');
+}
+async function loadTopups() {
+  const d = await fetch(API+'/api/admin/topups').then(r=>r.json());
+  document.getElementById('topup-body').innerHTML = d.topups.map(t=>\`<tr>
+    <td>\${fmt(t.created_at)}</td><td>\${t.user_phone}</td>
+    <td class="amount-green">\${rupee(t.amount)}</td>
+    <td style="font-family:monospace;font-size:11px">\${t.payment_id||'—'}</td>
+    <td><span class="badge-\${t.status}">\${t.status}</span></td>
+    <td>\${t.status==='unverified'?'<button class=verify-btn onclick=verifyTopup('+t.id+')>✓ Verify</button>':''}</td>
+  </tr>\`).join('');
+}
+async function verifyTopup(id) {
+  await fetch(API+'/api/admin/topups/verify/'+id, {method:'POST'});
+  loadTopups();
+}
+async function loadAll() {
+  document.getElementById('last-refresh').textContent = new Date().toLocaleTimeString('en-IN');
+  await loadDashboard();
+  await loadTransactions();
+}
+loadAll();
+</script>
+</body>
+</html>`);
+});
+
 // ── Start Server ────────────────────────────────
 server.listen(process.env.PORT, '0.0.0.0', () => {
   console.log('🚀 Server running on port ' + process.env.PORT);
