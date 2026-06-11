@@ -1,13 +1,15 @@
-const admin = require('firebase-admin');
+const { initializeApp: initFirebaseApp, cert } = require('firebase-admin/app');
+const { getMessaging } = require('firebase-admin/messaging');
 
+let firebaseMessaging = null;
 
 // Firebase Admin initialize
 try {
   const sa = process.env.FIREBASE_SERVICE_ACCOUNT;
-  console.log('🔍 SA type:', typeof sa, '| Length:', sa?.length, '| First char:', sa?.[0]);
   if (sa) {
     const serviceAccount = JSON.parse(sa);
-    admin.initializeApp({ credential: admin.credential.cert(serviceAccount) });
+    initFirebaseApp({ credential: cert(serviceAccount) });
+    firebaseMessaging = getMessaging();
     console.log('✅ Firebase Admin initialized');
   } else {
     console.log('⚠️ FIREBASE_SERVICE_ACCOUNT not set - FCM disabled');
@@ -2230,7 +2232,8 @@ async function sendFCM(phone, title, body) {
     }
 
     // Native FCM token — Firebase Admin use karo
-    await admin.messaging().send({
+    if (!firebaseMessaging) { console.log('⚠️ Firebase not initialized, skipping FCM'); return; }
+    await firebaseMessaging.send({
       token,
       notification: { title, body },
       android: { priority: 'high', notification: { sound: 'default', channelId: 'default' } },
