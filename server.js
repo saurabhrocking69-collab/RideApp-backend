@@ -1972,27 +1972,27 @@ app.post('/api/fare-estimate', async (req, res) => {
 app.post('/api/rides/complete', async (req, res) => {
   const { ride_id } = req.body;
   try {
-    await db.query(
-      `UPDATE rides SET status = 'completed', payment_status = 'pending' WHERE id = $1`,
+    const upd = await db.query(
+      `UPDATE rides SET status = 'completed', payment_status = 'pending' WHERE id = $1 RETURNING id, fare, payment_method`,
       [ride_id]
     );
-    // Dono ko notify karo
-    const compData = await db.query(
-      `SELECT p.phone as passenger_phone, d.phone as driver_phone
-       FROM rides r 
-       JOIN users p ON r.passenger_id = p.id
-       JOIN users d ON r.driver_id = d.id
-       WHERE r.id = $1`,
-      [ride_id]
-    );
-    if (compData.rows[0]) {
-      sendFCM(compData.rows[0].passenger_phone, '🏁 Trip Complete!', 'Aapki trip complete hui. Payment karo aur driver ko rate karo!');
-      sendFCM(compData.rows[0].driver_phone, '✅ Trip Complete!', 'Payment ka intezaar karo.');
-    }
-    res.json({ success: true, message: 'Trip complete! Payment ka intezaar karo.' });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
+    if (!upd.rows[0]) return res.status(404).json({ error: 'Ride nahi mili' });
+    res.json({ success: true, fare: upd.rows[0].fare, payment_method: upd.rows[0].payment_method, message: 'Trip complete! Payment ka intezaar karo.' });
+    // FCM fire-and-forget (does not affect response)
+    try {
+      const compData = await db.query(
+        `SELECT p.phone as passenger_phone, d.phone as driver_phone
+         FROM rides r
+         JOIN users p ON r.passenger_id::text = p.id::text
+         JOIN users d ON r.driver_id::text = d.id::text
+         WHERE r.id = $1`, [ride_id]
+      );
+      if (compData.rows[0]) {
+        sendFCM(compData.rows[0].passenger_phone, '🏁 Trip Complete!', 'Payment karo aur driver ko rate karo!');
+        sendFCM(compData.rows[0].driver_phone, '✅ Trip Complete!', 'Payment ka intezaar karo.');
+      }
+    } catch (_e) {}
+  } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 // ── Customer: Payment karo ────────────────────────
@@ -2034,6 +2034,11 @@ app.post('/api/rides/payment-complete', async (req, res) => {
        FROM rides r JOIN users u ON r.driver_id = u.id WHERE r.id = $1`,
       [ride_id, fare, commission, payment_method]
     );
+    // Add loyalty points (10 per ride)
+    try {
+      const u = await db.query('SELECT id FROM users WHERE phone=$1', [phone]);
+      if (u.rows[0]) await addLoyaltyPoints(u.rows[0].id, 10);
+    } catch (_e) {}
     res.json({ success: true, status: 'completed', message: 'Payment complete!' });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -2274,12 +2279,14 @@ async function sendFCM(phone, title, body) {
 // ══════════════════════════════════════════════════
 //  HOURLY BOOKING SYSTEM — Standalone, no rides table changes
 // ══════════════════════════════════════════════════
-const HOURLY_FARES = {
-  auto:    { 2:{fare:180,km:20}, 4:{fare:320,km:40}, 6:{fare:460,km:60}, 8:{fare:580,km:80}, extra:8  },
-  bike:    { 2:{fare:120,km:20}, 4:{fare:210,km:40}, 6:{fare:300,km:60}, 8:{fare:380,km:80}, extra:5  },
-  car:     { 2:{fare:260,km:20}, 4:{fare:460,km:40}, 6:{fare:660,km:60}, 8:{fare:840,km:80}, extra:12 },
-  eriksha: { 2:{fare:150,km:20}, 4:{fare:270,km:40}, 6:{fare:390,km:60}, 8:{fare:490,km:80}, extra:7  },
+// Fares are admin-editable at runtime (POST /api/admin/hourly-fares)
+let HOURLY_FARES = {
+  auto:    { 2:{fare:180,km:20}, 4:{fare:320,km:40}, 6:{fare:460,km:60}, 8:{fare:580,km:80},  24:{fare:1500,km:200}, 48:{fare:2800,km:400}, 72:{fare:4000,km:600}, extra:8  },
+  bike:    { 2:{fare:120,km:20}, 4:{fare:210,km:40}, 6:{fare:300,km:60}, 8:{fare:380,km:80},  24:{fare:1000,km:200}, 48:{fare:1800,km:400}, 72:{fare:2600,km:600}, extra:5  },
+  car:     { 2:{fare:260,km:20}, 4:{fare:460,km:40}, 6:{fare:660,km:60}, 8:{fare:840,km:80},  24:{fare:2200,km:200}, 48:{fare:4000,km:400}, 72:{fare:5800,km:600}, extra:12 },
+  eriksha: { 2:{fare:150,km:20}, 4:{fare:270,km:40}, 6:{fare:390,km:60}, 8:{fare:490,km:80},  24:{fare:1200,km:200}, 48:{fare:2200,km:400}, 72:{fare:3200,km:600}, extra:7  },
 };
+let SURGE_MULTIPLIER = 1.0; // Admin can update via POST /api/admin/surge
 
 db.query(`CREATE TABLE IF NOT EXISTS hourly_bookings (
   id SERIAL PRIMARY KEY,
@@ -2300,28 +2307,31 @@ db.query(`CREATE TABLE IF NOT EXISTS hourly_bookings (
 app.get('/api/hourly/packages', (req, res) => res.json({ fares: HOURLY_FARES }));
 
 app.post('/api/hourly/book', async (req, res) => {
-  const { phone, vehicle_type, package_hours, pickup, pickup_lat, pickup_lng, drop_location, drop_lat, drop_lng, is_roundtrip, stay_hours } = req.body;
+  const { phone, vehicle_type, package_hours, pickup, pickup_lat, pickup_lng, drop_location, drop_lat, drop_lng, is_roundtrip, stay_hours, scheduled_at } = req.body;
   const client = await db.connect();
   try {
     const pkg = HOURLY_FARES[vehicle_type]?.[package_hours];
-    if (!pkg) return res.status(400).json({ error: 'Invalid package' });
+    if (!pkg) return res.status(400).json({ error: `Invalid package: ${vehicle_type} ${package_hours}h` });
+    const baseFare = Math.round(pkg.fare * SURGE_MULTIPLIER);
     await client.query('BEGIN');
     const user = await client.query('SELECT id FROM users WHERE phone = $1', [phone]);
     if (!user.rows[0]) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'User nahi mila' }); }
     const userId = user.rows[0].id;
+    await client.query('INSERT INTO customer_wallet (user_id) VALUES ($1) ON CONFLICT (user_id) DO NOTHING', [userId]);
     const wallet = await client.query('SELECT balance FROM customer_wallet WHERE user_id = $1', [userId]);
     const balance = wallet.rows[0] ? parseFloat(wallet.rows[0].balance) : 0;
-    if (balance < pkg.fare) { await client.query('ROLLBACK'); return res.json({ success: false, error: `Wallet mein ₹${pkg.fare} chahiye, aapke paas ₹${balance.toFixed(0)} hai` }); }
-    await client.query('UPDATE customer_wallet SET balance = balance - $1 WHERE user_id = $2', [pkg.fare, userId]);
-    await client.query("INSERT INTO transactions (user_id, type, amount, description) VALUES ($1,'debit',$2,'Hourly booking - escrow')", [userId, pkg.fare]);
+    if (balance < baseFare) { await client.query('ROLLBACK'); return res.json({ success: false, error: `Wallet mein ₹${baseFare} chahiye, aapke paas ₹${balance.toFixed(0)} hai` }); }
+    await client.query('UPDATE customer_wallet SET balance = balance - $1 WHERE user_id = $2', [baseFare, userId]);
+    await client.query("INSERT INTO transactions (user_id, type, amount, description) VALUES ($1,'debit',$2,'Hourly booking - escrow hold')", [userId, baseFare]);
     const otp = Math.floor(1000 + Math.random() * 9000).toString();
+    const schedAt = scheduled_at ? new Date(scheduled_at) : null;
     const bk = await client.query(
-      `INSERT INTO hourly_bookings (customer_phone,vehicle_type,package_hours,km_included,base_fare,total_fare,pickup,pickup_lat,pickup_lng,drop_location,drop_lat,drop_lng,is_roundtrip,stay_hours,otp)
-       VALUES ($1,$2,$3,$4,$5,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) RETURNING id`,
-      [phone, vehicle_type, package_hours, pkg.km, pkg.fare, pickup, pickup_lat||null, pickup_lng||null, drop_location||null, drop_lat||null, drop_lng||null, is_roundtrip||false, stay_hours||0, otp]
+      `INSERT INTO hourly_bookings (customer_phone,vehicle_type,package_hours,km_included,base_fare,total_fare,pickup,pickup_lat,pickup_lng,drop_location,drop_lat,drop_lng,is_roundtrip,stay_hours,otp,scheduled_at)
+       VALUES ($1,$2,$3,$4,$5,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15) RETURNING id`,
+      [phone, vehicle_type, package_hours, pkg.km, baseFare, pickup, pickup_lat||null, pickup_lng||null, drop_location||null, drop_lat||null, drop_lng||null, is_roundtrip||false, stay_hours||0, otp, schedAt]
     );
     await client.query('COMMIT');
-    res.json({ success: true, booking_id: bk.rows[0].id, fare: pkg.fare, km_included: pkg.km });
+    res.json({ success: true, booking_id: bk.rows[0].id, fare: baseFare, km_included: pkg.km, scheduled_at: schedAt });
   } catch (err) { await client.query('ROLLBACK'); res.status(500).json({ error: err.message }); }
   finally { client.release(); }
 });
@@ -2345,8 +2355,17 @@ app.get('/api/hourly/driver-pending', async (req, res) => {
   try {
     const dr = await db.query('SELECT d.vehicle_type FROM drivers d JOIN users u ON d.id = u.id WHERE u.phone = $1', [phone]);
     if (!dr.rows[0]) return res.json({ booking: null });
+    // Immediate: created < 30 min ago | Scheduled: scheduled_at within next 75 mins
     const r = await db.query(
-      `SELECT * FROM hourly_bookings WHERE status='pending' AND driver_phone IS NULL AND vehicle_type=$1 AND created_at > NOW() - INTERVAL '10 minutes' ORDER BY created_at ASC LIMIT 1`,
+      `SELECT * FROM hourly_bookings
+       WHERE status='pending' AND driver_phone IS NULL AND vehicle_type=$1
+       AND (
+         (scheduled_at IS NULL AND created_at > NOW() - INTERVAL '30 minutes')
+         OR
+         (scheduled_at IS NOT NULL AND scheduled_at BETWEEN NOW() - INTERVAL '15 minutes' AND NOW() + INTERVAL '75 minutes')
+       )
+       ORDER BY CASE WHEN scheduled_at IS NULL THEN 0 ELSE 1 END, COALESCE(scheduled_at, created_at) ASC
+       LIMIT 1`,
       [dr.rows[0].vehicle_type]
     );
     res.json({ booking: r.rows[0] || null });
@@ -2503,6 +2522,23 @@ const RAZORPAY_ME_URL = 'https://razorpay.me/@rajawat101';
 
 // Ensure razorpay_topups table exists
 db.query('ALTER TABLE drivers ADD COLUMN IF NOT EXISTS upi_id VARCHAR(100)').catch(() => {});
+db.query('ALTER TABLE hourly_bookings ADD COLUMN IF NOT EXISTS scheduled_at TIMESTAMP DEFAULT NULL').catch(() => {});
+db.query(`CREATE TABLE IF NOT EXISTS driver_bonus_claims (
+  id SERIAL PRIMARY KEY,
+  driver_phone VARCHAR(15),
+  claim_date DATE DEFAULT CURRENT_DATE,
+  rides_at_claim INTEGER,
+  bonus_tier INTEGER,
+  bonus_amount DECIMAL(10,2),
+  created_at TIMESTAMP DEFAULT NOW(),
+  UNIQUE(driver_phone, claim_date, bonus_tier)
+)`).catch(() => {});
+db.query(`CREATE TABLE IF NOT EXISTS customer_loyalty (
+  user_id INTEGER PRIMARY KEY,
+  total_points INTEGER DEFAULT 0,
+  total_redeemed INTEGER DEFAULT 0,
+  updated_at TIMESTAMP DEFAULT NOW()
+)`).catch(() => {});
 
 db.query(`CREATE TABLE IF NOT EXISTS razorpay_topups (
   id SERIAL PRIMARY KEY,
@@ -2745,6 +2781,7 @@ tr:hover td{background:#fafafa}
     <button class="tab" onclick="showSection('customers')">👥 Customers</button>
     <button class="tab" onclick="showSection('drivers')">🚗 Drivers</button>
     <button class="tab" onclick="showSection('topups')">💳 Topups</button>
+    <button class="tab" onclick="showSection('settings')">⚙️ Settings</button>
   </div>
   <div id="transactions" class="section active">
     <div class="card"><div class="card-title">📋 All Transactions <button class="refresh-btn" onclick="loadTransactions()">Reload</button></div>
@@ -2762,6 +2799,45 @@ tr:hover td{background:#fafafa}
     <div class="card"><div class="card-title">💳 Razorpay Topups</div>
     <div style="overflow-x:auto"><table id="topup-table"><thead><tr><th>Date</th><th>Phone</th><th>Amount</th><th>Payment ID</th><th>Status</th><th>Action</th></tr></thead><tbody id="topup-body"><tr><td colspan=6 class=loading>Loading...</td></tr></tbody></table></div></div>
   </div>
+  <div id="settings" class="section">
+    <div class="grid2">
+      <div class="card">
+        <div class="card-title">⚡ Surge Pricing</div>
+        <p style="font-size:13px;color:#666;margin-bottom:12px">Current multiplier is applied to all new rides/hourly bookings</p>
+        <div style="display:flex;gap:10px;margin-bottom:10px">
+          <input id="surge-input" type="number" step="0.1" min="1" max="3" value="1.0" style="flex:1;padding:10px;border:1px solid #e0e0e0;border-radius:8px;font-size:14px">
+          <button onclick="setSurge()" style="background:#e94560;color:#fff;border:none;border-radius:8px;padding:10px 16px;cursor:pointer;font-weight:700">Set Surge</button>
+        </div>
+        <div id="surge-status" style="font-size:13px;color:#4CAF50"></div>
+        <div style="display:flex;gap:8px;margin-top:10px">
+          <button onclick="document.getElementById('surge-input').value=1.0;setSurge()" style="flex:1;background:#f5f5f5;border:none;border-radius:8px;padding:8px;cursor:pointer;font-size:12px;font-weight:700">1.0x Normal</button>
+          <button onclick="document.getElementById('surge-input').value=1.5;setSurge()" style="flex:1;background:#fff3e0;border:none;border-radius:8px;padding:8px;cursor:pointer;font-size:12px;font-weight:700">1.5x Surge</button>
+          <button onclick="document.getElementById('surge-input').value=2.0;setSurge()" style="flex:1;background:#ffebee;border:none;border-radius:8px;padding:8px;cursor:pointer;font-size:12px;font-weight:700">2.0x Peak</button>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-title">📋 Hourly Fare Editor</div>
+        <p style="font-size:13px;color:#666;margin-bottom:12px">Update fare for specific vehicle + package (changes apply instantly)</p>
+        <select id="fare-vehicle" style="width:100%;padding:9px;border:1px solid #e0e0e0;border-radius:8px;margin-bottom:8px;font-size:13px">
+          <option value="auto">Auto</option><option value="bike">Bike</option><option value="car">Car</option><option value="eriksha">E-Riksha</option>
+        </select>
+        <select id="fare-hours" style="width:100%;padding:9px;border:1px solid #e0e0e0;border-radius:8px;margin-bottom:8px;font-size:13px">
+          <option value="2">2 Hours</option><option value="4">4 Hours</option><option value="6">6 Hours</option><option value="8">Full Day (8h)</option>
+          <option value="24">1 Day (24h)</option><option value="48">2 Days (48h)</option><option value="72">3 Days (72h)</option>
+        </select>
+        <div style="display:flex;gap:8px;margin-bottom:8px">
+          <input id="fare-amount" type="number" placeholder="Fare (₹)" style="flex:1;padding:9px;border:1px solid #e0e0e0;border-radius:8px;font-size:13px">
+          <input id="fare-km" type="number" placeholder="KM included" style="flex:1;padding:9px;border:1px solid #e0e0e0;border-radius:8px;font-size:13px">
+        </div>
+        <button onclick="updateFare()" style="width:100%;background:#1a1a2e;color:#fff;border:none;border-radius:8px;padding:10px;cursor:pointer;font-weight:700;font-size:13px">Update Fare</button>
+        <div id="fare-status" style="font-size:13px;color:#4CAF50;margin-top:8px"></div>
+      </div>
+    </div>
+    <div class="card" style="margin-top:0">
+      <div class="card-title">📊 Current Hourly Fares</div>
+      <div id="fares-display" style="font-size:13px;color:#666">Loading...</div>
+    </div>
+  </div>
 </div>
 <script>
 const API = '';
@@ -2773,6 +2849,7 @@ function showSection(id) {
   if (id==='customers' && document.getElementById('cust-body').children[0]?.colSpan) loadCustomers();
   if (id==='drivers' && document.getElementById('drv-body').children[0]?.colSpan) loadDrivers();
   if (id==='topups' && document.getElementById('topup-body').children[0]?.colSpan) loadTopups();
+  if (id==='settings') loadFares();
 }
 function fmt(d){return new Date(d).toLocaleString('en-IN',{day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'})}
 function rupee(n){return '₹'+parseFloat(n||0).toFixed(0)}
@@ -2832,6 +2909,37 @@ async function verifyTopup(id) {
   await fetch(API+'/api/admin/topups/verify/'+id, {method:'POST'});
   loadTopups();
 }
+async function setSurge() {
+  const m = parseFloat(document.getElementById('surge-input').value);
+  const d = await fetch(API+'/api/admin/surge', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({multiplier:m})}).then(r=>r.json());
+  document.getElementById('surge-status').textContent = d.success ? \`✅ Surge set to \${d.surge}x\` : '❌ '+d.error;
+}
+async function updateFare() {
+  const v = document.getElementById('fare-vehicle').value;
+  const h = parseInt(document.getElementById('fare-hours').value);
+  const fare = parseInt(document.getElementById('fare-amount').value);
+  const km = parseInt(document.getElementById('fare-km').value);
+  const d = await fetch(API+'/api/admin/hourly-fares', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({vehicle_type:v,package_hours:h,fare,km})}).then(r=>r.json());
+  document.getElementById('fare-status').textContent = d.success ? \`✅ Updated: ₹\${d.updated.fare}, \${d.updated.km}km\` : '❌ '+d.error;
+  loadFares();
+}
+async function loadFares() {
+  const d = await fetch(API+'/api/hourly/fares').then(r=>r.json());
+  document.getElementById('surge-input').value = d.surge || 1.0;
+  const vehicles = Object.keys(d.fares);
+  const pkgs = [2,4,6,8,24,48,72];
+  let html = \`<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:12px"><thead><tr><th style="padding:8px;background:#f5f5f5;text-align:left">Vehicle</th>\${pkgs.map(p=>\`<th style="padding:8px;background:#f5f5f5;text-align:center">\${p>=24?p/24+'d':p+'h'}</th>\`).join('')}<th style="padding:8px;background:#f5f5f5;text-align:center">Extra/km</th></tr></thead><tbody>\`;
+  vehicles.forEach(v => {
+    html += \`<tr><td style="padding:8px;font-weight:700;text-transform:capitalize">\${v}</td>\`;
+    pkgs.forEach(p => {
+      const pkg = d.fares[v][p];
+      html += pkg ? \`<td style="padding:8px;text-align:center">₹\${pkg.fare}<br><span style="color:#888;font-size:10px">\${pkg.km}km</span></td>\` : '<td style="padding:8px;text-align:center;color:#ccc">—</td>';
+    });
+    html += \`<td style="padding:8px;text-align:center">₹\${d.fares[v].extra}/km</td></tr>\`;
+  });
+  html += '</tbody></table></div>';
+  document.getElementById('fares-display').innerHTML = html;
+}
 async function loadAll() {
   document.getElementById('last-refresh').textContent = new Date().toLocaleTimeString('en-IN');
   await loadDashboard();
@@ -2842,6 +2950,115 @@ loadAll();
 </body>
 </html>`);
 });
+
+// ══════════════════════════════════════════════════
+//  ADMIN: Hourly Fares + Surge Control
+// ══════════════════════════════════════════════════
+
+app.get('/api/hourly/fares', (req, res) => res.json({ fares: HOURLY_FARES, surge: SURGE_MULTIPLIER }));
+
+app.post('/api/admin/hourly-fares', (req, res) => {
+  const { vehicle_type, package_hours, fare, km } = req.body;
+  if (!HOURLY_FARES[vehicle_type]) return res.status(400).json({ error: 'Invalid vehicle type' });
+  if (!HOURLY_FARES[vehicle_type][package_hours]) HOURLY_FARES[vehicle_type][package_hours] = {};
+  if (fare) HOURLY_FARES[vehicle_type][package_hours].fare = fare;
+  if (km) HOURLY_FARES[vehicle_type][package_hours].km = km;
+  res.json({ success: true, updated: HOURLY_FARES[vehicle_type][package_hours] });
+});
+
+app.post('/api/admin/surge', (req, res) => {
+  const { multiplier } = req.body;
+  if (!multiplier || multiplier < 1 || multiplier > 3) return res.status(400).json({ error: '1.0 to 3.0 ke beech rakho' });
+  SURGE_MULTIPLIER = parseFloat(multiplier);
+  res.json({ success: true, surge: SURGE_MULTIPLIER });
+});
+
+// ══════════════════════════════════════════════════
+//  DRIVER: Daily Bonus System
+// ══════════════════════════════════════════════════
+const BONUS_TIERS = [
+  { rides: 5,  bonus: 30,  tier: 1 },
+  { rides: 10, bonus: 50,  tier: 2 },
+  { rides: 15, bonus: 100, tier: 3 },
+];
+
+app.get('/api/driver/bonus-today', async (req, res) => {
+  const { phone } = req.query;
+  try {
+    const rides = await db.query(
+      `SELECT COUNT(*) as cnt FROM rides r JOIN users u ON r.driver_id=u.id WHERE u.phone=$1 AND r.status='completed' AND DATE(r.created_at)=CURRENT_DATE`,
+      [phone]
+    );
+    const ridesCount = parseInt(rides.rows[0].cnt);
+    const claimed = await db.query(
+      `SELECT bonus_tier FROM driver_bonus_claims WHERE driver_phone=$1 AND claim_date=CURRENT_DATE`,
+      [phone]
+    );
+    const claimedTiers = claimed.rows.map(r => r.bonus_tier);
+    const available = BONUS_TIERS.filter(t => ridesCount >= t.rides && !claimedTiers.includes(t.tier));
+    const next = BONUS_TIERS.find(t => ridesCount < t.rides);
+    res.json({ rides_today: ridesCount, available_bonuses: available, claimed_tiers: claimedTiers, next_target: next || null });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/api/driver/bonus-claim', async (req, res) => {
+  const { phone, tier } = req.body;
+  const tierInfo = BONUS_TIERS.find(t => t.tier === tier);
+  if (!tierInfo) return res.status(400).json({ error: 'Invalid tier' });
+  const client = await db.connect();
+  try {
+    await client.query('BEGIN');
+    const rides = await client.query(
+      `SELECT COUNT(*) as cnt FROM rides r JOIN users u ON r.driver_id=u.id WHERE u.phone=$1 AND r.status='completed' AND DATE(r.created_at)=CURRENT_DATE`,
+      [phone]
+    );
+    if (parseInt(rides.rows[0].cnt) < tierInfo.rides) { await client.query('ROLLBACK'); return res.json({ success: false, error: `${tierInfo.rides} rides chahiye` }); }
+    await client.query(
+      `INSERT INTO driver_bonus_claims (driver_phone, claim_date, rides_at_claim, bonus_tier, bonus_amount) VALUES ($1, CURRENT_DATE, $2, $3, $4)`,
+      [phone, parseInt(rides.rows[0].cnt), tier, tierInfo.bonus]
+    );
+    const u = await client.query('SELECT id FROM users WHERE phone=$1', [phone]);
+    if (u.rows[0]) {
+      await client.query('UPDATE driver_wallet SET balance=balance+$1, total_earned=total_earned+$1 WHERE driver_id=$2', [tierInfo.bonus, u.rows[0].id]);
+      await client.query("INSERT INTO transactions (user_id,type,amount,description) VALUES ($1,'credit',$2,'Daily bonus reward')", [u.rows[0].id, tierInfo.bonus]);
+    }
+    await client.query('COMMIT');
+    res.json({ success: true, bonus_amount: tierInfo.bonus, message: `₹${tierInfo.bonus} bonus wallet mein add ho gaya!` });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    if (err.code === '23505') return res.json({ success: false, error: 'Is tier ka bonus aaj already claim hua' });
+    res.status(500).json({ error: err.message });
+  }
+  finally { client.release(); }
+});
+
+// ══════════════════════════════════════════════════
+//  CUSTOMER: Loyalty Points System
+// ══════════════════════════════════════════════════
+app.get('/api/loyalty/my-points', async (req, res) => {
+  const { phone } = req.query;
+  try {
+    const user = await db.query('SELECT id FROM users WHERE phone=$1', [phone]);
+    if (!user.rows[0]) return res.json({ points: 0, redeemed: 0, rides: 0 });
+    const userId = user.rows[0].id;
+    await db.query('INSERT INTO customer_loyalty (user_id) VALUES ($1) ON CONFLICT (user_id) DO NOTHING', [userId]);
+    const loyalty = await db.query('SELECT total_points, total_redeemed FROM customer_loyalty WHERE user_id=$1', [userId]);
+    const rides = await db.query(`SELECT COUNT(*) as cnt FROM rides WHERE passenger_id=$1 AND status='completed'`, [userId]);
+    const pts = loyalty.rows[0] || { total_points: 0, total_redeemed: 0 };
+    res.json({ points: parseInt(pts.total_points), redeemed: parseInt(pts.total_redeemed), rides: parseInt(rides.rows[0].cnt), cashback_available: Math.floor(parseInt(pts.total_points) / 100) * 10 });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Auto-add loyalty points after ride payment (call this from payment-complete)
+const addLoyaltyPoints = async (userId, points) => {
+  try {
+    await db.query('INSERT INTO customer_loyalty (user_id, total_points) VALUES ($1,$2) ON CONFLICT (user_id) DO UPDATE SET total_points=customer_loyalty.total_points+$2, updated_at=NOW()', [userId, points]);
+  } catch (_e) {}
+};
+
+// ══════════════════════════════════════════════════
+//  START SERVER ─────────────────────────────────────
+// ══════════════════════════════════════════════════
 
 // ── Start Server ────────────────────────────────
 server.listen(process.env.PORT, '0.0.0.0', () => {
