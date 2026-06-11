@@ -2539,6 +2539,18 @@ db.query(`CREATE TABLE IF NOT EXISTS customer_loyalty (
   total_redeemed INTEGER DEFAULT 0,
   updated_at TIMESTAMP DEFAULT NOW()
 )`).catch(() => {});
+db.query(`CREATE TABLE IF NOT EXISTS marketing_campaigns (
+  id SERIAL PRIMARY KEY,
+  title VARCHAR(200) NOT NULL,
+  body TEXT,
+  target VARCHAR(20) DEFAULT 'all',
+  type VARCHAR(20) DEFAULT 'banner',
+  promo_code VARCHAR(50),
+  cta_label VARCHAR(100),
+  active BOOLEAN DEFAULT TRUE,
+  expires_at TIMESTAMP,
+  created_at TIMESTAMP DEFAULT NOW()
+)`).catch(() => {});
 
 db.query(`CREATE TABLE IF NOT EXISTS razorpay_topups (
   id SERIAL PRIMARY KEY,
@@ -2714,6 +2726,105 @@ app.post('/api/admin/topups/verify/:id', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+// ══════════════════════════════════════════════════
+//  MARKETING: Campaigns + Promo + Broadcast + Referral
+// ══════════════════════════════════════════════════
+
+// Active offers for apps
+app.get('/api/offers/active', async (req, res) => {
+  const { role } = req.query; // 'customer' | 'driver'
+  try {
+    const r = await db.query(
+      `SELECT * FROM marketing_campaigns
+       WHERE active=true AND (expires_at IS NULL OR expires_at > NOW())
+       AND (target='all' OR target=$1)
+       ORDER BY created_at DESC LIMIT 5`,
+      [role || 'customer']
+    );
+    res.json({ offers: r.rows });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Admin: list all campaigns
+app.get('/api/admin/campaigns', async (req, res) => {
+  try {
+    const r = await db.query('SELECT * FROM marketing_campaigns ORDER BY created_at DESC');
+    res.json({ campaigns: r.rows });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Admin: create campaign
+app.post('/api/admin/campaigns', async (req, res) => {
+  const { title, body, target, type, promo_code, cta_label, expires_at } = req.body;
+  if (!title) return res.status(400).json({ error: 'Title zaroori hai' });
+  try {
+    const r = await db.query(
+      `INSERT INTO marketing_campaigns (title,body,target,type,promo_code,cta_label,expires_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *`,
+      [title, body || '', target || 'all', type || 'banner', promo_code || null, cta_label || null, expires_at || null]
+    );
+    res.json({ success: true, campaign: r.rows[0] });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Admin: toggle campaign active
+app.post('/api/admin/campaigns/toggle/:id', async (req, res) => {
+  try {
+    const r = await db.query('UPDATE marketing_campaigns SET active=NOT active WHERE id=$1 RETURNING active', [req.params.id]);
+    res.json({ success: true, active: r.rows[0]?.active });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Admin: delete campaign
+app.delete('/api/admin/campaigns/:id', async (req, res) => {
+  try {
+    await db.query('DELETE FROM marketing_campaigns WHERE id=$1', [req.params.id]);
+    res.json({ success: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Admin: broadcast notification
+app.post('/api/admin/notify-all', async (req, res) => {
+  const { title, body, target } = req.body; // target: 'all'|'customers'|'drivers'
+  if (!title || !body) return res.status(400).json({ error: 'Title aur body zaroori hai' });
+  try {
+    let roleFilter = '';
+    if (target === 'customers') roleFilter = "WHERE role='passenger'";
+    else if (target === 'drivers') roleFilter = "WHERE role='driver'";
+    const users = await db.query(`SELECT phone, fcm_token FROM users ${roleFilter} WHERE fcm_token IS NOT NULL`);
+    let sent = 0, failed = 0;
+    // Fire-and-forget — respond first
+    res.json({ success: true, total_targets: users.rows.length, message: `Notification bheja ja raha hai...` });
+    for (const u of users.rows) {
+      try { await sendFCM(u.phone, title, body); sent++; } catch (_e) { failed++; }
+    }
+    console.log(`📣 Broadcast done: ${sent} sent, ${failed} failed`);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Admin: referral analytics
+app.get('/api/admin/referrals', async (req, res) => {
+  try {
+    const total = await db.query('SELECT COUNT(*) AS cnt FROM referrals');
+    const completed = await db.query("SELECT COUNT(*) AS cnt FROM referrals WHERE status='completed'");
+    const totalReward = await db.query("SELECT COALESCE(SUM(reward_amount),0) AS total FROM referrals WHERE status='completed'");
+    const topReferrers = await db.query(
+      `SELECT u.name, u.phone, COUNT(r.id) AS referrals, SUM(r.reward_amount) AS earned
+       FROM referrals r JOIN users u ON r.referrer_id=u.id
+       WHERE r.status='completed'
+       GROUP BY u.id,u.name,u.phone ORDER BY referrals DESC LIMIT 20`
+    );
+    const recent = await db.query(
+      `SELECT r.*, u1.name AS referrer_name, u1.phone AS referrer_phone, u2.name AS referred_name, u2.phone AS referred_phone
+       FROM referrals r
+       JOIN users u1 ON r.referrer_id=u1.id
+       JOIN users u2 ON r.referred_id=u2.id
+       ORDER BY r.created_at DESC LIMIT 50`
+    );
+    res.json({ total: parseInt(total.rows[0].cnt), completed: parseInt(completed.rows[0].cnt), total_reward: parseFloat(totalReward.rows[0].total), top_referrers: topReferrers.rows, recent: recent.rows });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
 // ── Admin HTML Portal ────────────────────────────
 app.get('/admin', (req, res) => {
   res.send(`<!DOCTYPE html>
@@ -2781,6 +2892,7 @@ tr:hover td{background:#fafafa}
     <button class="tab" onclick="showSection('customers')">👥 Customers</button>
     <button class="tab" onclick="showSection('drivers')">🚗 Drivers</button>
     <button class="tab" onclick="showSection('topups')">💳 Topups</button>
+    <button class="tab" onclick="showSection('marketing')">📣 Marketing</button>
     <button class="tab" onclick="showSection('settings')">⚙️ Settings</button>
   </div>
   <div id="transactions" class="section active">
@@ -2799,6 +2911,85 @@ tr:hover td{background:#fafafa}
     <div class="card"><div class="card-title">💳 Razorpay Topups</div>
     <div style="overflow-x:auto"><table id="topup-table"><thead><tr><th>Date</th><th>Phone</th><th>Amount</th><th>Payment ID</th><th>Status</th><th>Action</th></tr></thead><tbody id="topup-body"><tr><td colspan=6 class=loading>Loading...</td></tr></tbody></table></div></div>
   </div>
+  <div id="marketing" class="section">
+    <!-- Campaign/Banner Manager -->
+    <div class="grid2" style="margin-bottom:20px">
+      <div class="card">
+        <div class="card-title">📣 Create Campaign / Banner</div>
+        <input id="camp-title" placeholder="Title (e.g. 🎉 Weekend Offer!)" style="width:100%;padding:9px;border:1px solid #e0e0e0;border-radius:8px;margin-bottom:8px;font-size:13px">
+        <textarea id="camp-body" placeholder="Description (e.g. Sabhi rides pe 20% off!)" style="width:100%;padding:9px;border:1px solid #e0e0e0;border-radius:8px;margin-bottom:8px;font-size:13px;resize:none;height:60px"></textarea>
+        <div style="display:flex;gap:8px;margin-bottom:8px">
+          <select id="camp-target" style="flex:1;padding:9px;border:1px solid #e0e0e0;border-radius:8px;font-size:13px">
+            <option value="all">All (Customers + Drivers)</option>
+            <option value="customer">Customers Only</option>
+            <option value="driver">Drivers Only</option>
+          </select>
+          <select id="camp-type" style="flex:1;padding:9px;border:1px solid #e0e0e0;border-radius:8px;font-size:13px">
+            <option value="banner">Banner</option>
+            <option value="promo">Promo Code</option>
+            <option value="incentive">Driver Incentive</option>
+          </select>
+        </div>
+        <div style="display:flex;gap:8px;margin-bottom:8px">
+          <input id="camp-promo" placeholder="Promo code (optional)" style="flex:1;padding:9px;border:1px solid #e0e0e0;border-radius:8px;font-size:13px">
+          <input id="camp-cta" placeholder="Button label (e.g. Book Now!)" style="flex:1;padding:9px;border:1px solid #e0e0e0;border-radius:8px;font-size:13px">
+        </div>
+        <input id="camp-expires" type="datetime-local" style="width:100%;padding:9px;border:1px solid #e0e0e0;border-radius:8px;margin-bottom:10px;font-size:13px">
+        <button onclick="createCampaign()" style="width:100%;background:#e94560;color:#fff;border:none;border-radius:8px;padding:10px;cursor:pointer;font-weight:700;font-size:13px">🚀 Launch Campaign</button>
+        <div id="camp-status" style="font-size:13px;color:#4CAF50;margin-top:8px"></div>
+      </div>
+      <div class="card">
+        <div class="card-title">📲 Broadcast Notification</div>
+        <p style="font-size:12px;color:#888;margin-bottom:10px">FCM push notification seedha users ke phones pe bhejo</p>
+        <input id="notif-title" placeholder="Notification title" style="width:100%;padding:9px;border:1px solid #e0e0e0;border-radius:8px;margin-bottom:8px;font-size:13px">
+        <textarea id="notif-body" placeholder="Message text..." style="width:100%;padding:9px;border:1px solid #e0e0e0;border-radius:8px;margin-bottom:8px;font-size:13px;resize:none;height:60px"></textarea>
+        <select id="notif-target" style="width:100%;padding:9px;border:1px solid #e0e0e0;border-radius:8px;margin-bottom:10px;font-size:13px">
+          <option value="all">All Users</option>
+          <option value="customers">Customers Only</option>
+          <option value="drivers">Drivers Only</option>
+        </select>
+        <button onclick="sendBroadcast()" style="width:100%;background:#1a1a2e;color:#fff;border:none;border-radius:8px;padding:10px;cursor:pointer;font-weight:700;font-size:13px">📨 Send Notification</button>
+        <div id="notif-status" style="font-size:13px;margin-top:8px"></div>
+      </div>
+    </div>
+    <!-- Active Campaigns List -->
+    <div class="card" style="margin-bottom:20px">
+      <div class="card-title">🗓️ Active Campaigns <button class="refresh-btn" onclick="loadCampaigns()">Reload</button></div>
+      <div id="campaigns-list"><div class="loading">Loading...</div></div>
+    </div>
+    <!-- Promo Code Manager -->
+    <div class="grid2" style="margin-bottom:20px">
+      <div class="card">
+        <div class="card-title">🎫 Create Promo Code</div>
+        <input id="promo-code" placeholder="Code (e.g. RIDE50)" style="width:100%;padding:9px;border:1px solid #e0e0e0;border-radius:8px;margin-bottom:8px;font-size:13px;text-transform:uppercase">
+        <select id="promo-type" style="width:100%;padding:9px;border:1px solid #e0e0e0;border-radius:8px;margin-bottom:8px;font-size:13px">
+          <option value="flat">Flat Discount (₹)</option>
+          <option value="percent">Percent Discount (%)</option>
+        </select>
+        <div style="display:flex;gap:8px;margin-bottom:8px">
+          <input id="promo-value" type="number" placeholder="Discount value" style="flex:1;padding:9px;border:1px solid #e0e0e0;border-radius:8px;font-size:13px">
+          <input id="promo-max" type="number" placeholder="Max discount (₹)" style="flex:1;padding:9px;border:1px solid #e0e0e0;border-radius:8px;font-size:13px">
+        </div>
+        <div style="display:flex;gap:8px;margin-bottom:10px">
+          <input id="promo-minfare" type="number" placeholder="Min fare (₹)" style="flex:1;padding:9px;border:1px solid #e0e0e0;border-radius:8px;font-size:13px">
+          <input id="promo-limit" type="number" placeholder="Usage limit" style="flex:1;padding:9px;border:1px solid #e0e0e0;border-radius:8px;font-size:13px">
+        </div>
+        <button onclick="createPromo()" style="width:100%;background:#4CAF50;color:#fff;border:none;border-radius:8px;padding:10px;cursor:pointer;font-weight:700;font-size:13px">➕ Add Promo Code</button>
+        <div id="promo-create-status" style="font-size:13px;color:#4CAF50;margin-top:8px"></div>
+      </div>
+      <div class="card">
+        <div class="card-title">📋 All Promo Codes <button class="refresh-btn" onclick="loadPromos()">Reload</button></div>
+        <div id="promos-list"><div class="loading">Loading...</div></div>
+      </div>
+    </div>
+    <!-- Referral Analytics -->
+    <div class="card">
+      <div class="card-title">👥 Referral Analytics <button class="refresh-btn" onclick="loadReferrals()">Reload</button></div>
+      <div id="referral-stats" style="margin-bottom:14px"></div>
+      <div style="overflow-x:auto"><table id="referral-table"><thead><tr><th>Date</th><th>Referrer</th><th>Referred</th><th>Reward</th></tr></thead><tbody id="referral-body"><tr><td colspan=4 class=loading>Loading...</td></tr></tbody></table></div>
+    </div>
+  </div>
+
   <div id="settings" class="section">
     <div class="grid2">
       <div class="card">
@@ -2850,6 +3041,7 @@ function showSection(id) {
   if (id==='drivers' && document.getElementById('drv-body').children[0]?.colSpan) loadDrivers();
   if (id==='topups' && document.getElementById('topup-body').children[0]?.colSpan) loadTopups();
   if (id==='settings') loadFares();
+  if (id==='marketing') { loadCampaigns(); loadPromos(); loadReferrals(); }
 }
 function fmt(d){return new Date(d).toLocaleString('en-IN',{day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'})}
 function rupee(n){return '₹'+parseFloat(n||0).toFixed(0)}
@@ -2939,6 +3131,102 @@ async function loadFares() {
   });
   html += '</tbody></table></div>';
   document.getElementById('fares-display').innerHTML = html;
+}
+async function createCampaign() {
+  const title = document.getElementById('camp-title').value.trim();
+  const body = document.getElementById('camp-body').value.trim();
+  const target = document.getElementById('camp-target').value;
+  const type = document.getElementById('camp-type').value;
+  const promo_code = document.getElementById('camp-promo').value.trim() || null;
+  const cta_label = document.getElementById('camp-cta').value.trim() || null;
+  const expires_at = document.getElementById('camp-expires').value || null;
+  if (!title) { document.getElementById('camp-status').textContent = '❌ Title zaroori hai'; return; }
+  const d = await fetch(API+'/api/admin/campaigns', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({title,body,target,type,promo_code,cta_label,expires_at})}).then(r=>r.json());
+  document.getElementById('camp-status').textContent = d.success ? '✅ Campaign launch ho gaya!' : '❌ '+d.error;
+  if (d.success) { document.getElementById('camp-title').value=''; document.getElementById('camp-body').value=''; loadCampaigns(); }
+}
+async function loadCampaigns() {
+  const d = await fetch(API+'/api/admin/campaigns').then(r=>r.json());
+  const now = new Date();
+  document.getElementById('campaigns-list').innerHTML = d.campaigns.length ? d.campaigns.map(c => \`
+    <div style="display:flex;align-items:center;gap:12px;padding:12px;border-radius:10px;background:\${c.active?'#f8f9fa':'#fff'};margin-bottom:8px;border:1px solid #f0f0f0">
+      <div style="flex:1">
+        <div style="font-weight:700;font-size:14px">\${c.title}</div>
+        <div style="font-size:12px;color:#666;margin-top:2px">\${c.body||''}</div>
+        <div style="font-size:11px;color:#aaa;margin-top:4px">Target: \${c.target} · Type: \${c.type}\${c.promo_code?' · Code: '+c.promo_code:''}\${c.expires_at?' · Expires: '+fmt(c.expires_at):' · No expiry'}</div>
+      </div>
+      <div style="display:flex;gap:8px;align-items:center">
+        <span style="background:\${c.active?'#e8f5e9':'#f5f5f5'};color:\${c.active?'#2e7d32':'#999'};padding:3px 10px;border-radius:10px;font-size:11px;font-weight:700">\${c.active?'ACTIVE':'PAUSED'}</span>
+        <button onclick="toggleCampaign(\${c.id})" style="background:\${c.active?'#fff3e0':'#e8f5e9'};color:\${c.active?'#e65100':'#2e7d32'};border:none;border-radius:6px;padding:5px 10px;cursor:pointer;font-size:11px;font-weight:700">\${c.active?'Pause':'Resume'}</button>
+        <button onclick="deleteCampaign(\${c.id})" style="background:#ffebee;color:#c62828;border:none;border-radius:6px;padding:5px 10px;cursor:pointer;font-size:11px;font-weight:700">Delete</button>
+      </div>
+    </div>
+  \`).join('') : '<div style="text-align:center;color:#bbb;padding:20px">Koi campaign nahi</div>';
+}
+async function toggleCampaign(id) {
+  await fetch(API+'/api/admin/campaigns/toggle/'+id, {method:'POST'});
+  loadCampaigns();
+}
+async function deleteCampaign(id) {
+  if (!confirm('Delete this campaign?')) return;
+  await fetch(API+'/api/admin/campaigns/'+id, {method:'DELETE'});
+  loadCampaigns();
+}
+async function sendBroadcast() {
+  const title = document.getElementById('notif-title').value.trim();
+  const body = document.getElementById('notif-body').value.trim();
+  const target = document.getElementById('notif-target').value;
+  if (!title || !body) { document.getElementById('notif-status').textContent = '❌ Title aur body zaroori hai'; return; }
+  document.getElementById('notif-status').textContent = '⏳ Bhej raha hai...';
+  document.getElementById('notif-status').style.color = '#e65100';
+  const d = await fetch(API+'/api/admin/notify-all', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({title,body,target})}).then(r=>r.json());
+  document.getElementById('notif-status').textContent = d.success ? \`✅ Bheja! Target: \${d.total_targets} users\` : '❌ '+d.error;
+  document.getElementById('notif-status').style.color = d.success ? '#2e7d32' : '#c62828';
+}
+async function createPromo() {
+  const code = document.getElementById('promo-code').value.toUpperCase().trim();
+  const discount_type = document.getElementById('promo-type').value;
+  const discount_value = parseFloat(document.getElementById('promo-value').value) || 0;
+  const max_discount = parseFloat(document.getElementById('promo-max').value) || null;
+  const min_fare = parseFloat(document.getElementById('promo-minfare').value) || 0;
+  const usage_limit = parseInt(document.getElementById('promo-limit').value) || null;
+  if (!code || !discount_value) { document.getElementById('promo-create-status').textContent = '❌ Code aur discount zaroori hai'; return; }
+  const d = await fetch(API+'/api/admin/promos', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({code,discount_type,discount_value,max_discount,min_fare,usage_limit})}).then(r=>r.json());
+  document.getElementById('promo-create-status').textContent = d.success ? '✅ Promo create ho gaya!' : '❌ '+d.error;
+  if (d.success) loadPromos();
+}
+async function loadPromos() {
+  const d = await fetch(API+'/api/admin/promos').then(r=>r.json());
+  document.getElementById('promos-list').innerHTML = d.promos.length ? \`<table style="width:100%;border-collapse:collapse;font-size:12px">
+    <thead><tr><th style="padding:7px;background:#f5f5f5">Code</th><th style="padding:7px;background:#f5f5f5">Type</th><th style="padding:7px;background:#f5f5f5">Value</th><th style="padding:7px;background:#f5f5f5">Used</th><th style="padding:7px;background:#f5f5f5">Status</th><th style="padding:7px;background:#f5f5f5">Action</th></tr></thead>
+    <tbody>\${d.promos.map(p=>\`<tr>
+      <td style="padding:7px;font-weight:700;font-family:monospace">\${p.code}</td>
+      <td style="padding:7px">\${p.discount_type==='flat'?'Flat ₹':'%'}</td>
+      <td style="padding:7px">\${p.discount_type==='flat'?'₹':''}\${p.discount_value}\${p.discount_type==='percent'?'%':''}</td>
+      <td style="padding:7px">\${p.used_count||0}\${p.usage_limit?'/'+p.usage_limit:''}</td>
+      <td style="padding:7px"><span style="background:\${p.active?'#e8f5e9':'#ffebee'};color:\${p.active?'#2e7d32':'#c62828'};padding:2px 8px;border-radius:8px;font-size:10px;font-weight:700">\${p.active?'ACTIVE':'OFF'}</span></td>
+      <td style="padding:7px"><button onclick="togglePromo('\${p.code}',\${!p.active})" style="background:#f5f5f5;border:none;border-radius:6px;padding:4px 10px;cursor:pointer;font-size:11px">\${p.active?'Disable':'Enable'}</button></td>
+    </tr>\`).join('')}</tbody></table>\` : '<div style="color:#bbb;padding:20px;text-align:center">Koi promo nahi</div>';
+}
+async function togglePromo(code, active) {
+  await fetch(API+'/api/admin/promos/toggle', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({code,active})});
+  loadPromos();
+}
+async function loadReferrals() {
+  const d = await fetch(API+'/api/admin/referrals').then(r=>r.json());
+  document.getElementById('referral-stats').innerHTML = \`
+    <div style="display:flex;gap:12px;flex-wrap:wrap">
+      <div style="background:#e8f5e9;border-radius:10px;padding:12px 20px;text-align:center"><div style="font-size:22px;font-weight:800;color:#2e7d32">\${d.total}</div><div style="font-size:11px;color:#666">Total Referrals</div></div>
+      <div style="background:#e8f5e9;border-radius:10px;padding:12px 20px;text-align:center"><div style="font-size:22px;font-weight:800;color:#2e7d32">\${d.completed}</div><div style="font-size:11px;color:#666">Completed</div></div>
+      <div style="background:#fff3e0;border-radius:10px;padding:12px 20px;text-align:center"><div style="font-size:22px;font-weight:800;color:#e65100">\${rupee(d.total_reward)}</div><div style="font-size:11px;color:#666">Total Rewarded</div></div>
+    </div>
+  \`;
+  document.getElementById('referral-body').innerHTML = d.recent.map(r=>\`<tr>
+    <td>\${fmt(r.created_at)}</td>
+    <td>\${r.referrer_name||'-'} (\${r.referrer_phone})</td>
+    <td>\${r.referred_name||'-'} (\${r.referred_phone})</td>
+    <td class="amount-green">\${rupee(r.reward_amount)}</td>
+  </tr>\`).join('');
 }
 async function loadAll() {
   document.getElementById('last-refresh').textContent = new Date().toLocaleTimeString('en-IN');
