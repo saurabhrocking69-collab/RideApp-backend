@@ -1,3 +1,15 @@
+const admin = require('firebase-admin');
+
+// Firebase Admin initialize
+try {
+  const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT || '{}');
+  admin.initializeApp({
+    credential: admin.credential.cert(serviceAccount),
+  });
+  console.log('✅ Firebase Admin initialized');
+} catch (e) {
+  console.log('⚠️ Firebase Admin error:', e.message);
+}
 const express      = require('express');
 const cors         = require('cors');
 const http         = require('http');
@@ -2212,20 +2224,26 @@ async function sendFCM(phone, title, body) {
   try {
     const user = await db.query('SELECT fcm_token FROM users WHERE phone = $1', [phone]);
     const token = user.rows[0]?.fcm_token;
-    if (!token) return;
+    if (!token) { console.log('⚠️ No FCM token for', phone); return; }
 
-    await fetch('https://exp.host/--/api/v2/push/send', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        to: token,
-        title,
-        body,
-        sound: 'default',
-        priority: 'high',
-      })
+    // Expo Push Token hai toh Expo API use karo
+    if (token.startsWith('ExponentPushToken')) {
+      await fetch('https://exp.host/--/api/v2/push/send', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ to: token, title, body, sound: 'default', priority: 'high' })
+      });
+      console.log('✅ Expo FCM sent to', phone);
+      return;
+    }
+
+    // Native FCM token — Firebase Admin use karo
+    await admin.messaging().send({
+      token,
+      notification: { title, body },
+      android: { priority: 'high', notification: { sound: 'default', channelId: 'default' } },
     });
-    console.log('✅ FCM sent to', phone);
+    console.log('✅ Firebase FCM sent to', phone);
   } catch (e) {
     console.log('FCM error:', e.message);
   }
