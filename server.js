@@ -1,14 +1,15 @@
 const admin = require('firebase-admin');
+const { credential } = require('firebase-admin/app');
 
 // Firebase Admin initialize
 try {
   const sa = process.env.FIREBASE_SERVICE_ACCOUNT;
   if (sa) {
     const serviceAccount = JSON.parse(sa);
-    admin.initializeApp({ credential: admin.credential.cert(serviceAccount) });
+    admin.initializeApp({ credential: credential.cert(serviceAccount) });
     console.log('✅ Firebase Admin initialized');
   } else {
-    console.log('⚠️ FIREBASE_SERVICE_ACCOUNT not set');
+    console.log('⚠️ FIREBASE_SERVICE_ACCOUNT not set - FCM disabled');
   }
 } catch (e) {
   console.log('⚠️ Firebase Admin error:', e.message);
