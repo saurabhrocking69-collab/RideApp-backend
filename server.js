@@ -4,6 +4,7 @@ const { credential } = require('firebase-admin/app');
 // Firebase Admin initialize
 try {
   const sa = process.env.FIREBASE_SERVICE_ACCOUNT;
+  console.log('🔍 SA type:', typeof sa, '| Length:', sa?.length, '| First char:', sa?.[0]);
   if (sa) {
     const serviceAccount = JSON.parse(sa);
     admin.initializeApp({ credential: credential.cert(serviceAccount) });
