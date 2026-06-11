@@ -2246,6 +2246,231 @@ async function sendFCM(phone, title, body) {
   }
 }
 
+// ══════════════════════════════════════════════════
+//  HOURLY BOOKING SYSTEM — Standalone, no rides table changes
+// ══════════════════════════════════════════════════
+const HOURLY_FARES = {
+  auto:    { 2:{fare:180,km:20}, 4:{fare:320,km:40}, 6:{fare:460,km:60}, 8:{fare:580,km:80}, extra:8  },
+  bike:    { 2:{fare:120,km:20}, 4:{fare:210,km:40}, 6:{fare:300,km:60}, 8:{fare:380,km:80}, extra:5  },
+  car:     { 2:{fare:260,km:20}, 4:{fare:460,km:40}, 6:{fare:660,km:60}, 8:{fare:840,km:80}, extra:12 },
+  eriksha: { 2:{fare:150,km:20}, 4:{fare:270,km:40}, 6:{fare:390,km:60}, 8:{fare:490,km:80}, extra:7  },
+};
+
+db.query(`CREATE TABLE IF NOT EXISTS hourly_bookings (
+  id SERIAL PRIMARY KEY,
+  customer_phone VARCHAR(15), driver_phone VARCHAR(15),
+  vehicle_type VARCHAR(20), package_hours INTEGER, km_included INTEGER,
+  stay_hours INTEGER DEFAULT 0, is_roundtrip BOOLEAN DEFAULT FALSE,
+  pickup TEXT, pickup_lat FLOAT, pickup_lng FLOAT,
+  drop_location TEXT, drop_lat FLOAT, drop_lng FLOAT,
+  base_fare DECIMAL(10,2), total_fare DECIMAL(10,2),
+  extra_km INTEGER DEFAULT 0, extra_km_charge DECIMAL(10,2) DEFAULT 0,
+  payment_status VARCHAR(20) DEFAULT 'held', status VARCHAR(20) DEFAULT 'pending',
+  early_end_requested_by VARCHAR(20), early_end_confirmed BOOLEAN DEFAULT FALSE,
+  started_at TIMESTAMP, ended_at TIMESTAMP, actual_hours FLOAT,
+  actual_km INTEGER DEFAULT 0, driver_earning DECIMAL(10,2), platform_fee DECIMAL(10,2),
+  refund_amount DECIMAL(10,2) DEFAULT 0, otp VARCHAR(6), created_at TIMESTAMP DEFAULT NOW()
+)`).then(() => console.log('✅ hourly_bookings table ready')).catch(e => console.log('hourly_bookings:', e.message));
+
+app.get('/api/hourly/packages', (req, res) => res.json({ fares: HOURLY_FARES }));
+
+app.post('/api/hourly/book', async (req, res) => {
+  const { phone, vehicle_type, package_hours, pickup, pickup_lat, pickup_lng, drop_location, drop_lat, drop_lng, is_roundtrip, stay_hours } = req.body;
+  const client = await db.connect();
+  try {
+    const pkg = HOURLY_FARES[vehicle_type]?.[package_hours];
+    if (!pkg) return res.status(400).json({ error: 'Invalid package' });
+    await client.query('BEGIN');
+    const user = await client.query('SELECT id FROM users WHERE phone = $1', [phone]);
+    if (!user.rows[0]) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'User nahi mila' }); }
+    const userId = user.rows[0].id;
+    const wallet = await client.query('SELECT balance FROM customer_wallet WHERE user_id = $1', [userId]);
+    const balance = wallet.rows[0] ? parseFloat(wallet.rows[0].balance) : 0;
+    if (balance < pkg.fare) { await client.query('ROLLBACK'); return res.json({ success: false, error: `Wallet mein ₹${pkg.fare} chahiye, aapke paas ₹${balance.toFixed(0)} hai` }); }
+    await client.query('UPDATE customer_wallet SET balance = balance - $1 WHERE user_id = $2', [pkg.fare, userId]);
+    await client.query("INSERT INTO transactions (user_id, type, amount, description) VALUES ($1,'debit',$2,'Hourly booking - escrow')", [userId, pkg.fare]);
+    const otp = Math.floor(1000 + Math.random() * 9000).toString();
+    const bk = await client.query(
+      `INSERT INTO hourly_bookings (customer_phone,vehicle_type,package_hours,km_included,base_fare,total_fare,pickup,pickup_lat,pickup_lng,drop_location,drop_lat,drop_lng,is_roundtrip,stay_hours,otp)
+       VALUES ($1,$2,$3,$4,$5,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) RETURNING id`,
+      [phone, vehicle_type, package_hours, pkg.km, pkg.fare, pickup, pickup_lat||null, pickup_lng||null, drop_location||null, drop_lat||null, drop_lng||null, is_roundtrip||false, stay_hours||0, otp]
+    );
+    await client.query('COMMIT');
+    res.json({ success: true, booking_id: bk.rows[0].id, fare: pkg.fare, km_included: pkg.km });
+  } catch (err) { await client.query('ROLLBACK'); res.status(500).json({ error: err.message }); }
+  finally { client.release(); }
+});
+
+app.get('/api/hourly/status/:id', async (req, res) => {
+  try {
+    const r = await db.query('SELECT * FROM hourly_bookings WHERE id = $1', [req.params.id]);
+    if (!r.rows[0]) return res.status(404).json({ error: 'Nahi mili' });
+    const b = r.rows[0];
+    let driver = null;
+    if (b.driver_phone) {
+      const d = await db.query('SELECT u.name, d.vehicle_no FROM users u JOIN drivers d ON u.id = d.id WHERE u.phone = $1', [b.driver_phone]);
+      driver = d.rows[0] || null;
+    }
+    res.json({ booking: b, driver });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.get('/api/hourly/driver-pending', async (req, res) => {
+  const { phone } = req.query;
+  try {
+    const dr = await db.query('SELECT d.vehicle_type FROM drivers d JOIN users u ON d.id = u.id WHERE u.phone = $1', [phone]);
+    if (!dr.rows[0]) return res.json({ booking: null });
+    const r = await db.query(
+      `SELECT * FROM hourly_bookings WHERE status='pending' AND driver_phone IS NULL AND vehicle_type=$1 AND created_at > NOW() - INTERVAL '10 minutes' ORDER BY created_at ASC LIMIT 1`,
+      [dr.rows[0].vehicle_type]
+    );
+    res.json({ booking: r.rows[0] || null });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/api/hourly/accept', async (req, res) => {
+  const { booking_id, driver_phone } = req.body;
+  try {
+    const result = await db.query(
+      `UPDATE hourly_bookings SET driver_phone=$1, status='matched' WHERE id=$2 AND status='pending' AND driver_phone IS NULL RETURNING *`,
+      [driver_phone, booking_id]
+    );
+    if (result.rows.length === 0) return res.json({ success: false, message: 'Already taken' });
+    sendFCM(result.rows[0].customer_phone, '⏱️ Driver Mil Gaya!', 'Hourly booking ke liye driver aa raha hai!');
+    res.json({ success: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/api/hourly/start', async (req, res) => {
+  const { booking_id, otp } = req.body;
+  try {
+    const r = await db.query('SELECT otp FROM hourly_bookings WHERE id=$1', [booking_id]);
+    if (!r.rows[0] || r.rows[0].otp !== otp) return res.status(400).json({ success: false, message: 'Galat OTP!' });
+    await db.query(`UPDATE hourly_bookings SET status='active', started_at=NOW() WHERE id=$1`, [booking_id]);
+    res.json({ success: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.get('/api/hourly/driver-active', async (req, res) => {
+  const { phone } = req.query;
+  try {
+    const r = await db.query(
+      `SELECT * FROM hourly_bookings WHERE driver_phone=$1 AND status IN ('matched','active') ORDER BY created_at DESC LIMIT 1`,
+      [phone]
+    );
+    res.json({ booking: r.rows[0] || null });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/api/hourly/complete', async (req, res) => {
+  const { booking_id, actual_km } = req.body;
+  const client = await db.connect();
+  try {
+    await client.query('BEGIN');
+    const r = await client.query('SELECT * FROM hourly_bookings WHERE id=$1', [booking_id]);
+    if (!r.rows[0]) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'Nahi mila' }); }
+    const b = r.rows[0];
+    const extraKm = Math.max(0, (actual_km||0) - b.km_included);
+    const extraCharge = extraKm * (HOURLY_FARES[b.vehicle_type]?.extra || 8);
+    const totalFare = parseFloat(b.base_fare) + extraCharge;
+    const commission = Math.round(totalFare * 0.12 * 100) / 100;
+    const driverEarning = Math.round((totalFare - commission) * 100) / 100;
+    const actualHours = b.started_at ? (Date.now() - new Date(b.started_at).getTime()) / 3600000 : b.package_hours;
+    const driverUser = await client.query('SELECT id FROM users WHERE phone=$1', [b.driver_phone]);
+    if (driverUser.rows[0]) await client.query('UPDATE driver_wallet SET balance=balance+$1, total_earned=total_earned+$1 WHERE driver_id=$2', [driverEarning, driverUser.rows[0].id]);
+    if (extraCharge > 0) {
+      const cu = await client.query('SELECT id FROM users WHERE phone=$1', [b.customer_phone]);
+      if (cu.rows[0]) {
+        await client.query('UPDATE customer_wallet SET balance=balance-$1 WHERE user_id=$2', [extraCharge, cu.rows[0].id]);
+        await client.query("INSERT INTO transactions (user_id,type,amount,description) VALUES ($1,'debit',$2,'Hourly - extra km charge')", [cu.rows[0].id, extraCharge]);
+      }
+    }
+    await client.query(
+      `UPDATE hourly_bookings SET status='completed', ended_at=NOW(), actual_km=$1, extra_km=$2, extra_km_charge=$3, total_fare=$4, actual_hours=$5, driver_earning=$6, platform_fee=$7, payment_status='released' WHERE id=$8`,
+      [actual_km||0, extraKm, extraCharge, totalFare, actualHours, driverEarning, commission, booking_id]
+    );
+    await client.query('COMMIT');
+    sendFCM(b.customer_phone, '⏱️ Hourly Trip Complete!', `Trip khatam! Total: ₹${totalFare.toFixed(0)}`);
+    res.json({ success: true, total_fare: totalFare, driver_earning: driverEarning, extra_km: extraKm, extra_km_charge: extraCharge });
+  } catch (err) { await client.query('ROLLBACK'); res.status(500).json({ error: err.message }); }
+  finally { client.release(); }
+});
+
+app.post('/api/hourly/early-end-request', async (req, res) => {
+  const { booking_id, requested_by } = req.body;
+  try {
+    const r = await db.query('UPDATE hourly_bookings SET early_end_requested_by=$1 WHERE id=$2 RETURNING *', [requested_by, booking_id]);
+    if (!r.rows[0]) return res.status(404).json({ error: 'Nahi mila' });
+    const b = r.rows[0];
+    if (requested_by === 'driver') sendFCM(b.customer_phone, '⚠️ Driver Trip End Karna Chahta Hai', 'App mein confirm ya reject karo.');
+    else sendFCM(b.driver_phone, '⚠️ Customer Trip End Karna Chahta Hai', 'App mein confirm ya reject karo.');
+    res.json({ success: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/api/hourly/early-end-confirm', async (req, res) => {
+  const { booking_id } = req.body;
+  const client = await db.connect();
+  try {
+    await client.query('BEGIN');
+    const r = await client.query('SELECT * FROM hourly_bookings WHERE id=$1', [booking_id]);
+    if (!r.rows[0]) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'Nahi mila' }); }
+    const b = r.rows[0];
+    const actualHours = b.started_at ? (Date.now() - new Date(b.started_at).getTime()) / 3600000 : 0;
+    const proportion = Math.max(0.70, actualHours / b.package_hours);
+    const driverAmount = Math.round(parseFloat(b.base_fare) * proportion);
+    const refund = Math.round(parseFloat(b.base_fare) - driverAmount);
+    const commission = Math.round(driverAmount * 0.12);
+    const driverEarning = driverAmount - commission;
+    const driverUser = await client.query('SELECT id FROM users WHERE phone=$1', [b.driver_phone]);
+    if (driverUser.rows[0]) await client.query('UPDATE driver_wallet SET balance=balance+$1, total_earned=total_earned+$1 WHERE driver_id=$2', [driverEarning, driverUser.rows[0].id]);
+    if (refund > 0) {
+      const cu = await client.query('SELECT id FROM users WHERE phone=$1', [b.customer_phone]);
+      if (cu.rows[0]) {
+        await client.query('UPDATE customer_wallet SET balance=balance+$1 WHERE user_id=$2', [refund, cu.rows[0].id]);
+        await client.query("INSERT INTO transactions (user_id,type,amount,description) VALUES ($1,'credit',$2,'Hourly - early end refund')", [cu.rows[0].id, refund]);
+      }
+    }
+    await client.query(
+      `UPDATE hourly_bookings SET status='completed', ended_at=NOW(), actual_hours=$1, driver_earning=$2, platform_fee=$3, refund_amount=$4, payment_status='released', early_end_confirmed=true WHERE id=$5`,
+      [actualHours, driverEarning, commission, refund, booking_id]
+    );
+    await client.query('COMMIT');
+    sendFCM(b.customer_phone, '✅ Trip End Confirm', `₹${refund} wallet mein wapas aa gaye!`);
+    sendFCM(b.driver_phone, '✅ Trip Complete', `₹${driverEarning} aapki kamai!`);
+    res.json({ success: true, driver_earning: driverEarning, refund, actual_hours: actualHours.toFixed(1) });
+  } catch (err) { await client.query('ROLLBACK'); res.status(500).json({ error: err.message }); }
+  finally { client.release(); }
+});
+
+app.post('/api/hourly/early-end-reject', async (req, res) => {
+  const { booking_id } = req.body;
+  try {
+    await db.query('UPDATE hourly_bookings SET early_end_requested_by=NULL WHERE id=$1', [booking_id]);
+    res.json({ success: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/api/hourly/cancel', async (req, res) => {
+  const { booking_id, phone } = req.body;
+  const client = await db.connect();
+  try {
+    await client.query('BEGIN');
+    const r = await client.query("SELECT * FROM hourly_bookings WHERE id=$1 AND status='pending'", [booking_id]);
+    if (!r.rows[0]) { await client.query('ROLLBACK'); return res.json({ success: false, message: 'Cancel nahi ho sakta' }); }
+    const b = r.rows[0];
+    const cu = await client.query('SELECT id FROM users WHERE phone=$1', [b.customer_phone]);
+    if (cu.rows[0]) {
+      await client.query('UPDATE customer_wallet SET balance=balance+$1 WHERE user_id=$2', [b.base_fare, cu.rows[0].id]);
+      await client.query("INSERT INTO transactions (user_id,type,amount,description) VALUES ($1,'credit',$2,'Hourly booking cancelled - refund')", [cu.rows[0].id, b.base_fare]);
+    }
+    await client.query("UPDATE hourly_bookings SET status='cancelled', payment_status='refunded' WHERE id=$1", [booking_id]);
+    await client.query('COMMIT');
+    res.json({ success: true, refunded: b.base_fare });
+  } catch (err) { await client.query('ROLLBACK'); res.status(500).json({ error: err.message }); }
+  finally { client.release(); }
+});
+
 // ── Start Server ────────────────────────────────
 server.listen(process.env.PORT, '0.0.0.0', () => {
   console.log('🚀 Server running on port ' + process.env.PORT);
