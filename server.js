@@ -206,23 +206,9 @@ app.post('/api/auth/send-otp', async (req, res) => {
   await redis.setEx('otp:sent:' + phone, 60, '1');    // 60 sec resend block
   await redis.del('otp:attempts:' + phone);            // Reset attempts
 
-  // 2Factor se real OTP bhejo
-  try {
-    const smsRes = await fetch(`https://2factor.in/API/V1/${process.env.TWOFACTOR_KEY}/SMS/${phone}/${otp}/OTP1`);
-    const smsData = await smsRes.json();
-    console.log('📱 2Factor response:', smsData);
-
-    if (smsData.Status === 'Success') {
-      console.log('✅ OTP sent to', phone);
-      res.json({ message: 'OTP bheja gaya', success: true });
-    } else {
-      console.log('⚠️ SMS fail, test OTP:', otp);
-      res.json({ message: 'OTP bheja gaya', success: true, otp }); // Fallback
-    }
-  } catch (err) {
-    console.log('SMS error:', err.message, '| Test OTP:', otp);
-    res.json({ message: 'OTP bheja gaya', success: true, otp }); // Fallback
-  }
+  // Test OTP — screen pe dikhao
+  console.log('📱 Test OTP for', phone, ':', otp);
+  res.json({ message: 'OTP bheja gaya', success: true, otp });
 });
 
 // ── OTP Verify ──────────────────────────────────
