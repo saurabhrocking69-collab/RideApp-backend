@@ -2406,13 +2406,13 @@ app.get('/api/hourly/driver-active', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-app.post('/api/hourly/complete', async (req, res) => {
-  const { booking_id, actual_km } = req.body;
+// ── Hourly completion helper (called from complete + auto-confirm timer) ──
+async function doCompleteHourly(booking_id, actual_km) {
   const client = await db.connect();
   try {
     await client.query('BEGIN');
     const r = await client.query('SELECT * FROM hourly_bookings WHERE id=$1', [booking_id]);
-    if (!r.rows[0]) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'Nahi mila' }); }
+    if (!r.rows[0]) { await client.query('ROLLBACK'); client.release(); return null; }
     const b = r.rows[0];
     const extraKm = Math.max(0, (actual_km||0) - b.km_included);
     const extraCharge = extraKm * (HOURLY_FARES[b.vehicle_type]?.extra || 8);
@@ -2430,22 +2430,73 @@ app.post('/api/hourly/complete', async (req, res) => {
       }
     }
     await client.query(
-      `UPDATE hourly_bookings SET status='completed', ended_at=NOW(), actual_km=$1, extra_km=$2, extra_km_charge=$3, total_fare=$4, actual_hours=$5, driver_earning=$6, platform_fee=$7, payment_status='released' WHERE id=$8`,
+      `UPDATE hourly_bookings SET status='completed', ended_at=NOW(), actual_km=$1, extra_km=$2, extra_km_charge=$3, total_fare=$4, actual_hours=$5, driver_earning=$6, platform_fee=$7, payment_status='released', pending_customer_confirm=false WHERE id=$8`,
       [actual_km||0, extraKm, extraCharge, totalFare, actualHours, driverEarning, commission, booking_id]
     );
     await client.query('COMMIT');
     sendFCM(b.customer_phone, '⏱️ Hourly Trip Complete!', `Trip khatam! Total: ₹${totalFare.toFixed(0)}`);
-    res.json({ success: true, total_fare: totalFare, driver_earning: driverEarning, extra_km: extraKm, extra_km_charge: extraCharge });
-  } catch (err) { await client.query('ROLLBACK'); res.status(500).json({ error: err.message }); }
-  finally { client.release(); }
+    sendFCM(b.driver_phone, '✅ Trip Complete', `₹${driverEarning.toFixed(0)} aapki kamai!`);
+    client.release();
+    return { total_fare: totalFare, driver_earning: driverEarning, extra_km: extraKm, extra_km_charge: extraCharge };
+  } catch (err) {
+    await client.query('ROLLBACK'); client.release(); throw err;
+  }
+}
+
+app.post('/api/hourly/complete', async (req, res) => {
+  const { booking_id, actual_km } = req.body;
+  try {
+    const r = await db.query("SELECT * FROM hourly_bookings WHERE id=$1 AND status='active'", [booking_id]);
+    if (!r.rows[0]) return res.status(404).json({ error: 'Active booking nahi mila' });
+    const b = r.rows[0];
+
+    // Layer 1: 20-min minimum lock after OTP start
+    const elapsedMin = b.started_at ? (Date.now() - new Date(b.started_at).getTime()) / 60000 : 999;
+    if (elapsedMin < 20) {
+      const waitMin = Math.ceil(20 - elapsedMin);
+      return res.json({ success: false, too_early: true, wait_mins: waitMin, message: `Trip complete karne ke liye ${waitMin} min aur wait karo` });
+    }
+
+    // Layer 2: < 70% time elapsed without mutual early-end → need customer confirmation
+    const proportion = elapsedMin / (parseFloat(b.package_hours) * 60);
+    if (proportion < 0.70 && !b.early_end_confirmed) {
+      await db.query('UPDATE hourly_bookings SET pending_customer_confirm=true, actual_km=$1 WHERE id=$2', [actual_km||0, booking_id]);
+      sendFCM(b.customer_phone, '⚠️ Driver ne Trip Complete Kiya', 'App kholein — confirm ya dispute karein (10 min mein auto-confirm)');
+      // Auto-confirm after 10 minutes if customer doesn't respond
+      setTimeout(async () => {
+        try {
+          const check = await db.query("SELECT id FROM hourly_bookings WHERE id=$1 AND pending_customer_confirm=true AND status='active'", [booking_id]);
+          if (check.rows[0]) await doCompleteHourly(booking_id, actual_km||0);
+        } catch (_e) {}
+      }, 10 * 60 * 1000);
+      return res.json({ success: true, pending_confirm: true, message: 'Customer confirmation ka intezaar — 10 min mein auto-complete hoga' });
+    }
+
+    // Normal completion (≥70% time or mutual early-end already confirmed)
+    const result = await doCompleteHourly(booking_id, actual_km||0);
+    res.json({ success: true, ...result });
+  } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 app.post('/api/hourly/early-end-request', async (req, res) => {
   const { booking_id, requested_by } = req.body;
   try {
-    const r = await db.query('UPDATE hourly_bookings SET early_end_requested_by=$1 WHERE id=$2 RETURNING *', [requested_by, booking_id]);
+    const r = await db.query('SELECT * FROM hourly_bookings WHERE id=$1', [booking_id]);
     if (!r.rows[0]) return res.status(404).json({ error: 'Nahi mila' });
     const b = r.rows[0];
+    // Locked after 2 rejections
+    if ((b.early_end_reject_count || 0) >= 2) {
+      return res.json({ success: false, locked: true, message: '2 baar reject ho chuka — Support se contact karo' });
+    }
+    // 15-min cooldown after last rejection
+    if (b.early_end_last_rejected_at) {
+      const msSince = Date.now() - new Date(b.early_end_last_rejected_at).getTime();
+      if (msSince < 15 * 60 * 1000) {
+        const waitMin = Math.ceil((15 * 60 * 1000 - msSince) / 60000);
+        return res.json({ success: false, cooldown: true, wait_mins: waitMin, message: `${waitMin} min baad dobara request kar sakte ho` });
+      }
+    }
+    await db.query('UPDATE hourly_bookings SET early_end_requested_by=$1 WHERE id=$2', [requested_by, booking_id]);
     if (requested_by === 'driver') sendFCM(b.customer_phone, '⚠️ Driver Trip End Karna Chahta Hai', 'App mein confirm ya reject karo.');
     else sendFCM(b.driver_phone, '⚠️ Customer Trip End Karna Chahta Hai', 'App mein confirm ya reject karo.');
     res.json({ success: true });
@@ -2490,8 +2541,12 @@ app.post('/api/hourly/early-end-confirm', async (req, res) => {
 app.post('/api/hourly/early-end-reject', async (req, res) => {
   const { booking_id } = req.body;
   try {
-    await db.query('UPDATE hourly_bookings SET early_end_requested_by=NULL WHERE id=$1', [booking_id]);
-    res.json({ success: true });
+    const r = await db.query(
+      'UPDATE hourly_bookings SET early_end_requested_by=NULL, early_end_reject_count=COALESCE(early_end_reject_count,0)+1, early_end_last_rejected_at=NOW() WHERE id=$1 RETURNING early_end_reject_count',
+      [booking_id]
+    );
+    const count = r.rows[0]?.early_end_reject_count || 1;
+    res.json({ success: true, reject_count: count, locked: count >= 2 });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
@@ -2515,6 +2570,133 @@ app.post('/api/hourly/cancel', async (req, res) => {
   finally { client.release(); }
 });
 
+// Customer confirms driver's early complete
+app.post('/api/hourly/customer-confirm-complete', async (req, res) => {
+  const { booking_id } = req.body;
+  try {
+    const r = await db.query("SELECT * FROM hourly_bookings WHERE id=$1 AND pending_customer_confirm=true AND status='active'", [booking_id]);
+    if (!r.rows[0]) return res.json({ success: false, message: 'Confirmation pending nahi hai' });
+    const result = await doCompleteHourly(booking_id, r.rows[0].actual_km || 0);
+    res.json({ success: true, ...result });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Customer disputes driver's early complete — money stays in escrow, admin reviews
+app.post('/api/hourly/customer-dispute-complete', async (req, res) => {
+  const { booking_id, reason } = req.body;
+  try {
+    const r = await db.query(
+      "UPDATE hourly_bookings SET pending_customer_confirm=false, dispute_raised=true WHERE id=$1 AND pending_customer_confirm=true RETURNING driver_phone",
+      [booking_id]
+    );
+    if (!r.rows[0]) return res.json({ success: false, message: 'Koi pending confirmation nahi' });
+    sendFCM(r.rows[0].driver_phone, '⚠️ Customer ne Dispute Raise Kiya', 'Admin review karega — paise escrow mein hain');
+    res.json({ success: true, message: 'Dispute raise ho gaya — admin 24h mein resolve karega' });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Admin resolves dispute in driver's favour
+app.post('/api/admin/resolve-dispute', async (req, res) => {
+  const { booking_id, favour } = req.body; // favour: 'driver' | 'customer'
+  try {
+    const r = await db.query('SELECT * FROM hourly_bookings WHERE id=$1 AND dispute_raised=true', [booking_id]);
+    if (!r.rows[0]) return res.json({ success: false, message: 'Disputed booking nahi mila' });
+    const b = r.rows[0];
+    if (favour === 'driver') {
+      const result = await doCompleteHourly(booking_id, b.actual_km || 0);
+      return res.json({ success: true, resolved: 'driver', ...result });
+    } else {
+      // Refund customer fully
+      const cu = await db.query('SELECT id FROM users WHERE phone=$1', [b.customer_phone]);
+      if (cu.rows[0]) {
+        await db.query('UPDATE customer_wallet SET balance=balance+$1 WHERE user_id=$2', [b.base_fare, cu.rows[0].id]);
+        await db.query("INSERT INTO transactions (user_id,type,amount,description) VALUES ($1,'credit',$2,'Hourly dispute resolved - full refund')", [cu.rows[0].id, b.base_fare]);
+      }
+      await db.query("UPDATE hourly_bookings SET status='cancelled', payment_status='refunded', dispute_raised=false WHERE id=$1", [booking_id]);
+      sendFCM(b.customer_phone, '✅ Dispute Resolved', `₹${b.base_fare} aapke wallet mein wapas!`);
+      sendFCM(b.driver_phone, '❌ Dispute Against You', 'Customer ko refund mil gaya');
+      return res.json({ success: true, resolved: 'customer', refunded: b.base_fare });
+    }
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Admin: list all disputed bookings
+app.get('/api/admin/hourly-disputes', async (req, res) => {
+  try {
+    const r = await db.query("SELECT * FROM hourly_bookings WHERE dispute_raised=true ORDER BY id DESC");
+    res.json(r.rows);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Customer requests time extension
+app.post('/api/hourly/request-extend', async (req, res) => {
+  const { booking_id, extra_hours, customer_phone } = req.body;
+  if (!extra_hours || extra_hours < 1) return res.json({ success: false, message: 'Min 1 hour extend karo' });
+  try {
+    const r = await db.query("SELECT * FROM hourly_bookings WHERE id=$1 AND status='active'", [booking_id]);
+    if (!r.rows[0]) return res.json({ success: false, message: 'Active booking nahi mila' });
+    const b = r.rows[0];
+    if (b.extend_requested_hours) return res.json({ success: false, message: 'Extension request pehle se pending hai' });
+    const pkg = HOURLY_FARES[b.vehicle_type];
+    // Fare: look up package fare for extra_hours, else proportional from base
+    const extraFare = pkg?.[extra_hours]?.fare
+      ? Math.round(pkg[extra_hours].fare * SURGE_MULTIPLIER)
+      : Math.round((parseFloat(b.base_fare) / parseFloat(b.package_hours)) * extra_hours * SURGE_MULTIPLIER);
+    const cu = await db.query('SELECT id FROM users WHERE phone=$1', [customer_phone]);
+    if (!cu.rows[0]) return res.json({ success: false, message: 'User nahi mila' });
+    const wallet = await db.query('SELECT balance FROM customer_wallet WHERE user_id=$1', [cu.rows[0].id]);
+    const balance = parseFloat(wallet.rows[0]?.balance || 0);
+    if (balance < extraFare) return res.json({ success: false, message: `Wallet mein ₹${extraFare} chahiye, aapke paas ₹${balance.toFixed(0)} hai` });
+    await db.query('UPDATE customer_wallet SET balance=balance-$1 WHERE user_id=$2', [extraFare, cu.rows[0].id]);
+    await db.query("INSERT INTO transactions (user_id,type,amount,description) VALUES ($1,'debit',$2,'Hourly extend request - escrow')", [cu.rows[0].id, extraFare]);
+    await db.query('UPDATE hourly_bookings SET extend_requested_hours=$1, extend_escrow=$2 WHERE id=$3', [extra_hours, extraFare, booking_id]);
+    sendFCM(b.driver_phone, `📅 Customer +${extra_hours}h Extend Chahta Hai`, `₹${extraFare} escrow mein — accept ya reject karo app mein`);
+    res.json({ success: true, extra_fare: extraFare, message: `₹${extraFare} hold ho gaye — driver ka intezaar karo` });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Driver accepts extension
+app.post('/api/hourly/accept-extend', async (req, res) => {
+  const { booking_id } = req.body;
+  try {
+    const r = await db.query('SELECT * FROM hourly_bookings WHERE id=$1 AND extend_requested_hours IS NOT NULL', [booking_id]);
+    if (!r.rows[0]) return res.json({ success: false, message: 'Koi extend request nahi' });
+    const b = r.rows[0];
+    const extraHours = parseFloat(b.extend_requested_hours);
+    const newHours = parseFloat(b.package_hours) + extraHours;
+    // Extra KM proportional to package ratio
+    const extraKm = Math.round((parseFloat(b.km_included) / parseFloat(b.package_hours)) * extraHours);
+    const newKm = parseFloat(b.km_included) + extraKm;
+    const newFare = parseFloat(b.base_fare) + parseFloat(b.extend_escrow);
+    await db.query(
+      'UPDATE hourly_bookings SET package_hours=$1, km_included=$2, base_fare=$3, total_fare=$3, extend_requested_hours=NULL, extend_escrow=0 WHERE id=$4',
+      [newHours, newKm, newFare, booking_id]
+    );
+    sendFCM(b.customer_phone, '✅ Extension Accept Ho Gaya!', `Trip ab ${newHours >= 24 ? (newHours/24)+'d' : newHours+'h'} ke liye extend ho gaya — ${newKm} km included`);
+    res.json({ success: true, new_hours: newHours, new_km: newKm, new_fare: newFare });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Driver rejects extension — refund customer
+app.post('/api/hourly/reject-extend', async (req, res) => {
+  const { booking_id } = req.body;
+  try {
+    const r = await db.query('SELECT * FROM hourly_bookings WHERE id=$1 AND extend_requested_hours IS NOT NULL', [booking_id]);
+    if (!r.rows[0]) return res.json({ success: false, message: 'Koi extend request nahi' });
+    const b = r.rows[0];
+    if (parseFloat(b.extend_escrow || 0) > 0) {
+      const cu = await db.query('SELECT id FROM users WHERE phone=$1', [b.customer_phone]);
+      if (cu.rows[0]) {
+        await db.query('UPDATE customer_wallet SET balance=balance+$1 WHERE user_id=$2', [b.extend_escrow, cu.rows[0].id]);
+        await db.query("INSERT INTO transactions (user_id,type,amount,description) VALUES ($1,'credit',$2,'Hourly extend rejected - refund')", [cu.rows[0].id, b.extend_escrow]);
+      }
+    }
+    await db.query('UPDATE hourly_bookings SET extend_requested_hours=NULL, extend_escrow=0 WHERE id=$1', [booking_id]);
+    sendFCM(b.customer_phone, '❌ Extension Reject Ho Gaya', `₹${parseFloat(b.extend_escrow||0).toFixed(0)} wapas aapke wallet mein`);
+    res.json({ success: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
 // ══════════════════════════════════════════════════
 //  WALLET TOPUP via Razorpay.me + Full History APIs
 // ══════════════════════════════════════════════════
@@ -2523,6 +2705,12 @@ const RAZORPAY_ME_URL = 'https://razorpay.me/@rajawat101';
 // Ensure razorpay_topups table exists
 db.query('ALTER TABLE drivers ADD COLUMN IF NOT EXISTS upi_id VARCHAR(100)').catch(() => {});
 db.query('ALTER TABLE hourly_bookings ADD COLUMN IF NOT EXISTS scheduled_at TIMESTAMP DEFAULT NULL').catch(() => {});
+db.query('ALTER TABLE hourly_bookings ADD COLUMN IF NOT EXISTS pending_customer_confirm BOOLEAN DEFAULT FALSE').catch(() => {});
+db.query('ALTER TABLE hourly_bookings ADD COLUMN IF NOT EXISTS dispute_raised BOOLEAN DEFAULT FALSE').catch(() => {});
+db.query('ALTER TABLE hourly_bookings ADD COLUMN IF NOT EXISTS early_end_reject_count INTEGER DEFAULT 0').catch(() => {});
+db.query('ALTER TABLE hourly_bookings ADD COLUMN IF NOT EXISTS early_end_last_rejected_at TIMESTAMP').catch(() => {});
+db.query('ALTER TABLE hourly_bookings ADD COLUMN IF NOT EXISTS extend_requested_hours DECIMAL').catch(() => {});
+db.query('ALTER TABLE hourly_bookings ADD COLUMN IF NOT EXISTS extend_escrow DECIMAL DEFAULT 0').catch(() => {});
 db.query(`CREATE TABLE IF NOT EXISTS driver_bonus_claims (
   id SERIAL PRIMARY KEY,
   driver_phone VARCHAR(15),
