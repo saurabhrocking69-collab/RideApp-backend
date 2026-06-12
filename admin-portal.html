@@ -1,0 +1,769 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>RideApp Admin Portal</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:'Segoe UI',sans-serif;background:#f0f2f5;color:#1a1a2e}
+.header{background:#1a1a2e;padding:16px 24px;display:flex;align-items:center;justify-content:space-between;position:sticky;top:0;z-index:100}
+.logo{color:#fff;font-size:20px;font-weight:800;letter-spacing:-0.5px}
+.logo span{color:#e94560}
+.badge{background:#e94560;color:#fff;border-radius:8px;padding:4px 12px;font-size:12px;font-weight:700}
+.main{max-width:1300px;margin:0 auto;padding:20px}
+.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:14px;margin-bottom:24px}
+.stat-card{background:#fff;border-radius:14px;padding:18px;box-shadow:0 2px 10px rgba(0,0,0,.06)}
+.stat-icon{font-size:26px;margin-bottom:6px}
+.stat-value{font-size:28px;font-weight:800;color:#1a1a2e}
+.stat-label{font-size:12px;color:#888;margin-top:3px}
+.stat-card.red .stat-value{color:#e94560}
+.stat-card.green .stat-value{color:#4CAF50}
+.stat-card.blue .stat-value{color:#2196F3}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:18px;margin-bottom:20px}
+@media(max-width:768px){.grid2{grid-template-columns:1fr}}
+.card{background:#fff;border-radius:14px;padding:18px;box-shadow:0 2px 10px rgba(0,0,0,.06);margin-bottom:18px}
+.card-title{font-size:14px;font-weight:700;margin-bottom:14px;color:#1a1a2e;display:flex;align-items:center;gap:8px}
+table{width:100%;border-collapse:collapse;font-size:12px}
+th{text-align:left;padding:9px 10px;background:#f8f9fa;color:#666;font-weight:600;border-bottom:2px solid #f0f0f0}
+td{padding:9px 10px;border-bottom:1px solid #f8f9fa;vertical-align:middle}
+tr:hover td{background:#fafafa}
+.badge-credit{background:#e8f5e9;color:#2e7d32;border-radius:6px;padding:2px 8px;font-size:10px;font-weight:700}
+.badge-debit{background:#ffebee;color:#c62828;border-radius:6px;padding:2px 8px;font-size:10px;font-weight:700}
+.badge-pending{background:#fff3e0;color:#e65100;border-radius:6px;padding:2px 8px;font-size:10px}
+.badge-verified{background:#e8f5e9;color:#2e7d32;border-radius:6px;padding:2px 8px;font-size:10px}
+.badge-unverified{background:#fff3e0;color:#e65100;border-radius:6px;padding:2px 8px;font-size:10px}
+.badge-approved{background:#e8f5e9;color:#2e7d32;border-radius:6px;padding:2px 8px;font-size:10px;font-weight:700}
+.badge-rejected{background:#ffebee;color:#c62828;border-radius:6px;padding:2px 8px;font-size:10px;font-weight:700}
+.badge-suspended{background:#fff3e0;color:#e65100;border-radius:6px;padding:2px 8px;font-size:10px;font-weight:700}
+.tabs{display:flex;gap:6px;margin-bottom:18px;flex-wrap:wrap}
+.tab{padding:7px 16px;border-radius:20px;cursor:pointer;font-size:12px;font-weight:600;border:none;background:#f0f0f0;color:#666;white-space:nowrap}
+.tab.active{background:#1a1a2e;color:#fff}
+.section{display:none}.section.active{display:block}
+.refresh-btn{background:#e94560;color:#fff;border:none;border-radius:8px;padding:6px 14px;cursor:pointer;font-size:12px;font-weight:600;margin-left:auto}
+.refresh-btn:hover{opacity:.85}
+.action-btn{border:none;border-radius:6px;padding:4px 10px;cursor:pointer;font-size:11px;font-weight:600;margin:1px}
+.btn-green{background:#e8f5e9;color:#2e7d32}
+.btn-red{background:#ffebee;color:#c62828}
+.btn-orange{background:#fff3e0;color:#e65100}
+.btn-blue{background:#e3f2fd;color:#1565c0}
+.btn-dark{background:#1a1a2e;color:#fff}
+.loading{text-align:center;color:#999;padding:24px}
+.amount-green{color:#2e7d32;font-weight:700}
+.amount-red{color:#c62828;font-weight:700}
+.chip{display:inline-block;padding:2px 8px;border-radius:10px;font-size:10px;font-weight:700}
+.online{background:#e8f5e9;color:#2e7d32}
+.offline{background:#f5f5f5;color:#999}
+input,select,textarea{outline:none}
+.doc-img{width:70px;height:52px;object-fit:cover;border-radius:6px;cursor:pointer;border:2px solid #f0f0f0}
+.doc-img:hover{border-color:#e94560}
+/* Modal */
+.modal-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:1000;align-items:center;justify-content:center}
+.modal-overlay.open{display:flex}
+.modal-box{background:#fff;border-radius:16px;padding:24px;max-width:92vw;max-height:90vh;overflow-y:auto;position:relative}
+.modal-close{position:absolute;top:12px;right:14px;background:none;border:none;font-size:22px;cursor:pointer;color:#666}
+.modal-img{max-width:80vw;max-height:75vh;border-radius:10px;display:block;margin:0 auto}
+.input-sm{padding:7px 10px;border:1px solid #e0e0e0;border-radius:8px;font-size:12px;width:100%}
+.msg-row{display:flex;gap:6px;margin-top:6px}
+</style>
+</head>
+<body>
+
+<!-- Image Modal -->
+<div class="modal-overlay" id="img-modal" onclick="closeModal()">
+  <div class="modal-box" onclick="event.stopPropagation()">
+    <button class="modal-close" onclick="closeModal()">✕</button>
+    <img id="modal-img-el" class="modal-img" src="" alt="Document">
+    <p id="modal-img-label" style="text-align:center;margin-top:10px;color:#666;font-size:13px"></p>
+  </div>
+</div>
+
+<!-- Driver Action Modal -->
+<div class="modal-overlay" id="drv-modal">
+  <div class="modal-box" style="min-width:320px;max-width:500px" onclick="event.stopPropagation()">
+    <button class="modal-close" onclick="closeDrvModal()">✕</button>
+    <div id="drv-modal-content"></div>
+  </div>
+</div>
+
+<!-- User Action Modal -->
+<div class="modal-overlay" id="usr-modal">
+  <div class="modal-box" style="min-width:320px;max-width:480px" onclick="event.stopPropagation()">
+    <button class="modal-close" onclick="closeUsrModal()">✕</button>
+    <div id="usr-modal-content"></div>
+  </div>
+</div>
+
+<div class="header">
+  <div class="logo">Ride<span>App</span> Admin</div>
+  <div style="display:flex;gap:10px;align-items:center">
+    <span class="badge" id="last-refresh">Loading...</span>
+    <button class="refresh-btn" onclick="loadAll()">⟳ Refresh</button>
+    <button class="refresh-btn" style="background:#4CAF50" onclick="downloadPortal()">⬇ Download HTML</button>
+  </div>
+</div>
+
+<div class="main">
+  <div class="stats" id="stats-grid"><div class="loading">Loading dashboard...</div></div>
+
+  <div class="tabs">
+    <button class="tab active" onclick="showSection('transactions',this)">📋 Transactions</button>
+    <button class="tab" onclick="showSection('rides',this)">🛺 Rides</button>
+    <button class="tab" onclick="showSection('customers',this)">👥 Customers</button>
+    <button class="tab" onclick="showSection('drivers',this)">🚗 Drivers</button>
+    <button class="tab" onclick="showSection('verify',this)">✅ Verify Drivers</button>
+    <button class="tab" onclick="showSection('topups',this)">💳 Topups</button>
+    <button class="tab" onclick="showSection('marketing',this)">📣 Marketing</button>
+    <button class="tab" onclick="showSection('settings',this)">⚙️ Settings</button>
+  </div>
+
+  <!-- TRANSACTIONS -->
+  <div id="transactions" class="section active">
+    <div class="card">
+      <div class="card-title">📋 All Transactions <button class="refresh-btn" onclick="loadTransactions()">Reload</button></div>
+      <div style="overflow-x:auto"><table><thead><tr><th>Date</th><th>User</th><th>Phone</th><th>Type</th><th>Amount</th><th>Description</th></tr></thead>
+      <tbody id="txn-body"><tr><td colspan=6 class=loading>Loading...</td></tr></tbody></table></div>
+    </div>
+  </div>
+
+  <!-- RIDES -->
+  <div id="rides" class="section">
+    <div class="card">
+      <div class="card-title">🛺 Recent Rides <button class="refresh-btn" onclick="loadRides()">Reload</button></div>
+      <div style="overflow-x:auto"><table><thead><tr><th>Date</th><th>Passenger</th><th>Driver</th><th>Pickup</th><th>Drop</th><th>Fare</th><th>Type</th><th>Status</th><th>Rating</th></tr></thead>
+      <tbody id="rides-body"><tr><td colspan=9 class=loading>Loading...</td></tr></tbody></table></div>
+    </div>
+  </div>
+
+  <!-- CUSTOMERS -->
+  <div id="customers" class="section">
+    <div class="card">
+      <div class="card-title">👥 All Customers <button class="refresh-btn" onclick="loadCustomers()">Reload</button></div>
+      <div style="overflow-x:auto"><table><thead><tr><th>Name</th><th>Phone</th><th>Rides</th><th>Total Spent</th><th>Wallet</th><th>Trust</th><th>Joined</th><th>Actions</th></tr></thead>
+      <tbody id="cust-body"><tr><td colspan=8 class=loading>Loading...</td></tr></tbody></table></div>
+    </div>
+  </div>
+
+  <!-- DRIVERS -->
+  <div id="drivers" class="section">
+    <div class="card">
+      <div class="card-title">🚗 All Drivers <button class="refresh-btn" onclick="loadDrivers()">Reload</button></div>
+      <div style="overflow-x:auto"><table><thead><tr><th>Name</th><th>Phone</th><th>Vehicle</th><th>Status</th><th>Balance</th><th>Total Earned</th><th>Rating</th><th>Actions</th></tr></thead>
+      <tbody id="drv-body"><tr><td colspan=8 class=loading>Loading...</td></tr></tbody></table></div>
+    </div>
+  </div>
+
+  <!-- DRIVER VERIFICATION -->
+  <div id="verify" class="section">
+    <div class="card">
+      <div class="card-title">✅ Driver Document Verification <button class="refresh-btn" onclick="loadVerifications()">Reload</button></div>
+      <div id="verify-list"><div class="loading">Loading...</div></div>
+    </div>
+  </div>
+
+  <!-- TOPUPS -->
+  <div id="topups" class="section">
+    <div class="card">
+      <div class="card-title">💳 Razorpay Topups <button class="refresh-btn" onclick="loadTopups()">Reload</button></div>
+      <div style="overflow-x:auto"><table><thead><tr><th>Date</th><th>Phone</th><th>Amount</th><th>Payment ID</th><th>Status</th><th>Action</th></tr></thead>
+      <tbody id="topup-body"><tr><td colspan=6 class=loading>Loading...</td></tr></tbody></table></div>
+    </div>
+  </div>
+
+  <!-- MARKETING -->
+  <div id="marketing" class="section">
+    <div class="grid2">
+      <div class="card">
+        <div class="card-title">📣 Create Campaign / Banner</div>
+        <input id="camp-title" placeholder="Title (e.g. 🎉 Weekend Offer!)" class="input-sm" style="margin-bottom:8px">
+        <textarea id="camp-body" placeholder="Description..." class="input-sm" style="resize:none;height:58px;margin-bottom:8px"></textarea>
+        <div style="display:flex;gap:8px;margin-bottom:8px">
+          <select id="camp-target" class="input-sm">
+            <option value="all">All (Customers + Drivers)</option>
+            <option value="customer">Customers Only</option>
+            <option value="driver">Drivers Only</option>
+          </select>
+          <select id="camp-type" class="input-sm">
+            <option value="banner">Banner</option>
+            <option value="promo">Promo Code</option>
+            <option value="incentive">Driver Incentive</option>
+          </select>
+        </div>
+        <div style="display:flex;gap:8px;margin-bottom:8px">
+          <input id="camp-promo" placeholder="Promo code (optional)" class="input-sm">
+          <input id="camp-cta" placeholder="Button label" class="input-sm">
+        </div>
+        <input id="camp-expires" type="datetime-local" class="input-sm" style="margin-bottom:10px">
+        <button onclick="createCampaign()" style="width:100%;background:#e94560;color:#fff;border:none;border-radius:8px;padding:10px;cursor:pointer;font-weight:700;font-size:13px">🚀 Launch Campaign</button>
+        <div id="camp-status" style="font-size:12px;color:#4CAF50;margin-top:8px"></div>
+      </div>
+      <div class="card">
+        <div class="card-title">📲 Broadcast Notification</div>
+        <p style="font-size:12px;color:#888;margin-bottom:10px">FCM push seedha phones pe bhejo</p>
+        <input id="notif-title" placeholder="Notification title" class="input-sm" style="margin-bottom:8px">
+        <textarea id="notif-body" placeholder="Message text..." class="input-sm" style="resize:none;height:58px;margin-bottom:8px"></textarea>
+        <select id="notif-target" class="input-sm" style="margin-bottom:10px">
+          <option value="all">All Users</option>
+          <option value="customers">Customers Only</option>
+          <option value="drivers">Drivers Only</option>
+        </select>
+        <button onclick="sendBroadcast()" style="width:100%;background:#1a1a2e;color:#fff;border:none;border-radius:8px;padding:10px;cursor:pointer;font-weight:700;font-size:13px">📨 Send Notification</button>
+        <div id="notif-status" style="font-size:12px;margin-top:8px"></div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-title">🗓️ Active Campaigns <button class="refresh-btn" onclick="loadCampaigns()">Reload</button></div>
+      <div id="campaigns-list"><div class="loading">Loading...</div></div>
+    </div>
+    <div class="grid2">
+      <div class="card">
+        <div class="card-title">🎫 Create Promo Code</div>
+        <input id="promo-code" placeholder="Code (e.g. RIDE50)" class="input-sm" style="margin-bottom:8px;text-transform:uppercase">
+        <select id="promo-type" class="input-sm" style="margin-bottom:8px">
+          <option value="flat">Flat Discount (₹)</option>
+          <option value="percent">Percent Discount (%)</option>
+        </select>
+        <div style="display:flex;gap:8px;margin-bottom:8px">
+          <input id="promo-value" type="number" placeholder="Discount value" class="input-sm">
+          <input id="promo-max" type="number" placeholder="Max discount (₹)" class="input-sm">
+        </div>
+        <div style="display:flex;gap:8px;margin-bottom:10px">
+          <input id="promo-minfare" type="number" placeholder="Min fare (₹)" class="input-sm">
+          <input id="promo-limit" type="number" placeholder="Usage limit" class="input-sm">
+        </div>
+        <button onclick="createPromo()" style="width:100%;background:#4CAF50;color:#fff;border:none;border-radius:8px;padding:10px;cursor:pointer;font-weight:700;font-size:13px">➕ Add Promo Code</button>
+        <div id="promo-create-status" style="font-size:12px;color:#4CAF50;margin-top:8px"></div>
+      </div>
+      <div class="card">
+        <div class="card-title">📋 All Promo Codes <button class="refresh-btn" onclick="loadPromos()">Reload</button></div>
+        <div id="promos-list"><div class="loading">Loading...</div></div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-title">👥 Referral Analytics <button class="refresh-btn" onclick="loadReferrals()">Reload</button></div>
+      <div id="referral-stats" style="margin-bottom:14px"></div>
+      <div style="overflow-x:auto"><table><thead><tr><th>Date</th><th>Referrer</th><th>Referred</th><th>Reward</th></tr></thead>
+      <tbody id="referral-body"><tr><td colspan=4 class=loading>Loading...</td></tr></tbody></table></div>
+    </div>
+  </div>
+
+  <!-- SETTINGS -->
+  <div id="settings" class="section">
+    <div class="grid2">
+      <div class="card">
+        <div class="card-title">⚡ Surge Pricing</div>
+        <p style="font-size:12px;color:#666;margin-bottom:10px">Multiplier sabhi naye rides/hourly bookings pe lagta hai</p>
+        <div style="display:flex;gap:10px;margin-bottom:10px">
+          <input id="surge-input" type="number" step="0.1" min="1" max="3" value="1.0" class="input-sm">
+          <button onclick="setSurge()" style="background:#e94560;color:#fff;border:none;border-radius:8px;padding:8px 14px;cursor:pointer;font-weight:700;white-space:nowrap">Set Surge</button>
+        </div>
+        <div id="surge-status" style="font-size:12px;color:#4CAF50"></div>
+        <div style="display:flex;gap:8px;margin-top:10px">
+          <button onclick="document.getElementById('surge-input').value=1.0;setSurge()" style="flex:1;background:#f5f5f5;border:none;border-radius:8px;padding:8px;cursor:pointer;font-size:11px;font-weight:700">1.0x Normal</button>
+          <button onclick="document.getElementById('surge-input').value=1.5;setSurge()" style="flex:1;background:#fff3e0;border:none;border-radius:8px;padding:8px;cursor:pointer;font-size:11px;font-weight:700">1.5x Surge</button>
+          <button onclick="document.getElementById('surge-input').value=2.0;setSurge()" style="flex:1;background:#ffebee;border:none;border-radius:8px;padding:8px;cursor:pointer;font-size:11px;font-weight:700">2.0x Peak</button>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-title">📋 Hourly Fare Editor</div>
+        <p style="font-size:12px;color:#666;margin-bottom:10px">Vehicle + package ke liye fare update karo (instantly)</p>
+        <select id="fare-vehicle" class="input-sm" style="margin-bottom:8px">
+          <option value="auto">Auto</option><option value="bike">Bike</option><option value="car">Car</option><option value="eriksha">E-Riksha</option>
+        </select>
+        <select id="fare-hours" class="input-sm" style="margin-bottom:8px">
+          <option value="2">2 Hours</option><option value="4">4 Hours</option><option value="6">6 Hours</option><option value="8">Full Day (8h)</option>
+          <option value="24">1 Day (24h)</option><option value="48">2 Days (48h)</option><option value="72">3 Days (72h)</option>
+        </select>
+        <div style="display:flex;gap:8px;margin-bottom:10px">
+          <input id="fare-amount" type="number" placeholder="Fare (₹)" class="input-sm">
+          <input id="fare-km" type="number" placeholder="KM included" class="input-sm">
+        </div>
+        <button onclick="updateFare()" style="width:100%;background:#1a1a2e;color:#fff;border:none;border-radius:8px;padding:10px;cursor:pointer;font-weight:700;font-size:13px">Update Fare</button>
+        <div id="fare-status" style="font-size:12px;color:#4CAF50;margin-top:8px"></div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-title">📊 Current Hourly Fares</div>
+      <div id="fares-display" style="font-size:12px;color:#666">Loading...</div>
+    </div>
+  </div>
+</div>
+
+<script>
+const API = 'https://rideapp-backend-production-5e1c.up.railway.app';
+
+// ── Helpers ────────────────────────────────────────────
+function fmt(d){return d?new Date(d).toLocaleString('en-IN',{day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'}):'-'}
+function rupee(n){return '₹'+parseFloat(n||0).toFixed(0)}
+function trunc(s,n=25){return s&&s.length>n?s.slice(0,n)+'…':s||'-'}
+
+function showSection(id,btn){
+  document.querySelectorAll('.section').forEach(s=>s.classList.remove('active'));
+  document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));
+  document.getElementById(id).classList.add('active');
+  btn.classList.add('active');
+  if(id==='customers') loadCustomers();
+  if(id==='drivers') loadDrivers();
+  if(id==='rides') loadRides();
+  if(id==='topups') loadTopups();
+  if(id==='verify') loadVerifications();
+  if(id==='settings') loadFares();
+  if(id==='marketing'){loadCampaigns();loadPromos();loadReferrals();}
+}
+
+function openImg(src,label){
+  document.getElementById('modal-img-el').src=src;
+  document.getElementById('modal-img-label').textContent=label;
+  document.getElementById('img-modal').classList.add('open');
+}
+function closeModal(){document.getElementById('img-modal').classList.remove('open')}
+function closeDrvModal(){document.getElementById('drv-modal').classList.remove('open')}
+function closeUsrModal(){document.getElementById('usr-modal').classList.remove('open')}
+
+// ── Dashboard ───────────────────────────────────────────
+async function loadDashboard(){
+  try{
+    const d=await fetch(API+'/api/admin/dashboard').then(r=>r.json());
+    document.getElementById('stats-grid').innerHTML=`
+      <div class="stat-card red"><div class="stat-icon">👥</div><div class="stat-value">${d.customers}</div><div class="stat-label">Total Customers</div></div>
+      <div class="stat-card"><div class="stat-icon">🚗</div><div class="stat-value">${d.drivers.total}</div><div class="stat-label">Drivers · ${d.drivers.online} online</div></div>
+      <div class="stat-card blue"><div class="stat-icon">🛺</div><div class="stat-value">${d.rides.completed}</div><div class="stat-label">Completed Rides</div></div>
+      <div class="stat-card green"><div class="stat-icon">💰</div><div class="stat-value">${rupee(d.rides.gross_revenue)}</div><div class="stat-label">Gross Revenue</div></div>
+      <div class="stat-card red"><div class="stat-icon">🏦</div><div class="stat-value">${rupee(d.platform_commission)}</div><div class="stat-label">Platform Commission</div></div>
+      <div class="stat-card"><div class="stat-icon">⏱️</div><div class="stat-value">${d.hourly.completed}</div><div class="stat-label">Hourly · ${rupee(d.hourly.revenue)}</div></div>
+      <div class="stat-card blue"><div class="stat-icon">💳</div><div class="stat-value">${rupee(d.topup_total)}</div><div class="stat-label">Total Topups</div></div>
+      <div class="stat-card"><div class="stat-icon">👛</div><div class="stat-value">${rupee(d.wallets.customer_total)}</div><div class="stat-label">Customer Wallets</div></div>
+      <div class="stat-card green"><div class="stat-icon">🏧</div><div class="stat-value">${rupee(d.wallets.driver_total)}</div><div class="stat-label">Driver Wallets</div></div>
+    `;
+  }catch(e){document.getElementById('stats-grid').innerHTML='<div class="loading">❌ Dashboard load failed</div>';}
+}
+
+// ── Transactions ────────────────────────────────────────
+async function loadTransactions(){
+  const d=await fetch(API+'/api/admin/all-transactions?limit=200').then(r=>r.json());
+  document.getElementById('txn-body').innerHTML=d.transactions.map(t=>`<tr>
+    <td>${fmt(t.created_at)}</td><td>${t.name||'-'}</td><td>${t.phone}</td>
+    <td><span class="badge-${t.type}">${t.type.toUpperCase()}</span></td>
+    <td class="${t.type==='credit'?'amount-green':'amount-red'}">${rupee(t.amount)}</td>
+    <td title="${t.description}">${trunc(t.description,40)}</td>
+  </tr>`).join('');
+}
+
+// ── Rides ───────────────────────────────────────────────
+async function loadRides(){
+  try{
+    const d=await fetch(API+'/api/admin/rides').then(r=>r.json());
+    const rideStatusColor={completed:'#2e7d32',cancelled:'#c62828',active:'#1565c0',accepted:'#e65100',pending:'#888'};
+    document.getElementById('rides-body').innerHTML=d.rides.map(r=>`<tr>
+      <td>${fmt(r.created_at)}</td>
+      <td>${r.passenger_name||'-'}<br><span style="color:#999;font-size:10px">${r.passenger_phone||''}</span></td>
+      <td>${r.driver_name||'—'}</td>
+      <td title="${r.pickup}">${trunc(r.pickup,20)}</td>
+      <td title="${r.drop_location}">${trunc(r.drop_location,20)}</td>
+      <td class="amount-green">${rupee(r.fare)}</td>
+      <td><span style="font-size:10px;background:#f0f0f0;padding:2px 6px;border-radius:6px">${r.ride_type||'std'}</span></td>
+      <td><span style="color:${rideStatusColor[r.status]||'#888'};font-weight:700;font-size:11px">${r.status}</span></td>
+      <td>${r.rating?'⭐'.repeat(r.rating):'-'}</td>
+    </tr>`).join('');
+  }catch(e){document.getElementById('rides-body').innerHTML='<tr><td colspan=9 class=loading>❌ Load failed</td></tr>';}
+}
+
+// ── Customers ───────────────────────────────────────────
+async function loadCustomers(){
+  try{
+    const d=await fetch(API+'/api/admin/users').then(r=>r.json());
+    document.getElementById('cust-body').innerHTML=d.users.map(u=>`<tr>
+      <td><b>${u.name||'-'}</b>${u.is_blocked?'<span style="color:#c62828;font-size:10px"> 🚫BLOCKED</span>':u.is_suspended?'<span style="color:#e65100;font-size:10px"> ⏸SUSPENDED</span>':''}</td>
+      <td>${u.phone}</td>
+      <td>${u.total_rides||0}</td>
+      <td class="amount-green">${rupee(u.total_fare)}</td>
+      <td class="amount-green">${rupee(u.wallet_balance)}</td>
+      <td>${u.trust_score!=null?u.trust_score+'/100':'-'}${u.is_flagged?'<span style="color:#c62828"> ⚑</span>':''}</td>
+      <td style="font-size:10px">${fmt(u.created_at)}</td>
+      <td>
+        <button class="action-btn btn-blue" onclick="openUserModal('${u.phone}','${(u.name||'').replace(/'/g,'\\'')}',${!!u.is_blocked},${!!u.is_suspended})">⚙️ Manage</button>
+      </td>
+    </tr>`).join('');
+  }catch(e){document.getElementById('cust-body').innerHTML='<tr><td colspan=8 class=loading>❌ Load failed</td></tr>';}
+}
+
+function openUserModal(phone,name,isBlocked,isSuspended){
+  const m=document.getElementById('usr-modal');
+  document.getElementById('usr-modal-content').innerHTML=`
+    <h3 style="margin-bottom:14px;font-size:15px">👤 User: ${name} (${phone})</h3>
+
+    <div style="margin-bottom:14px">
+      <div style="font-size:12px;color:#888;margin-bottom:6px;font-weight:600">📨 Send Message</div>
+      <textarea id="usr-msg" placeholder="User ko message likhein..." class="input-sm" style="resize:none;height:60px;margin-bottom:6px"></textarea>
+      <button class="action-btn btn-blue" style="width:100%;padding:8px" onclick="sendUserMessage('${phone}')">Send Message</button>
+      <div id="usr-msg-status" style="font-size:11px;margin-top:4px"></div>
+    </div>
+
+    <div style="margin-bottom:14px">
+      <div style="font-size:12px;color:#888;margin-bottom:6px;font-weight:600">⏸ Suspend User</div>
+      <div style="display:flex;gap:6px;margin-bottom:6px">
+        <input id="usr-suspend-hrs" type="number" placeholder="Hours (empty = permanent)" class="input-sm">
+        <input id="usr-suspend-reason" placeholder="Reason" class="input-sm">
+      </div>
+      <div style="display:flex;gap:6px">
+        <button class="action-btn btn-orange" style="flex:1;padding:8px" onclick="suspendUser('${phone}')">⏸ Suspend</button>
+        ${isSuspended?`<button class="action-btn btn-green" style="flex:1;padding:8px" onclick="unsuspendUser('${phone}')">▶️ Unsuspend</button>`:''}
+      </div>
+      <div id="usr-suspend-status" style="font-size:11px;margin-top:4px"></div>
+    </div>
+
+    <div>
+      <div style="font-size:12px;color:#888;margin-bottom:6px;font-weight:600">🚫 Block User</div>
+      <input id="usr-block-reason" placeholder="Block reason" class="input-sm" style="margin-bottom:6px">
+      <div style="display:flex;gap:6px">
+        <button class="action-btn btn-red" style="flex:1;padding:8px" onclick="blockUser('${phone}')">🚫 Block</button>
+        ${isBlocked?`<button class="action-btn btn-green" style="flex:1;padding:8px" onclick="unblockUser('${phone}')">✅ Unblock</button>`:''}
+      </div>
+      <div id="usr-block-status" style="font-size:11px;margin-top:4px"></div>
+    </div>
+  `;
+  m.classList.add('open');
+}
+async function sendUserMessage(phone){
+  const msg=document.getElementById('usr-msg').value.trim();
+  if(!msg){document.getElementById('usr-msg-status').textContent='❌ Message likhein';return;}
+  const d=await fetch(API+'/api/admin/users/message',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({phone,message:msg})}).then(r=>r.json());
+  document.getElementById('usr-msg-status').textContent=d.success?'✅ Message bheja gaya!':'❌ '+d.error;
+  document.getElementById('usr-msg-status').style.color=d.success?'#2e7d32':'#c62828';
+}
+async function suspendUser(phone){
+  const hrs=document.getElementById('usr-suspend-hrs').value;
+  const reason=document.getElementById('usr-suspend-reason').value||'Admin action';
+  const body={phone,reason};
+  if(hrs) body.hours=parseInt(hrs);
+  const d=await fetch(API+'/api/admin/users/suspend',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}).then(r=>r.json());
+  document.getElementById('usr-suspend-status').textContent=d.success?'✅ '+d.message:'❌ '+d.error;
+  document.getElementById('usr-suspend-status').style.color=d.success?'#2e7d32':'#c62828';
+  if(d.success) setTimeout(()=>{closeUsrModal();loadCustomers();},800);
+}
+async function unsuspendUser(phone){
+  const d=await fetch(API+'/api/admin/users/unsuspend',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({phone})}).then(r=>r.json());
+  document.getElementById('usr-suspend-status').textContent=d.success?'✅ Unsuspend ho gaya!':'❌ '+d.error;
+  document.getElementById('usr-suspend-status').style.color=d.success?'#2e7d32':'#c62828';
+  if(d.success) setTimeout(()=>{closeUsrModal();loadCustomers();},800);
+}
+async function blockUser(phone){
+  const reason=document.getElementById('usr-block-reason').value||'Admin action';
+  const d=await fetch(API+'/api/admin/users/block',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({phone,reason})}).then(r=>r.json());
+  document.getElementById('usr-block-status').textContent=d.success?'✅ Block ho gaya!':'❌ '+d.error;
+  document.getElementById('usr-block-status').style.color=d.success?'#2e7d32':'#c62828';
+  if(d.success) setTimeout(()=>{closeUsrModal();loadCustomers();},800);
+}
+async function unblockUser(phone){
+  const d=await fetch(API+'/api/admin/users/unblock',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({phone})}).then(r=>r.json());
+  document.getElementById('usr-block-status').textContent=d.success?'✅ Unblock ho gaya!':'❌ '+d.error;
+  document.getElementById('usr-block-status').style.color=d.success?'#2e7d32':'#c62828';
+  if(d.success) setTimeout(()=>{closeUsrModal();loadCustomers();},800);
+}
+
+// ── Drivers ─────────────────────────────────────────────
+async function loadDrivers(){
+  try{
+    const d=await fetch(API+'/api/admin/drivers').then(r=>r.json());
+    document.getElementById('drv-body').innerHTML=d.drivers.map(dr=>`<tr>
+      <td><b>${dr.name||'-'}</b></td>
+      <td>${dr.phone}</td>
+      <td>${dr.vehicle_type} · ${dr.vehicle_no||'-'}</td>
+      <td><span class="chip ${dr.is_online?'online':'offline'}">${dr.is_online?'🟢 Online':'⚫ Offline'}</span></td>
+      <td class="amount-green">${rupee(dr.balance)}</td>
+      <td class="amount-green">${rupee(dr.total_earned)}</td>
+      <td>${dr.rating?parseFloat(dr.rating).toFixed(1)+'⭐':'-'}</td>
+      <td>
+        <button class="action-btn btn-blue" onclick="openDriverMgmtModal('${dr.phone}','${(dr.name||'').replace(/'/g,'\\'')}')">⚙️ Manage</button>
+      </td>
+    </tr>`).join('');
+  }catch(e){document.getElementById('drv-body').innerHTML='<tr><td colspan=8 class=loading>❌ Load failed</td></tr>';}
+}
+
+function openDriverMgmtModal(phone,name){
+  const m=document.getElementById('drv-modal');
+  document.getElementById('drv-modal-content').innerHTML=`
+    <h3 style="margin-bottom:14px;font-size:15px">🚗 Driver: ${name} (${phone})</h3>
+
+    <div style="margin-bottom:14px">
+      <div style="font-size:12px;color:#888;margin-bottom:6px;font-weight:600">📨 Send Message</div>
+      <textarea id="dmgmt-msg" placeholder="Driver ko message likhein..." class="input-sm" style="resize:none;height:55px;margin-bottom:6px"></textarea>
+      <button class="action-btn btn-blue" style="width:100%;padding:8px" onclick="sendDriverMessage('${phone}')">Send Message</button>
+      <div id="dmgmt-msg-status" style="font-size:11px;margin-top:4px"></div>
+    </div>
+
+    <div style="margin-bottom:14px">
+      <div style="font-size:12px;color:#888;margin-bottom:6px;font-weight:600">⏸ Suspend Driver</div>
+      <div style="display:flex;gap:6px;margin-bottom:6px">
+        <input id="dmgmt-hrs" type="number" placeholder="Hours (empty=permanent)" class="input-sm">
+        <input id="dmgmt-reason" placeholder="Reason" class="input-sm">
+      </div>
+      <div style="display:flex;gap:6px">
+        <button class="action-btn btn-orange" style="flex:1;padding:8px" onclick="suspendDriver('${phone}')">⏸ Suspend</button>
+        <button class="action-btn btn-green" style="flex:1;padding:8px" onclick="unsuspendDriver('${phone}')">▶️ Unsuspend</button>
+      </div>
+      <div id="dmgmt-suspend-status" style="font-size:11px;margin-top:4px"></div>
+    </div>
+
+    <div>
+      <div style="font-size:12px;color:#888;margin-bottom:6px;font-weight:600">🚫 Block Driver</div>
+      <input id="dmgmt-block-reason" placeholder="Block reason" class="input-sm" style="margin-bottom:6px">
+      <div style="display:flex;gap:6px">
+        <button class="action-btn btn-red" style="flex:1;padding:8px" onclick="blockDriver('${phone}')">🚫 Block</button>
+        <button class="action-btn btn-green" style="flex:1;padding:8px" onclick="unblockDriver('${phone}')">✅ Unblock</button>
+      </div>
+      <div id="dmgmt-block-status" style="font-size:11px;margin-top:4px"></div>
+    </div>
+  `;
+  m.classList.add('open');
+}
+async function sendDriverMessage(phone){
+  const msg=document.getElementById('dmgmt-msg').value.trim();
+  if(!msg){document.getElementById('dmgmt-msg-status').textContent='❌ Message likhein';return;}
+  const d=await fetch(API+'/api/admin/users/message',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({phone,message:msg})}).then(r=>r.json());
+  document.getElementById('dmgmt-msg-status').textContent=d.success?'✅ Bheja!':'❌ '+d.error;
+  document.getElementById('dmgmt-msg-status').style.color=d.success?'#2e7d32':'#c62828';
+}
+async function suspendDriver(phone){
+  const hrs=document.getElementById('dmgmt-hrs').value;
+  const reason=document.getElementById('dmgmt-reason').value||'Admin action';
+  const body={phone,reason};
+  if(hrs) body.hours=parseInt(hrs);
+  const d=await fetch(API+'/api/admin/users/suspend',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}).then(r=>r.json());
+  document.getElementById('dmgmt-suspend-status').textContent=d.success?'✅ '+d.message:'❌ '+d.error;
+  document.getElementById('dmgmt-suspend-status').style.color=d.success?'#2e7d32':'#c62828';
+}
+async function unsuspendDriver(phone){
+  const d=await fetch(API+'/api/admin/users/unsuspend',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({phone})}).then(r=>r.json());
+  document.getElementById('dmgmt-suspend-status').textContent=d.success?'✅ Unsuspend!':'❌ '+d.error;
+  document.getElementById('dmgmt-suspend-status').style.color=d.success?'#2e7d32':'#c62828';
+}
+async function blockDriver(phone){
+  const reason=document.getElementById('dmgmt-block-reason').value||'Admin action';
+  const d=await fetch(API+'/api/admin/users/block',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({phone,reason})}).then(r=>r.json());
+  document.getElementById('dmgmt-block-status').textContent=d.success?'✅ Block!':'❌ '+d.error;
+  document.getElementById('dmgmt-block-status').style.color=d.success?'#2e7d32':'#c62828';
+}
+async function unblockDriver(phone){
+  const d=await fetch(API+'/api/admin/users/unblock',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({phone})}).then(r=>r.json());
+  document.getElementById('dmgmt-block-status').textContent=d.success?'✅ Unblock!':'❌ '+d.error;
+  document.getElementById('dmgmt-block-status').style.color=d.success?'#2e7d32':'#c62828';
+}
+
+// ── Driver Verification ─────────────────────────────────
+async function loadVerifications(){
+  try{
+    const d=await fetch(API+'/api/admin/driver-verifications').then(r=>r.json());
+    if(!d.drivers||!d.drivers.length){
+      document.getElementById('verify-list').innerHTML='<div class="loading">Koi driver verification pending nahi hai</div>';
+      return;
+    }
+    const statusColor={approved:'#2e7d32',rejected:'#c62828',pending:'#e65100',suspended:'#888'};
+    document.getElementById('verify-list').innerHTML=d.drivers.map(dr=>`
+      <div style="border:1px solid #f0f0f0;border-radius:12px;padding:16px;margin-bottom:14px;background:${dr.verification_status==='pending'?'#fffbf0':'#fff'}">
+        <div style="display:flex;align-items:flex-start;gap:12px;flex-wrap:wrap">
+          <div style="flex:1;min-width:200px">
+            <div style="font-size:15px;font-weight:700">${dr.name||'-'}</div>
+            <div style="font-size:12px;color:#666;margin-top:2px">${dr.phone} · ${dr.vehicle_type||'-'} · ${dr.vehicle_no||'-'}</div>
+            <div style="margin-top:6px">
+              <span class="badge-${dr.verification_status||'pending'}" style="font-size:11px;padding:3px 10px">
+                ${(dr.verification_status||'pending').toUpperCase()}
+              </span>
+            </div>
+            ${dr.admin_message?`<div style="margin-top:6px;background:#f8f9fa;padding:8px;border-radius:8px;font-size:12px;color:#666">📝 Last message: ${dr.admin_message}</div>`:''}
+          </div>
+          <div style="display:flex;gap:8px;flex-wrap:wrap">
+            ${dr.face_photo?`<div style="text-align:center"><img src="${dr.face_photo}" class="doc-img" onclick="openImg('${dr.face_photo}','Selfie / Face Photo - ${dr.name}')" onerror="this.style.display='none'"><div style="font-size:9px;color:#888;margin-top:2px">Face</div></div>`:''}
+            ${dr.dl_photo?`<div style="text-align:center"><img src="${dr.dl_photo}" class="doc-img" onclick="openImg('${dr.dl_photo}','Driving Licence - ${dr.dl_name||dr.name}')" onerror="this.style.display='none'"><div style="font-size:9px;color:#888;margin-top:2px">DL</div></div>`:''}
+            ${dr.vehicle_photo?`<div style="text-align:center"><img src="${dr.vehicle_photo}" class="doc-img" onclick="openImg('${dr.vehicle_photo}','Vehicle Photo - ${dr.vehicle_no}')" onerror="this.style.display='none'"><div style="font-size:9px;color:#888;margin-top:2px">Vehicle</div></div>`:''}
+            ${dr.rc_photo?`<div style="text-align:center"><img src="${dr.rc_photo}" class="doc-img" onclick="openImg('${dr.rc_photo}','RC Book - ${dr.vehicle_no}')" onerror="this.style.display='none'"><div style="font-size:9px;color:#888;margin-top:2px">RC</div></div>`:''}
+            ${dr.aadhaar_photo?`<div style="text-align:center"><img src="${dr.aadhaar_photo}" class="doc-img" onclick="openImg('${dr.aadhaar_photo}','Aadhaar - ${dr.aadhaar_number||''}')" onerror="this.style.display='none'"><div style="font-size:9px;color:#888;margin-top:2px">Aadhaar</div></div>`:''}
+          </div>
+        </div>
+        <div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+          <input id="vmsg-${dr.id}" placeholder="Message to driver (optional)" class="input-sm" style="flex:1;min-width:180px">
+          <button class="action-btn btn-green" style="padding:7px 14px" onclick="verifyDriver(${dr.id},'approved','vmsg-${dr.id}')">✅ Approve</button>
+          <button class="action-btn btn-red" style="padding:7px 14px" onclick="verifyDriver(${dr.id},'rejected','vmsg-${dr.id}')">❌ Reject</button>
+          <button class="action-btn btn-orange" style="padding:7px 14px" onclick="verifyDriver(${dr.id},'suspended','vmsg-${dr.id}')">⏸ Suspend</button>
+        </div>
+        <div id="vstatus-${dr.id}" style="font-size:11px;margin-top:6px"></div>
+      </div>
+    `).join('');
+  }catch(e){document.getElementById('verify-list').innerHTML='<div class="loading">❌ Load failed: '+e.message+'</div>';}
+}
+async function verifyDriver(id,status,msgInputId){
+  const message=document.getElementById(msgInputId)?.value?.trim()||null;
+  const d=await fetch(API+'/api/admin/verify-driver',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({driver_id:id,status,message})}).then(r=>r.json());
+  const el=document.getElementById('vstatus-'+id);
+  el.textContent=d.success?`✅ ${status} ho gaya!`:'❌ '+d.error;
+  el.style.color=d.success?'#2e7d32':'#c62828';
+  if(d.success) setTimeout(loadVerifications,1000);
+}
+
+// ── Topups ──────────────────────────────────────────────
+async function loadTopups(){
+  const d=await fetch(API+'/api/admin/topups').then(r=>r.json());
+  document.getElementById('topup-body').innerHTML=d.topups.map(t=>`<tr>
+    <td>${fmt(t.created_at)}</td><td>${t.user_phone}</td>
+    <td class="amount-green">${rupee(t.amount)}</td>
+    <td style="font-family:monospace;font-size:10px">${t.payment_id||'—'}</td>
+    <td><span class="badge-${t.status}">${t.status}</span></td>
+    <td>${t.status==='unverified'?`<button class="action-btn btn-green" onclick="verifyTopup(${t.id})">✓ Verify</button>`:''}</td>
+  </tr>`).join('');
+}
+async function verifyTopup(id){
+  await fetch(API+'/api/admin/topups/verify/'+id,{method:'POST'});
+  loadTopups();
+}
+
+// ── Settings ────────────────────────────────────────────
+async function setSurge(){
+  const m=parseFloat(document.getElementById('surge-input').value);
+  const d=await fetch(API+'/api/admin/surge',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({multiplier:m})}).then(r=>r.json());
+  const el=document.getElementById('surge-status');
+  el.textContent=d.success?`✅ Surge set to ${d.surge}x`:'❌ '+d.error;
+  el.style.color=d.success?'#2e7d32':'#c62828';
+}
+async function updateFare(){
+  const v=document.getElementById('fare-vehicle').value;
+  const h=parseInt(document.getElementById('fare-hours').value);
+  const fare=parseInt(document.getElementById('fare-amount').value);
+  const km=parseInt(document.getElementById('fare-km').value);
+  const d=await fetch(API+'/api/admin/hourly-fares',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({vehicle_type:v,package_hours:h,fare,km})}).then(r=>r.json());
+  const el=document.getElementById('fare-status');
+  el.textContent=d.success?`✅ Updated: ₹${d.updated.fare}, ${d.updated.km}km`:'❌ '+d.error;
+  el.style.color=d.success?'#2e7d32':'#c62828';
+  loadFares();
+}
+async function loadFares(){
+  const d=await fetch(API+'/api/hourly/fares').then(r=>r.json());
+  document.getElementById('surge-input').value=d.surge||1.0;
+  const vehicles=Object.keys(d.fares);
+  const pkgs=[2,4,6,8,24,48,72];
+  let html=`<div style="overflow-x:auto"><table style="font-size:11px"><thead><tr>
+    <th>Vehicle</th>${pkgs.map(p=>`<th style="text-align:center">${p>=24?p/24+'d':p+'h'}</th>`).join('')}<th style="text-align:center">Extra/km</th>
+  </tr></thead><tbody>`;
+  vehicles.forEach(v=>{
+    html+=`<tr><td style="font-weight:700;text-transform:capitalize">${v}</td>`;
+    pkgs.forEach(p=>{
+      const pkg=d.fares[v][p];
+      html+=pkg?`<td style="text-align:center">₹${pkg.fare}<br><span style="color:#aaa;font-size:9px">${pkg.km}km</span></td>`:'<td style="text-align:center;color:#ddd">—</td>';
+    });
+    html+=`<td style="text-align:center">₹${d.fares[v].extra}/km</td></tr>`;
+  });
+  html+='</tbody></table></div>';
+  document.getElementById('fares-display').innerHTML=html;
+}
+
+// ── Marketing ───────────────────────────────────────────
+async function createCampaign(){
+  const title=document.getElementById('camp-title').value.trim();
+  const body=document.getElementById('camp-body').value.trim();
+  const target=document.getElementById('camp-target').value;
+  const type=document.getElementById('camp-type').value;
+  const promo_code=document.getElementById('camp-promo').value.trim()||null;
+  const cta_label=document.getElementById('camp-cta').value.trim()||null;
+  const expires_at=document.getElementById('camp-expires').value||null;
+  if(!title){document.getElementById('camp-status').textContent='❌ Title zaroori hai';return;}
+  const d=await fetch(API+'/api/admin/campaigns',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({title,body,target,type,promo_code,cta_label,expires_at})}).then(r=>r.json());
+  document.getElementById('camp-status').textContent=d.success?'✅ Campaign launch ho gaya!':'❌ '+d.error;
+  if(d.success){document.getElementById('camp-title').value='';document.getElementById('camp-body').value='';loadCampaigns();}
+}
+async function loadCampaigns(){
+  const d=await fetch(API+'/api/admin/campaigns').then(r=>r.json());
+  document.getElementById('campaigns-list').innerHTML=d.campaigns.length?d.campaigns.map(c=>`
+    <div style="display:flex;align-items:center;gap:10px;padding:10px;border-radius:10px;background:${c.active?'#f8f9fa':'#fff'};margin-bottom:8px;border:1px solid #f0f0f0">
+      <div style="flex:1">
+        <div style="font-weight:700;font-size:13px">${c.title}</div>
+        <div style="font-size:11px;color:#666;margin-top:2px">${c.body||''}</div>
+        <div style="font-size:10px;color:#aaa;margin-top:3px">Target: ${c.target} · Type: ${c.type}${c.promo_code?' · Code: '+c.promo_code:''}${c.expires_at?' · Expires: '+fmt(c.expires_at):' · No expiry'}</div>
+      </div>
+      <div style="display:flex;gap:6px;align-items:center;flex-shrink:0">
+        <span style="background:${c.active?'#e8f5e9':'#f5f5f5'};color:${c.active?'#2e7d32':'#999'};padding:2px 8px;border-radius:8px;font-size:10px;font-weight:700">${c.active?'LIVE':'PAUSED'}</span>
+        <button class="action-btn ${c.active?'btn-orange':'btn-green'}" onclick="toggleCampaign(${c.id})">${c.active?'Pause':'Resume'}</button>
+        <button class="action-btn btn-red" onclick="deleteCampaign(${c.id})">Delete</button>
+      </div>
+    </div>
+  `).join(''):'<div style="text-align:center;color:#bbb;padding:20px">Koi campaign nahi</div>';
+}
+async function toggleCampaign(id){await fetch(API+'/api/admin/campaigns/toggle/'+id,{method:'POST'});loadCampaigns();}
+async function deleteCampaign(id){if(!confirm('Delete?'))return;await fetch(API+'/api/admin/campaigns/'+id,{method:'DELETE'});loadCampaigns();}
+
+async function sendBroadcast(){
+  const title=document.getElementById('notif-title').value.trim();
+  const body=document.getElementById('notif-body').value.trim();
+  const target=document.getElementById('notif-target').value;
+  if(!title||!body){document.getElementById('notif-status').textContent='❌ Title aur body zaroori hai';return;}
+  document.getElementById('notif-status').textContent='⏳ Bhej raha hai...';
+  document.getElementById('notif-status').style.color='#e65100';
+  const d=await fetch(API+'/api/admin/notify-all',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({title,body,target})}).then(r=>r.json());
+  document.getElementById('notif-status').textContent=d.success?`✅ Bheja! ${d.total_targets} users ko`:'❌ '+d.error;
+  document.getElementById('notif-status').style.color=d.success?'#2e7d32':'#c62828';
+}
+
+async function createPromo(){
+  const code=document.getElementById('promo-code').value.toUpperCase().trim();
+  const discount_type=document.getElementById('promo-type').value;
+  const discount_value=parseFloat(document.getElementById('promo-value').value)||0;
+  const max_discount=parseFloat(document.getElementById('promo-max').value)||null;
+  const min_fare=parseFloat(document.getElementById('promo-minfare').value)||0;
+  const usage_limit=parseInt(document.getElementById('promo-limit').value)||null;
+  if(!code||!discount_value){document.getElementById('promo-create-status').textContent='❌ Code aur discount zaroori';return;}
+  const d=await fetch(API+'/api/admin/promos',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({code,discount_type,discount_value,max_discount,min_fare,usage_limit})}).then(r=>r.json());
+  document.getElementById('promo-create-status').textContent=d.success?'✅ Promo create ho gaya!':'❌ '+d.error;
+  if(d.success) loadPromos();
+}
+async function loadPromos(){
+  const d=await fetch(API+'/api/admin/promos').then(r=>r.json());
+  document.getElementById('promos-list').innerHTML=d.promos.length?`<table style="font-size:11px">
+    <thead><tr><th>Code</th><th>Type</th><th>Value</th><th>Used</th><th>Status</th><th>Action</th></tr></thead>
+    <tbody>${d.promos.map(p=>`<tr>
+      <td style="font-weight:700;font-family:monospace">${p.code}</td>
+      <td>${p.discount_type==='flat'?'Flat':'%'}</td>
+      <td>${p.discount_type==='flat'?'₹':''}${p.discount_value}${p.discount_type==='percent'?'%':''}</td>
+      <td>${p.used_count||0}${p.usage_limit?'/'+p.usage_limit:''}</td>
+      <td><span style="background:${p.active?'#e8f5e9':'#ffebee'};color:${p.active?'#2e7d32':'#c62828'};padding:1px 7px;border-radius:6px;font-size:10px;font-weight:700">${p.active?'ON':'OFF'}</span></td>
+      <td><button class="action-btn ${p.active?'btn-red':'btn-green'}" onclick="togglePromo('${p.code}',${!p.active})">${p.active?'Disable':'Enable'}</button></td>
+    </tr>`).join('')}</tbody></table>`:'<div style="color:#bbb;padding:16px;text-align:center">Koi promo nahi</div>';
+}
+async function togglePromo(code,active){
+  await fetch(API+'/api/admin/promos/toggle',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({code,active})});
+  loadPromos();
+}
+
+async function loadReferrals(){
+  const d=await fetch(API+'/api/admin/referrals').then(r=>r.json());
+  document.getElementById('referral-stats').innerHTML=`
+    <div style="display:flex;gap:10px;flex-wrap:wrap">
+      <div style="background:#e8f5e9;border-radius:10px;padding:10px 18px;text-align:center"><div style="font-size:20px;font-weight:800;color:#2e7d32">${d.total}</div><div style="font-size:10px;color:#666">Total Referrals</div></div>
+      <div style="background:#e8f5e9;border-radius:10px;padding:10px 18px;text-align:center"><div style="font-size:20px;font-weight:800;color:#2e7d32">${d.completed}</div><div style="font-size:10px;color:#666">Completed</div></div>
+      <div style="background:#fff3e0;border-radius:10px;padding:10px 18px;text-align:center"><div style="font-size:20px;font-weight:800;color:#e65100">${rupee(d.total_reward)}</div><div style="font-size:10px;color:#666">Total Rewarded</div></div>
+    </div>
+  `;
+  document.getElementById('referral-body').innerHTML=d.recent.map(r=>`<tr>
+    <td>${fmt(r.created_at)}</td>
+    <td>${r.referrer_name||'-'} (${r.referrer_phone})</td>
+    <td>${r.referred_name||'-'} (${r.referred_phone})</td>
+    <td class="amount-green">${rupee(r.reward_amount)}</td>
+  </tr>`).join('');
+}
+
+// ── Bootstrap ───────────────────────────────────────────
+async function loadAll(){
+  document.getElementById('last-refresh').textContent=new Date().toLocaleTimeString('en-IN');
+  await loadDashboard();
+  await loadTransactions();
+}
+loadAll();
+
+function downloadPortal(){
+  const html='<!DOCTYPE html>\n'+document.documentElement.outerHTML;
+  const blob=new Blob([html],{type:'text/html;charset=utf-8'});
+  const a=document.createElement('a');
+  a.href=URL.createObjectURL(blob);
+  a.download='rideapp-admin-portal.html';
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+</script>
+</body>
+</html>
