@@ -2884,7 +2884,6 @@ tr:hover td{background:#fafafa}
   <div style="display:flex;gap:12px;align-items:center">
     <span class="badge" id="last-refresh">Loading...</span>
     <button class="refresh-btn" onclick="loadAll()">⟳ Refresh</button>
-    <button class="refresh-btn" style="background:#4CAF50" onclick="downloadPortal()">⬇ Download HTML</button>
   </div>
 </div>
 <div class="main">
@@ -3236,16 +3235,6 @@ async function loadAll() {
   await loadTransactions();
 }
 loadAll();
-
-function downloadPortal() {
-  const html = '<!DOCTYPE html>\n' + document.documentElement.outerHTML;
-  const blob = new Blob([html], { type: 'text/html;charset=utf-8' });
-  const a = document.createElement('a');
-  a.href = URL.createObjectURL(blob);
-  a.download = 'rideapp-admin-portal.html';
-  a.click();
-  URL.revokeObjectURL(a.href);
-}
 </script>
 </body>
 </html>`);
