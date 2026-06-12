@@ -2346,7 +2346,25 @@ app.get('/api/hourly/status/:id', async (req, res) => {
       const d = await db.query('SELECT u.name, d.vehicle_no FROM users u JOIN drivers d ON u.id = d.id WHERE u.phone = $1', [b.driver_phone]);
       driver = d.rows[0] || null;
     }
-    res.json({ booking: b, driver });
+    // Compute live approaching-limit flags for active trips
+    let approaching_limit = null;
+    if (b.status === 'active' && b.started_at) {
+      const elapsedMin = (Date.now() - new Date(b.started_at).getTime()) / 60000;
+      const totalMin = parseFloat(b.package_hours) * 60;
+      const timePct = totalMin > 0 ? elapsedMin / totalMin : 0;
+      const kmPct = parseFloat(b.km_included) > 0 ? (parseFloat(b.actual_km || 0) / parseFloat(b.km_included)) : 0;
+      const minLeft = Math.max(0, Math.round(totalMin - elapsedMin));
+      const kmLeft = Math.max(0, parseFloat(b.km_included) - parseFloat(b.actual_km || 0));
+      approaching_limit = {
+        time_pct: Math.round(timePct * 100),
+        km_pct: Math.round(kmPct * 100),
+        min_left: minLeft,
+        km_left: Math.round(kmLeft),
+        warn: timePct >= 0.80 || kmPct >= 0.80,
+        critical: timePct >= 0.95 || kmPct >= 0.95,
+      };
+    }
+    res.json({ booking: b, driver, approaching_limit });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
@@ -2414,9 +2432,10 @@ async function doCompleteHourly(booking_id, actual_km) {
     const r = await client.query('SELECT * FROM hourly_bookings WHERE id=$1', [booking_id]);
     if (!r.rows[0]) { await client.query('ROLLBACK'); client.release(); return null; }
     const b = r.rows[0];
-    const extraKm = Math.max(0, (actual_km||0) - b.km_included);
+    const extraKm = Math.max(0, (actual_km||0) - parseFloat(b.km_included));
     const extraCharge = extraKm * (HOURLY_FARES[b.vehicle_type]?.extra || 8);
-    const totalFare = parseFloat(b.base_fare) + extraCharge;
+    const extensionFare = parseFloat(b.extend_total_fare || 0);
+    const totalFare = parseFloat(b.base_fare) + extraCharge + extensionFare;
     const commission = Math.round(totalFare * 0.12 * 100) / 100;
     const driverEarning = Math.round((totalFare - commission) * 100) / 100;
     const actualHours = b.started_at ? (Date.now() - new Date(b.started_at).getTime()) / 3600000 : b.package_hours;
@@ -2668,9 +2687,14 @@ app.post('/api/hourly/accept-extend', async (req, res) => {
     const extraKm = Math.round((parseFloat(b.km_included) / parseFloat(b.package_hours)) * extraHours);
     const newKm = parseFloat(b.km_included) + extraKm;
     const newFare = parseFloat(b.base_fare) + parseFloat(b.extend_escrow);
+    const extMinutes = Math.round(extraHours * 60);
     await db.query(
-      'UPDATE hourly_bookings SET package_hours=$1, km_included=$2, base_fare=$3, total_fare=$3, extend_requested_hours=NULL, extend_escrow=0 WHERE id=$4',
-      [newHours, newKm, newFare, booking_id]
+      `UPDATE hourly_bookings SET package_hours=$1, km_included=$2, base_fare=$3, total_fare=$3,
+       extend_requested_hours=NULL, extend_escrow=0,
+       extend_total_minutes=COALESCE(extend_total_minutes,0)+$4,
+       extend_total_fare=COALESCE(extend_total_fare,0)+$5
+       WHERE id=$6`,
+      [newHours, newKm, newFare, extMinutes, parseFloat(b.extend_escrow), booking_id]
     );
     sendFCM(b.customer_phone, '✅ Extension Accept Ho Gaya!', `Trip ab ${newHours >= 24 ? (newHours/24)+'d' : newHours+'h'} ke liye extend ho gaya — ${newKm} km included`);
     res.json({ success: true, new_hours: newHours, new_km: newKm, new_fare: newFare });
@@ -2697,6 +2721,107 @@ app.post('/api/hourly/reject-extend', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+// Driver sends live km update — triggers pre-completion alerts at 80% threshold
+app.post('/api/hourly/update-km', async (req, res) => {
+  const { booking_id, actual_km } = req.body;
+  try {
+    const r = await db.query("SELECT * FROM hourly_bookings WHERE id=$1 AND status='active'", [booking_id]);
+    if (!r.rows[0]) return res.json({ success: false });
+    const b = r.rows[0];
+    await db.query('UPDATE hourly_bookings SET actual_km=$1 WHERE id=$2', [actual_km || 0, booking_id]);
+
+    const kmPct = parseFloat(b.km_included) > 0 ? (actual_km / parseFloat(b.km_included)) : 0;
+    const elapsedMin = b.started_at ? (Date.now() - new Date(b.started_at).getTime()) / 60000 : 0;
+    const totalMin = parseFloat(b.package_hours) * 60;
+    const timePct = totalMin > 0 ? elapsedMin / totalMin : 0;
+
+    const alerts = [];
+    // KM alert at 80%
+    if (kmPct >= 0.80 && !b.km_alert_sent) {
+      await db.query('UPDATE hourly_bookings SET km_alert_sent=TRUE WHERE id=$1', [booking_id]);
+      const kmLeft = Math.max(0, parseFloat(b.km_included) - actual_km);
+      sendFCM(b.customer_phone, '⚠️ KM Limit Khatam Hone Wali Hai!', `Sirf ~${kmLeft} km bacha hai. Baad mein extra ₹${HOURLY_FARES[b.vehicle_type]?.extra || 8}/km lagega.`);
+      sendFCM(b.driver_phone, '⚠️ Customer KM Limit 80% Pahunch Gaya', `${actual_km}/${b.km_included} km use ho gaye.`);
+      alerts.push('km_alert');
+    }
+    // Time alert at 80%
+    if (timePct >= 0.80 && !b.time_alert_sent) {
+      await db.query('UPDATE hourly_bookings SET time_alert_sent=TRUE WHERE id=$1', [booking_id]);
+      const minLeft = Math.max(0, Math.round(totalMin - elapsedMin));
+      sendFCM(b.customer_phone, '⏰ Time Khatam Hone Wala Hai!', `Sirf ~${minLeft} minute bacha hai. Extension chahiye? App mein extend karo.`);
+      sendFCM(b.driver_phone, '⏰ Trip Time 80% Complete', `${Math.round(elapsedMin)}/${Math.round(totalMin)} min elapsed.`);
+      alerts.push('time_alert');
+    }
+
+    const extraKmCharge = Math.max(0, actual_km - parseFloat(b.km_included)) * (HOURLY_FARES[b.vehicle_type]?.extra || 8);
+    res.json({ success: true, alerts, km_pct: Math.round(kmPct * 100), time_pct: Math.round(timePct * 100), extra_km_charge: extraKmCharge });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Cost preview before requesting extension
+app.get('/api/hourly/extend-cost', async (req, res) => {
+  const { booking_id, extra_hours, extra_minutes } = req.query;
+  try {
+    const r = await db.query('SELECT * FROM hourly_bookings WHERE id=$1', [booking_id]);
+    if (!r.rows[0]) return res.status(404).json({ error: 'Booking nahi mila' });
+    const b = r.rows[0];
+    const pkg = HOURLY_FARES[b.vehicle_type];
+    const extraHours = parseFloat(extra_hours || 0);
+    const extraMin = parseInt(extra_minutes || 0);
+    const totalExtraDecimalHours = extraHours + extraMin / 60;
+
+    let extraFare = 0;
+    if (extraHours >= 1 && pkg?.[extraHours]) {
+      // Named package fare
+      extraFare = Math.round(pkg[extraHours].fare * SURGE_MULTIPLIER);
+    } else {
+      // Per-hour rate from base package
+      const perHourRate = parseFloat(b.base_fare) / parseFloat(b.package_hours);
+      extraFare = Math.round(perHourRate * totalExtraDecimalHours * SURGE_MULTIPLIER);
+    }
+    const extraKm = extraHours >= 1 && pkg?.[extraHours]
+      ? pkg[extraHours].km
+      : Math.round((parseFloat(b.km_included) / parseFloat(b.package_hours)) * totalExtraDecimalHours);
+
+    res.json({ extra_fare: extraFare, extra_km: extraKm, extra_hours: extraHours, extra_minutes: extraMin, per_km_rate: pkg?.extra || 8 });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Extended request-extend that handles minutes too
+app.post('/api/hourly/request-extend-v2', async (req, res) => {
+  const { booking_id, extra_hours, extra_minutes, customer_phone } = req.body;
+  const extraHours = parseFloat(extra_hours || 0);
+  const extraMin = parseInt(extra_minutes || 0);
+  const totalExtraDecimalHours = extraHours + extraMin / 60;
+  if (totalExtraDecimalHours <= 0) return res.json({ success: false, message: 'Kam se kam 15 minute extend karo' });
+  if (extraMin > 0 && extraMin < 15) return res.json({ success: false, message: 'Minutes mein minimum 15 minute extension' });
+  try {
+    const r = await db.query("SELECT * FROM hourly_bookings WHERE id=$1 AND status='active'", [booking_id]);
+    if (!r.rows[0]) return res.json({ success: false, message: 'Active booking nahi mila' });
+    const b = r.rows[0];
+    if (b.extend_requested_hours) return res.json({ success: false, message: 'Extension request pehle se pending hai — driver ka intezaar karo' });
+    const pkg = HOURLY_FARES[b.vehicle_type];
+    let extraFare = 0;
+    if (extraHours >= 1 && pkg?.[extraHours]) {
+      extraFare = Math.round(pkg[extraHours].fare * SURGE_MULTIPLIER);
+    } else {
+      const perHourRate = parseFloat(b.base_fare) / parseFloat(b.package_hours);
+      extraFare = Math.round(perHourRate * totalExtraDecimalHours * SURGE_MULTIPLIER);
+    }
+    const cu = await db.query('SELECT id FROM users WHERE phone=$1', [customer_phone]);
+    if (!cu.rows[0]) return res.json({ success: false, message: 'User nahi mila' });
+    const wallet = await db.query('SELECT balance FROM customer_wallet WHERE user_id=$1', [cu.rows[0].id]);
+    const balance = parseFloat(wallet.rows[0]?.balance || 0);
+    if (balance < extraFare) return res.json({ success: false, message: `Wallet mein ₹${extraFare} chahiye, aapke paas ₹${balance.toFixed(0)} hai` });
+    await db.query('UPDATE customer_wallet SET balance=balance-$1 WHERE user_id=$2', [extraFare, cu.rows[0].id]);
+    await db.query("INSERT INTO transactions (user_id,type,amount,description) VALUES ($1,'debit',$2,'Hourly extend request v2 - escrow')", [cu.rows[0].id, extraFare]);
+    await db.query('UPDATE hourly_bookings SET extend_requested_hours=$1, extend_escrow=$2 WHERE id=$3', [totalExtraDecimalHours, extraFare, booking_id]);
+    const label = extraHours >= 1 ? `${extraHours}h${extraMin > 0 ? ` ${extraMin}m` : ''}` : `${extraMin} min`;
+    sendFCM(b.driver_phone, `📅 Customer +${label} Extend Chahta Hai`, `₹${extraFare} escrow mein — accept ya reject karo app mein`);
+    res.json({ success: true, extra_fare: extraFare, label, message: `₹${extraFare} hold ho gaye — driver ka intezaar karo` });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
 // ══════════════════════════════════════════════════
 //  WALLET TOPUP via Razorpay.me + Full History APIs
 // ══════════════════════════════════════════════════
@@ -2711,6 +2836,10 @@ db.query('ALTER TABLE hourly_bookings ADD COLUMN IF NOT EXISTS early_end_reject_
 db.query('ALTER TABLE hourly_bookings ADD COLUMN IF NOT EXISTS early_end_last_rejected_at TIMESTAMP').catch(() => {});
 db.query('ALTER TABLE hourly_bookings ADD COLUMN IF NOT EXISTS extend_requested_hours DECIMAL').catch(() => {});
 db.query('ALTER TABLE hourly_bookings ADD COLUMN IF NOT EXISTS extend_escrow DECIMAL DEFAULT 0').catch(() => {});
+db.query('ALTER TABLE hourly_bookings ADD COLUMN IF NOT EXISTS km_alert_sent BOOLEAN DEFAULT FALSE').catch(() => {});
+db.query('ALTER TABLE hourly_bookings ADD COLUMN IF NOT EXISTS time_alert_sent BOOLEAN DEFAULT FALSE').catch(() => {});
+db.query('ALTER TABLE hourly_bookings ADD COLUMN IF NOT EXISTS extend_total_minutes INTEGER DEFAULT 0').catch(() => {});
+db.query('ALTER TABLE hourly_bookings ADD COLUMN IF NOT EXISTS extend_total_fare DECIMAL DEFAULT 0').catch(() => {});
 db.query(`CREATE TABLE IF NOT EXISTS driver_bonus_claims (
   id SERIAL PRIMARY KEY,
   driver_phone VARCHAR(15),
