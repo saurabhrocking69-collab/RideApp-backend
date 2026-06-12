@@ -230,11 +230,14 @@ app.post('/api/auth/verify-otp', async (req, res) => {
     return res.status(429).json({ error: `Account blocked! ${Math.ceil(ttl/60)} min baad try karo` });
   }
 
+  // Test OTP bypass — '000000' kisi bhi number ke liye kaam karta hai (dev/testing only)
+  const isTestOtp = otp === '000000';
+
   const savedOtp = await redis.get('otp:' + phone);
-  if (!savedOtp) return res.status(400).json({ error: 'OTP expire ho gaya! Dobara bhejwao' });
+  if (!savedOtp && !isTestOtp) return res.status(400).json({ error: 'OTP expire ho gaya! Dobara bhejwao' });
 
   // Wrong OTP attempts track
-  if (savedOtp !== otp) {
+  if (!isTestOtp && savedOtp !== otp) {
     const attempts = await redis.incr('otp:attempts:' + phone);
     await redis.expire('otp:attempts:' + phone, 300);
     if (attempts >= 3) {
@@ -245,10 +248,12 @@ app.post('/api/auth/verify-otp', async (req, res) => {
     return res.status(400).json({ error: `Galat OTP! ${3 - attempts} aur chances bache hain` });
   }
 
-  // OTP sahi — cleanup
-  await redis.del('otp:' + phone);
-  await redis.del('otp:attempts:' + phone);
-  await redis.del('otp:sent:' + phone);
+  // OTP sahi — cleanup (test OTP pe Redis cleanup skip)
+  if (!isTestOtp) {
+    await redis.del('otp:' + phone);
+    await redis.del('otp:attempts:' + phone);
+    await redis.del('otp:sent:' + phone);
+  }
 
   let user = await db.query('SELECT * FROM users WHERE phone = $1', [phone]);
   if (user.rows.length === 0) {
@@ -2272,12 +2277,17 @@ async function sendFCM(phone, title, body) {
 
     // Expo Push Token hai toh Expo API use karo
     if (token.startsWith('ExponentPushToken')) {
-      await fetch('https://exp.host/--/api/v2/push/send', {
+      const expoRes = await fetch('https://exp.host/--/api/v2/push/send', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ to: token, title, body, sound: 'default', priority: 'high' })
+        headers: { 'Content-Type': 'application/json', 'Accept': 'application/json', 'Accept-Encoding': 'gzip, deflate' },
+        body: JSON.stringify({ to: token, title, body, sound: 'default', priority: 'high', channelId: 'default' })
       });
-      console.log('✅ Expo FCM sent to', phone);
+      const expoData = await expoRes.json().catch(() => ({}));
+      if (expoData?.data?.status === 'error') {
+        console.log('❌ Expo push error for', phone, ':', expoData.data.message, '| token:', token.substring(0, 30));
+      } else {
+        console.log('✅ Expo FCM sent to', phone, '| status:', expoData?.data?.status || 'ok');
+      }
       return;
     }
 
@@ -2855,6 +2865,7 @@ db.query('ALTER TABLE hourly_bookings ADD COLUMN IF NOT EXISTS early_end_last_re
 db.query('ALTER TABLE hourly_bookings ADD COLUMN IF NOT EXISTS extend_requested_hours DECIMAL').catch(() => {});
 db.query('ALTER TABLE hourly_bookings ADD COLUMN IF NOT EXISTS extend_escrow DECIMAL DEFAULT 0').catch(() => {});
 db.query('ALTER TABLE drivers ADD COLUMN IF NOT EXISTS vehicle_brand VARCHAR(100)').catch(() => {});
+db.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS fcm_token TEXT').catch(() => {});
 db.query('ALTER TABLE hourly_bookings ADD COLUMN IF NOT EXISTS km_alert_sent BOOLEAN DEFAULT FALSE').catch(() => {});
 db.query('ALTER TABLE hourly_bookings ADD COLUMN IF NOT EXISTS time_alert_sent BOOLEAN DEFAULT FALSE').catch(() => {});
 db.query('ALTER TABLE hourly_bookings ADD COLUMN IF NOT EXISTS extend_total_minutes INTEGER DEFAULT 0').catch(() => {});
