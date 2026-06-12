@@ -1031,7 +1031,7 @@ app.post('/api/upload', async (req, res) => {
 // ── Driver Registration (Spero Buddy) ───────────────
 app.post('/api/driver/register-buddy', async (req, res) => {
   const {
-    phone, name, vehicle_type, vehicle_no,
+    phone, name, vehicle_type, vehicle_no, vehicle_brand,
     dl_name, dl_photo, vehicle_photo, rc_photo,
     aadhaar_number, aadhaar_photo, face_photo
   } = req.body;
@@ -1056,20 +1056,20 @@ app.post('/api/driver/register-buddy', async (req, res) => {
     const existing = await db.query('SELECT id FROM drivers WHERE id = $1', [userId]);
     if (existing.rows.length === 0) {
       await db.query(
-        `INSERT INTO drivers (id, vehicle_type, vehicle_no, dl_name, dl_photo,
+        `INSERT INTO drivers (id, vehicle_type, vehicle_brand, vehicle_no, dl_name, dl_photo,
             vehicle_photo, rc_photo, aadhaar_number, aadhaar_photo, face_photo,
             verification_status, is_online, rating)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'pending',false,5.0)`,
-        [userId, vehicle_type, vehicle_no || null, dl_name, dl_photo,
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'pending',false,5.0)`,
+        [userId, vehicle_type, vehicle_brand || null, vehicle_no || null, dl_name, dl_photo,
          vehicle_photo, rc_photo || null, aadhaar_number, aadhaar_photo, face_photo]
       );
     } else {
       await db.query(
-        `UPDATE drivers SET vehicle_type=$2, vehicle_no=$3, dl_name=$4, dl_photo=$5,
-            vehicle_photo=$6, rc_photo=$7, aadhaar_number=$8, aadhaar_photo=$9,
-            face_photo=$10, verification_status='pending', admin_message=NULL
+        `UPDATE drivers SET vehicle_type=$2, vehicle_brand=$3, vehicle_no=$4, dl_name=$5, dl_photo=$6,
+            vehicle_photo=$7, rc_photo=$8, aadhaar_number=$9, aadhaar_photo=$10,
+            face_photo=$11, verification_status='pending', admin_message=NULL
          WHERE id=$1`,
-        [userId, vehicle_type, vehicle_no || null, dl_name, dl_photo,
+        [userId, vehicle_type, vehicle_brand || null, vehicle_no || null, dl_name, dl_photo,
          vehicle_photo, rc_photo || null, aadhaar_number, aadhaar_photo, face_photo]
       );
     }
@@ -1115,17 +1115,18 @@ app.get('/api/admin/driver-verifications', async (req, res) => {
   try {
     const result = await db.query(
       `SELECT u.id, u.name, u.phone,
-              d.vehicle_type, d.vehicle_no, d.dl_name, d.dl_photo,
+              d.vehicle_type, d.vehicle_brand, d.vehicle_no, d.dl_name, d.dl_photo,
               d.vehicle_photo, d.rc_photo, d.aadhaar_number, d.aadhaar_photo,
               d.face_photo, d.verification_status, d.admin_message
        FROM drivers d
        JOIN users u ON d.id = u.id
-       ORDER BY 
-         CASE d.verification_status 
-           WHEN 'pending' THEN 1 
-           WHEN 'rejected' THEN 2 
-           WHEN 'approved' THEN 3 
-           ELSE 4 END,
+       ORDER BY
+         CASE d.verification_status
+           WHEN 'pending' THEN 1
+           WHEN 'resubmit' THEN 2
+           WHEN 'rejected' THEN 3
+           WHEN 'approved' THEN 4
+           ELSE 5 END,
          u.name`
     );
     res.json({ drivers: result.rows });
@@ -1134,15 +1135,32 @@ app.get('/api/admin/driver-verifications', async (req, res) => {
   }
 });
 
-// ── Admin: Approve / Reject / Suspend driver ────────
+// ── Admin: Approve / Reject / Suspend / Resubmit driver ────────
 app.post('/api/admin/verify-driver', async (req, res) => {
   const { driver_id, status, message } = req.body;
-  // status: 'approved' | 'rejected' | 'suspended'
+  // status: 'approved' | 'rejected' | 'suspended' | 'resubmit'
+  if (!['approved','rejected','suspended','resubmit'].includes(status)) {
+    return res.status(400).json({ error: 'Invalid status' });
+  }
   try {
     await db.query(
       'UPDATE drivers SET verification_status = $1, admin_message = $2 WHERE id = $3',
       [status, message || null, driver_id]
     );
+    // Send FCM notification to driver
+    const dr = await db.query('SELECT u.phone FROM drivers d JOIN users u ON d.id=u.id WHERE d.id=$1', [driver_id]);
+    if (dr.rows[0]) {
+      const dPhone = dr.rows[0].phone;
+      if (status === 'approved') {
+        sendFCM(dPhone, '🎉 Spero Buddy Captain — Approved!', 'Aapke documents verify ho gaye! Ab app mein login karke rides lo.');
+      } else if (status === 'rejected') {
+        sendFCM(dPhone, '❌ Documents Reject Ho Gaye', message || 'Aapke documents mein problem hai — app mein dekho aur dobara upload karo.');
+      } else if (status === 'resubmit') {
+        sendFCM(dPhone, '📋 Documents Resubmit Karein', message || 'Admin ne kuch documents dobara maange hain — app mein message padho.');
+      } else if (status === 'suspended') {
+        sendFCM(dPhone, '⚠️ Account Suspend Ho Gaya', message || 'Aapka Spero Buddy Captain account suspend kar diya gaya hai.');
+      }
+    }
     res.json({ success: true, message: `Driver ${status} ho gaya` });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -2836,6 +2854,7 @@ db.query('ALTER TABLE hourly_bookings ADD COLUMN IF NOT EXISTS early_end_reject_
 db.query('ALTER TABLE hourly_bookings ADD COLUMN IF NOT EXISTS early_end_last_rejected_at TIMESTAMP').catch(() => {});
 db.query('ALTER TABLE hourly_bookings ADD COLUMN IF NOT EXISTS extend_requested_hours DECIMAL').catch(() => {});
 db.query('ALTER TABLE hourly_bookings ADD COLUMN IF NOT EXISTS extend_escrow DECIMAL DEFAULT 0').catch(() => {});
+db.query('ALTER TABLE drivers ADD COLUMN IF NOT EXISTS vehicle_brand VARCHAR(100)').catch(() => {});
 db.query('ALTER TABLE hourly_bookings ADD COLUMN IF NOT EXISTS km_alert_sent BOOLEAN DEFAULT FALSE').catch(() => {});
 db.query('ALTER TABLE hourly_bookings ADD COLUMN IF NOT EXISTS time_alert_sent BOOLEAN DEFAULT FALSE').catch(() => {});
 db.query('ALTER TABLE hourly_bookings ADD COLUMN IF NOT EXISTS extend_total_minutes INTEGER DEFAULT 0').catch(() => {});

@@ -557,34 +557,51 @@ async function loadVerifications(){
       return;
     }
     const statusColor={approved:'#2e7d32',rejected:'#c62828',pending:'#e65100',suspended:'#888'};
+    const statusBg={approved:'#f0fdf4',rejected:'#fff5f5',pending:'#fffbf0',resubmit:'#eff6ff',suspended:'#f8f8f8'};
     document.getElementById('verify-list').innerHTML=d.drivers.map(dr=>`
-      <div style="border:1px solid #f0f0f0;border-radius:12px;padding:16px;margin-bottom:14px;background:${dr.verification_status==='pending'?'#fffbf0':'#fff'}">
-        <div style="display:flex;align-items:flex-start;gap:12px;flex-wrap:wrap">
-          <div style="flex:1;min-width:200px">
-            <div style="font-size:15px;font-weight:700">${dr.name||'-'}</div>
-            <div style="font-size:12px;color:#666;margin-top:2px">${dr.phone} · ${dr.vehicle_type||'-'} · ${dr.vehicle_no||'-'}</div>
-            <div style="margin-top:6px">
-              <span class="badge-${dr.verification_status||'pending'}" style="font-size:11px;padding:3px 10px">
-                ${(dr.verification_status||'pending').toUpperCase()}
+      <div style="border:1px solid #e5e7eb;border-radius:14px;padding:18px;margin-bottom:16px;background:${statusBg[dr.verification_status]||'#fff'}">
+        <!-- Header row -->
+        <div style="display:flex;align-items:flex-start;gap:14px;flex-wrap:wrap">
+          <div style="flex:1;min-width:220px">
+            <div style="font-size:16px;font-weight:800;color:#1a1a2e">${dr.name||'-'}</div>
+            <div style="font-size:12px;color:#555;margin-top:3px">
+              📱 ${dr.phone}
+              &nbsp;·&nbsp;
+              ${dr.vehicle_type==='ultra_luxury'?'💎':dr.vehicle_type==='bike'?'🏍️':dr.vehicle_type==='auto'?'🛺':dr.vehicle_type==='eriksha'?'🛵':'🚕'}
+              <b>${dr.vehicle_type||'-'}</b>
+              ${dr.vehicle_brand?`<span style="color:#c9a227;font-weight:700"> · ${dr.vehicle_brand}</span>`:''}
+              ${dr.vehicle_no?` · ${dr.vehicle_no}`:''}
+            </div>
+            <div style="font-size:12px;color:#777;margin-top:2px">📄 DL Name: ${dr.dl_name||'-'} &nbsp;·&nbsp; 🪪 Aadhaar: ${dr.aadhaar_number||'-'}</div>
+            <div style="margin-top:8px">
+              <span style="font-size:11px;padding:4px 12px;border-radius:20px;font-weight:700;
+                background:${dr.verification_status==='approved'?'#dcfce7':dr.verification_status==='rejected'?'#fee2e2':dr.verification_status==='resubmit'?'#dbeafe':dr.verification_status==='suspended'?'#f3f4f6':'#fef3c7'};
+                color:${dr.verification_status==='approved'?'#166534':dr.verification_status==='rejected'?'#991b1b':dr.verification_status==='resubmit'?'#1e40af':dr.verification_status==='suspended'?'#374151':'#92400e'}">
+                ${(dr.verification_status||'PENDING').toUpperCase()}
               </span>
             </div>
-            ${dr.admin_message?`<div style="margin-top:6px;background:#f8f9fa;padding:8px;border-radius:8px;font-size:12px;color:#666">📝 Last message: ${dr.admin_message}</div>`:''}
+            ${dr.admin_message?`<div style="margin-top:8px;background:#f1f5f9;padding:10px;border-radius:8px;font-size:12px;color:#475569;border-left:3px solid #94a3b8">📝 Last msg: ${dr.admin_message}</div>`:''}
           </div>
+          <!-- Document photos -->
+          <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-start">
+            ${dr.face_photo?`<div style="text-align:center"><img src="${dr.face_photo}" class="doc-img" onclick="openImg('${dr.face_photo}','Selfie — ${dr.name}')" onerror="this.style.display='none'"><div style="font-size:9px;color:#888;margin-top:3px;font-weight:600">SELFIE</div></div>`:'<div style="width:60px;text-align:center;font-size:10px;color:#bbb">No<br>Selfie</div>'}
+            ${dr.dl_photo?`<div style="text-align:center"><img src="${dr.dl_photo}" class="doc-img" onclick="openImg('${dr.dl_photo}','DL — ${dr.dl_name||dr.name}')" onerror="this.style.display='none'"><div style="font-size:9px;color:#888;margin-top:3px;font-weight:600">DL</div></div>`:'<div style="width:60px;text-align:center;font-size:10px;color:#bbb">No<br>DL</div>'}
+            ${dr.vehicle_photo?`<div style="text-align:center"><img src="${dr.vehicle_photo}" class="doc-img" onclick="openImg('${dr.vehicle_photo}','Vehicle — ${dr.vehicle_no||''}')" onerror="this.style.display='none'"><div style="font-size:9px;color:#888;margin-top:3px;font-weight:600">VEHICLE</div></div>`:'<div style="width:60px;text-align:center;font-size:10px;color:#bbb">No<br>Vehicle</div>'}
+            ${dr.rc_photo?`<div style="text-align:center"><img src="${dr.rc_photo}" class="doc-img" onclick="openImg('${dr.rc_photo}','RC — ${dr.vehicle_no||''}')" onerror="this.style.display='none'"><div style="font-size:9px;color:#888;margin-top:3px;font-weight:600">RC</div></div>`:''}
+            ${dr.aadhaar_photo?`<div style="text-align:center"><img src="${dr.aadhaar_photo}" class="doc-img" onclick="openImg('${dr.aadhaar_photo}','Aadhaar — ${dr.aadhaar_number||''}')" onerror="this.style.display='none'"><div style="font-size:9px;color:#888;margin-top:3px;font-weight:600">AADHAAR</div></div>`:'<div style="width:60px;text-align:center;font-size:10px;color:#bbb">No<br>Aadhaar</div>'}
+          </div>
+        </div>
+        <!-- Action row -->
+        <div style="margin-top:14px;padding-top:12px;border-top:1px solid #f0f0f0">
+          <textarea id="vmsg-${dr.id}" placeholder="Admin message to driver (optional — appears in app)" class="input-sm" rows="2" style="width:100%;margin-bottom:8px;border-radius:8px;padding:8px;border:1px solid #e0e0e0;font-size:13px;resize:vertical">${dr.admin_message||''}</textarea>
           <div style="display:flex;gap:8px;flex-wrap:wrap">
-            ${dr.face_photo?`<div style="text-align:center"><img src="${dr.face_photo}" class="doc-img" onclick="openImg('${dr.face_photo}','Selfie / Face Photo - ${dr.name}')" onerror="this.style.display='none'"><div style="font-size:9px;color:#888;margin-top:2px">Face</div></div>`:''}
-            ${dr.dl_photo?`<div style="text-align:center"><img src="${dr.dl_photo}" class="doc-img" onclick="openImg('${dr.dl_photo}','Driving Licence - ${dr.dl_name||dr.name}')" onerror="this.style.display='none'"><div style="font-size:9px;color:#888;margin-top:2px">DL</div></div>`:''}
-            ${dr.vehicle_photo?`<div style="text-align:center"><img src="${dr.vehicle_photo}" class="doc-img" onclick="openImg('${dr.vehicle_photo}','Vehicle Photo - ${dr.vehicle_no}')" onerror="this.style.display='none'"><div style="font-size:9px;color:#888;margin-top:2px">Vehicle</div></div>`:''}
-            ${dr.rc_photo?`<div style="text-align:center"><img src="${dr.rc_photo}" class="doc-img" onclick="openImg('${dr.rc_photo}','RC Book - ${dr.vehicle_no}')" onerror="this.style.display='none'"><div style="font-size:9px;color:#888;margin-top:2px">RC</div></div>`:''}
-            ${dr.aadhaar_photo?`<div style="text-align:center"><img src="${dr.aadhaar_photo}" class="doc-img" onclick="openImg('${dr.aadhaar_photo}','Aadhaar - ${dr.aadhaar_number||''}')" onerror="this.style.display='none'"><div style="font-size:9px;color:#888;margin-top:2px">Aadhaar</div></div>`:''}
+            <button style="padding:8px 18px;background:#16a34a;color:#fff;border:none;border-radius:8px;font-weight:700;cursor:pointer;font-size:13px" onclick="verifyDriver(${dr.id},'approved','vmsg-${dr.id}')">✅ Approve</button>
+            <button style="padding:8px 18px;background:#2563eb;color:#fff;border:none;border-radius:8px;font-weight:700;cursor:pointer;font-size:13px" onclick="verifyDriver(${dr.id},'resubmit','vmsg-${dr.id}')">📋 Resubmit Request</button>
+            <button style="padding:8px 18px;background:#dc2626;color:#fff;border:none;border-radius:8px;font-weight:700;cursor:pointer;font-size:13px" onclick="verifyDriver(${dr.id},'rejected','vmsg-${dr.id}')">❌ Reject</button>
+            <button style="padding:8px 18px;background:#6b7280;color:#fff;border:none;border-radius:8px;font-weight:700;cursor:pointer;font-size:13px" onclick="verifyDriver(${dr.id},'suspended','vmsg-${dr.id}')">⏸ Suspend</button>
           </div>
+          <div id="vstatus-${dr.id}" style="font-size:12px;margin-top:8px;font-weight:600"></div>
         </div>
-        <div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap;align-items:center">
-          <input id="vmsg-${dr.id}" placeholder="Message to driver (optional)" class="input-sm" style="flex:1;min-width:180px">
-          <button class="action-btn btn-green" style="padding:7px 14px" onclick="verifyDriver(${dr.id},'approved','vmsg-${dr.id}')">✅ Approve</button>
-          <button class="action-btn btn-red" style="padding:7px 14px" onclick="verifyDriver(${dr.id},'rejected','vmsg-${dr.id}')">❌ Reject</button>
-          <button class="action-btn btn-orange" style="padding:7px 14px" onclick="verifyDriver(${dr.id},'suspended','vmsg-${dr.id}')">⏸ Suspend</button>
-        </div>
-        <div id="vstatus-${dr.id}" style="font-size:11px;margin-top:6px"></div>
       </div>
     `).join('');
   }catch(e){document.getElementById('verify-list').innerHTML='<div class="loading">❌ Load failed: '+e.message+'</div>';}
