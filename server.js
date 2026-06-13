@@ -3185,6 +3185,9 @@ app.get('/api/admin/referrals', async (req, res) => {
 
 // ── Admin HTML Portal ────────────────────────────
 app.get('/admin', (req, res) => {
+  res.sendFile(__dirname + '/admin-portal.html');
+});
+app.get('/admin-old', (req, res) => {
   res.send(`<!DOCTYPE html>
 <!-- MERGED PORTAL v2 -->
 <html lang="en">
