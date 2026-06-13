@@ -665,10 +665,10 @@ function renderVerifications(){
     html+='<div style="font-size:11px;color:#888;margin-bottom:6px;font-weight:600">MESSAGE TO DRIVER (appears in their app):</div>';
     html+='<textarea id="vmsg-'+dr.id+'" rows="2" placeholder="eg. Aapka DL missing hai / Approved ho gaye!" style="width:100%;padding:10px;border:1px solid #e0e0e0;border-radius:10px;font-size:13px;resize:vertical;margin-bottom:10px;font-family:inherit;box-sizing:border-box">'+(dr.admin_message||'')+'</textarea>';
     html+='<div style="display:flex;gap:8px;flex-wrap:wrap">';
-    html+='<button onclick="verifyDriver('+dr.id+',\'approved\',\'vmsg-'+dr.id+'\')" style="flex:1;min-width:100px;padding:10px 16px;background:#16a34a;color:#fff;border:none;border-radius:10px;font-weight:700;cursor:pointer;font-size:13px">Approve</button>';
-    html+='<button onclick="verifyDriver('+dr.id+',\'resubmit\',\'vmsg-'+dr.id+'\')" style="flex:1;min-width:100px;padding:10px 16px;background:#2563eb;color:#fff;border:none;border-radius:10px;font-weight:700;cursor:pointer;font-size:13px">Resubmit</button>';
-    html+='<button onclick="verifyDriver('+dr.id+',\'rejected\',\'vmsg-'+dr.id+'\')" style="flex:1;min-width:100px;padding:10px 16px;background:#dc2626;color:#fff;border:none;border-radius:10px;font-weight:700;cursor:pointer;font-size:13px">Reject</button>';
-    html+='<button onclick="verifyDriver('+dr.id+',\'suspended\',\'vmsg-'+dr.id+'\')" style="padding:10px 16px;background:#6b7280;color:#fff;border:none;border-radius:10px;font-weight:700;cursor:pointer;font-size:13px">Suspend</button>';
+    html+='<button onclick="verifyDriver('+dr.id+',\'approved\',\'vmsg-'+dr.id+'\',this)" style="flex:1;min-width:100px;padding:10px 16px;background:#16a34a;color:#fff;border:none;border-radius:10px;font-weight:700;cursor:pointer;font-size:13px">Approve</button>';
+    html+='<button onclick="verifyDriver('+dr.id+',\'resubmit\',\'vmsg-'+dr.id+'\',this)" style="flex:1;min-width:100px;padding:10px 16px;background:#2563eb;color:#fff;border:none;border-radius:10px;font-weight:700;cursor:pointer;font-size:13px">Resubmit</button>';
+    html+='<button onclick="verifyDriver('+dr.id+',\'rejected\',\'vmsg-'+dr.id+'\',this)" style="flex:1;min-width:100px;padding:10px 16px;background:#dc2626;color:#fff;border:none;border-radius:10px;font-weight:700;cursor:pointer;font-size:13px">Reject</button>';
+    html+='<button onclick="verifyDriver('+dr.id+',\'suspended\',\'vmsg-'+dr.id+'\',this)" style="padding:10px 16px;background:#6b7280;color:#fff;border:none;border-radius:10px;font-weight:700;cursor:pointer;font-size:13px">Suspend</button>';
     html+='</div>';
     html+='<div id="vstatus-'+dr.id+'" style="font-size:13px;margin-top:8px;font-weight:700"></div>';
     html+='</div>';
@@ -693,23 +693,26 @@ async function loadVerifications(){
   }
 }
 
-async function verifyDriver(id,status,msgInputId){
-  const btn=event.currentTarget; btn.disabled=true; const orig=btn.textContent; btn.textContent='...';
-  const message=document.getElementById(msgInputId)?.value?.trim()||null;
+async function verifyDriver(id,status,msgInputId,btn){
+  var orig=btn?btn.textContent:'';
+  if(btn){btn.disabled=true;btn.textContent='...';}
+  var message=document.getElementById(msgInputId)?document.getElementById(msgInputId).value.trim()||null:null;
   try{
-    const d=await fetch(API+'/api/admin/verify-driver',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({driver_id:id,status,message})}).then(r=>r.json());
-    const el=document.getElementById('vstatus-'+id);
+    var d=await fetch(API+'/api/admin/verify-driver',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({driver_id:id,status:status,message:message})}).then(function(r){return r.json();});
+    var el=document.getElementById('vstatus-'+id);
     if(d.success){
-      el.textContent='✅ '+status.toUpperCase()+' — notification sent';
+      el.textContent=status.toUpperCase()+' done — driver ko notification gaya';
       el.style.color='#16a34a';
       setTimeout(loadVerifications,1200);
     } else {
-      el.textContent='❌ '+(d.error||'Failed');
+      el.textContent='Error: '+(d.error||'Failed');
       el.style.color='#dc2626';
-      btn.disabled=false; btn.textContent=orig;
+      if(btn){btn.disabled=false;btn.textContent=orig;}
     }
   }catch(e){
-    btn.disabled=false; btn.textContent=orig;
+    var el2=document.getElementById('vstatus-'+id);
+    if(el2){el2.textContent='Error: '+e.message;el2.style.color='#dc2626';}
+    if(btn){btn.disabled=false;btn.textContent=orig;}
   }
 }
 
