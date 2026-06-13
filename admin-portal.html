@@ -570,9 +570,14 @@ async function loadVerifications(){
               ${dr.vehicle_type==='ultra_luxury'?'💎':dr.vehicle_type==='bike'?'🏍️':dr.vehicle_type==='auto'?'🛺':dr.vehicle_type==='eriksha'?'🛵':'🚕'}
               <b>${dr.vehicle_type||'-'}</b>
               ${dr.vehicle_brand?`<span style="color:#c9a227;font-weight:700"> · ${dr.vehicle_brand}</span>`:''}
-              ${dr.vehicle_no?` · ${dr.vehicle_no}`:''}
+              ${dr.vehicle_model?`<span style="color:#666;font-size:12px"> ${dr.vehicle_model}</span>`:''}
+              ${dr.vehicle_no?`<span style="background:#f0f0f0;padding:2px 8px;border-radius:6px;font-size:11px;font-weight:700;margin-left:6px"> ${dr.vehicle_no}</span>`:''}
             </div>
-            <div style="font-size:12px;color:#777;margin-top:2px">📄 DL Name: ${dr.dl_name||'-'} &nbsp;·&nbsp; 🪪 Aadhaar: ${dr.aadhaar_number||'-'}</div>
+            <div style="font-size:12px;color:#777;margin-top:4px;display:flex;gap:14px;flex-wrap:wrap">
+              <span>📄 DL Name: <b>${dr.dl_name||'-'}</b></span>
+              ${dr.dl_number?`<span style="background:#e3f2fd;padding:2px 8px;border-radius:6px;font-size:11px;font-weight:700;color:#1565c0">DL# ${dr.dl_number}</span>`:'<span style="color:#bbb;font-size:11px">No DL Number</span>'}
+              <span>🪪 ${dr.aadhaar_number ? `****${dr.aadhaar_number.slice(-4)}` : '-'}</span>
+            </div>
             <div style="margin-top:8px">
               <span style="font-size:11px;padding:4px 12px;border-radius:20px;font-weight:700;
                 background:${dr.verification_status==='approved'?'#dcfce7':dr.verification_status==='rejected'?'#fee2e2':dr.verification_status==='resubmit'?'#dbeafe':dr.verification_status==='suspended'?'#f3f4f6':'#fef3c7'};
