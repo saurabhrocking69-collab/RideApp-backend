@@ -335,8 +335,12 @@ function closeUsrModal(){document.getElementById('usr-modal').classList.remove('
 
 // ── Dashboard ───────────────────────────────────────────
 async function loadDashboard(){
+  console.log('[Admin] loadDashboard called');
   try{
-    const d=await fetch(API+'/api/admin/dashboard').then(r=>r.json());
+    const ctrl=new AbortController(); setTimeout(()=>ctrl.abort(),10000);
+    const r=await fetch(API+'/api/admin/dashboard',{signal:ctrl.signal});
+    console.log('[Admin] dashboard response status:',r.status);
+    const d=await r.json();
     document.getElementById('stats-grid').innerHTML=`
       <div class="stat-card red"><div class="stat-icon">👥</div><div class="stat-value">${d.customers}</div><div class="stat-label">Total Customers</div></div>
       <div class="stat-card"><div class="stat-icon">🚗</div><div class="stat-value">${d.drivers.total}</div><div class="stat-label">Drivers · ${d.drivers.online} online</div></div>
@@ -353,13 +357,15 @@ async function loadDashboard(){
 
 // ── Transactions ────────────────────────────────────────
 async function loadTransactions(){
-  const d=await fetch(API+'/api/admin/all-transactions?limit=200').then(r=>r.json());
-  document.getElementById('txn-body').innerHTML=d.transactions.map(t=>`<tr>
-    <td>${fmt(t.created_at)}</td><td>${t.name||'-'}</td><td>${t.phone}</td>
-    <td><span class="badge-${t.type}">${t.type.toUpperCase()}</span></td>
-    <td class="${t.type==='credit'?'amount-green':'amount-red'}">${rupee(t.amount)}</td>
-    <td title="${t.description}">${trunc(t.description,40)}</td>
-  </tr>`).join('');
+  try{
+    const d=await fetch(API+'/api/admin/all-transactions?limit=200').then(r=>r.json());
+    document.getElementById('txn-body').innerHTML=(d.transactions||[]).map(t=>`<tr>
+      <td>${fmt(t.created_at)}</td><td>${t.name||'-'}</td><td>${t.phone}</td>
+      <td><span class="badge-${t.type}">${t.type.toUpperCase()}</span></td>
+      <td class="${t.type==='credit'?'amount-green':'amount-red'}">${rupee(t.amount)}</td>
+      <td title="${t.description}">${trunc(t.description,40)}</td>
+    </tr>`).join('');
+  }catch(e){console.error('[Admin] loadTransactions failed:',e);}
 }
 
 // ── Rides ───────────────────────────────────────────────
@@ -671,7 +677,8 @@ function renderVerifications(){
 async function loadVerifications(){
   document.getElementById('verify-list').innerHTML='<div class="loading">Loading...</div>';
   try{
-    const d=await fetch(API+'/api/admin/driver-verifications').then(r=>r.json());
+    const ctrl=new AbortController(); setTimeout(()=>ctrl.abort(),12000);
+    const d=await fetch(API+'/api/admin/driver-verifications',{signal:ctrl.signal}).then(r=>r.json());
     _allDrivers=d.drivers||[];
     const counts={pending:0,resubmit:0,rejected:0,approved:0,suspended:0};
     _allDrivers.forEach(dr=>{ if(counts[dr.verification_status]!==undefined) counts[dr.verification_status]++; });
@@ -852,10 +859,13 @@ async function loadReferrals(){
 }
 
 // ── Bootstrap ───────────────────────────────────────────
+console.log('[Admin] Script loaded OK');
 async function loadAll(){
+  console.log('[Admin] loadAll start');
   document.getElementById('last-refresh').textContent=new Date().toLocaleTimeString('en-IN');
   await loadDashboard();
   await loadTransactions();
+  console.log('[Admin] loadAll done');
 }
 loadAll();
 </script>
