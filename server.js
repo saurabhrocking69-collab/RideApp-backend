@@ -2383,13 +2383,17 @@ app.get('/api/hourly/status/:id', async (req, res) => {
       const kmPct = parseFloat(b.km_included) > 0 ? (parseFloat(b.actual_km || 0) / parseFloat(b.km_included)) : 0;
       const minLeft = Math.max(0, Math.round(totalMin - elapsedMin));
       const kmLeft = Math.max(0, parseFloat(b.km_included) - parseFloat(b.actual_km || 0));
+      const extraKmNow = Math.max(0, parseFloat(b.actual_km || 0) - parseFloat(b.km_included));
       approaching_limit = {
         time_pct: Math.round(timePct * 100),
         km_pct: Math.round(kmPct * 100),
         min_left: minLeft,
         km_left: Math.round(kmLeft),
-        warn: timePct >= 0.80 || kmPct >= 0.80,
-        critical: timePct >= 0.95 || kmPct >= 0.95,
+        extra_km: Math.round(extraKmNow * 10) / 10,
+        extra_km_charge: Math.round(extraKmNow * (HOURLY_FARES[b.vehicle_type]?.extra || 8)),
+        is_roundtrip: b.is_roundtrip,
+        warn: timePct >= 0.80,     // Time is the primary constraint — km only adds extra charges
+        critical: timePct >= 0.95,
       };
     }
     res.json({ booking: b, driver, approaching_limit });
@@ -2768,8 +2772,8 @@ app.post('/api/hourly/update-km', async (req, res) => {
     if (kmPct >= 0.80 && !b.km_alert_sent) {
       await db.query('UPDATE hourly_bookings SET km_alert_sent=TRUE WHERE id=$1', [booking_id]);
       const kmLeft = Math.max(0, parseFloat(b.km_included) - actual_km);
-      sendFCM(b.customer_phone, '⚠️ KM Limit Khatam Hone Wali Hai!', `Sirf ~${kmLeft} km bacha hai. Baad mein extra ₹${HOURLY_FARES[b.vehicle_type]?.extra || 8}/km lagega.`);
-      sendFCM(b.driver_phone, '⚠️ Customer KM Limit 80% Pahunch Gaya', `${actual_km}/${b.km_included} km use ho gaye.`);
+      sendFCM(b.customer_phone, '📍 Package KM Khatam Hua', `${actual_km} km travel ho gaye — package mein ${b.km_included} km tha. Ab ₹${HOURLY_FARES[b.vehicle_type]?.extra || 8}/km extra charge hoga jo trip end pe pay hoga.`);
+      sendFCM(b.driver_phone, '📍 Customer Package KM Exceed Hua', `${actual_km}/${b.km_included} km. Ab extra charges customer se honge — trip jaari rahegi.`);
       alerts.push('km_alert');
     }
     // Time alert at 80%
