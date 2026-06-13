@@ -400,7 +400,7 @@ async function loadCustomers(){
       <td>${u.trust_score!=null?u.trust_score+'/100':'-'}${u.is_flagged?'<span style="color:#c62828"> ⚑</span>':''}</td>
       <td style="font-size:10px">${fmt(u.created_at)}</td>
       <td>
-        <button class="action-btn btn-blue" onclick="openUserModal('${u.phone}','${(u.name||'').replace(/'/g,'\\'')}',${!!u.is_blocked},${!!u.is_suspended})">⚙️ Manage</button>
+        <button class="action-btn btn-blue" onclick="openUserModal('${u.phone}',${JSON.stringify(u.name||'')},${!!u.is_blocked},${!!u.is_suspended})">Manage</button>
       </td>
     </tr>`).join('');
   }catch(e){document.getElementById('cust-body').innerHTML='<tr><td colspan=8 class=loading>❌ Load failed</td></tr>';}
@@ -493,7 +493,7 @@ async function loadDrivers(){
       <td class="amount-green">${rupee(dr.total_earned)}</td>
       <td>${dr.rating?parseFloat(dr.rating).toFixed(1)+'⭐':'-'}</td>
       <td>
-        <button class="action-btn btn-blue" onclick="openDriverMgmtModal('${dr.phone}','${(dr.name||'').replace(/'/g,'\\'')}')">⚙️ Manage</button>
+        <button class="action-btn btn-blue" onclick="openDriverMgmtModal('${dr.phone}',${JSON.stringify(dr.name||'')})">Manage</button>
       </td>
     </tr>`).join('');
   }catch(e){document.getElementById('drv-body').innerHTML='<tr><td colspan=8 class=loading>❌ Load failed</td></tr>';}
