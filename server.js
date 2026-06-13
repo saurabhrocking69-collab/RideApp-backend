@@ -1532,6 +1532,23 @@ app.get('/api/chat/:rideId', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+// Hourly booking chat — uses ride_id = 'h_<booking_id>' to avoid collision with regular rides
+app.post('/api/hourly/chat/send', async (req, res) => {
+  const { booking_id, sender, message } = req.body;
+  if (!booking_id || !sender || !message) return res.status(400).json({ error: 'booking_id, sender, message required' });
+  try {
+    await db.query('INSERT INTO chat_messages (ride_id, sender, message) VALUES ($1,$2,$3)', [`h_${booking_id}`, sender, message]);
+    res.json({ success: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.get('/api/hourly/chat/:id', async (req, res) => {
+  try {
+    const r = await db.query('SELECT sender, message, created_at FROM chat_messages WHERE ride_id=$1 ORDER BY created_at ASC', [`h_${req.params.id}`]);
+    res.json({ messages: r.rows });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
 // ─────────────────────────────────────────────────
 //  4. GPS RANGE CHECK (pickup 15m, drop 10m)
 // ─────────────────────────────────────────────────
