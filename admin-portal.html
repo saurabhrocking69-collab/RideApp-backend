@@ -170,6 +170,7 @@ input,select,textarea{outline:none}
         <button onclick="setVerifyFilter('rejected',this)" id="vf-rejected" data-col="#991b1b" style="padding:5px 14px;border-radius:20px;border:2px solid #dc2626;cursor:pointer;font-size:12px;font-weight:700;background:#fff;color:#991b1b">❌ Rejected</button>
         <button onclick="setVerifyFilter('suspended',this)" id="vf-suspended" data-col="#374151" style="padding:5px 14px;border-radius:20px;border:2px solid #6b7280;cursor:pointer;font-size:12px;font-weight:700;background:#fff;color:#374151">⏸ Suspended</button>
       </div>
+      <div id="verify-action-banner" style="display:none;padding:12px 16px;border-radius:10px;background:#f0fdf4;margin-bottom:12px;font-size:14px;font-weight:700;border:2px solid #16a34a"></div>
       <div id="verify-list"><div class="loading">Loading...</div></div>
     </div>
   </div>
@@ -703,27 +704,35 @@ async function loadVerifications(){
   }
 }
 
+function vShowStatus(id,msg,color){
+  var el=document.getElementById('vstatus-'+id);
+  if(el){el.textContent=msg;el.style.color=color;el.style.fontWeight='700';el.style.fontSize='13px';}
+  // Also show in top banner
+  var banner=document.getElementById('verify-action-banner');
+  if(banner){banner.textContent=msg;banner.style.color=color;banner.style.display='block';}
+}
 async function verifyDriver(id,status,msgInputId,btn){
-  console.log('[verifyDriver] called id='+id+' status='+status);
   var orig=btn?btn.textContent:'';
   if(btn){btn.disabled=true;btn.textContent='Sending...';}
   var msgEl=document.getElementById(msgInputId);
-  var message=msgEl?msgEl.value.trim()||null:null;
+  var message=msgEl&&msgEl.value.trim()?msgEl.value.trim():null;
   try{
-    var d=await fetch(API+'/api/admin/verify-driver',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({driver_id:id,status:status,message:message})}).then(function(r){return r.json();});
-    var el=document.getElementById('vstatus-'+id);
+    var resp=await fetch(API+'/api/admin/verify-driver',{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({driver_id:id,status:status,message:message})
+    });
+    var d=await resp.json();
     if(d.success){
-      el.textContent=status.toUpperCase()+' done — driver ko notification gaya';
-      el.style.color='#16a34a';
-      setTimeout(loadVerifications,1200);
+      vShowStatus(id,'✅ '+status.toUpperCase()+' — Driver ko notification gaya','#16a34a');
+      if(btn){btn.textContent='✓ Done';}
+      setTimeout(loadVerifications,1500);
     } else {
-      el.textContent='Error: '+(d.error||'Failed');
-      el.style.color='#dc2626';
+      vShowStatus(id,'❌ Error: '+(d.error||'Server error'),'#dc2626');
       if(btn){btn.disabled=false;btn.textContent=orig;}
     }
   }catch(e){
-    var el2=document.getElementById('vstatus-'+id);
-    if(el2){el2.textContent='Error: '+e.message;el2.style.color='#dc2626';}
+    vShowStatus(id,'❌ Network error: '+e.message,'#dc2626');
     if(btn){btn.disabled=false;btn.textContent=orig;}
   }
 }
