@@ -1153,11 +1153,11 @@ app.post('/api/admin/verify-driver', async (req, res) => {
   }
   try {
     await db.query(
-      'UPDATE drivers SET verification_status = $1, admin_message = $2 WHERE id = $3',
-      [status, message || null, driver_id]
+      'UPDATE drivers SET verification_status = $1, admin_message = $2 WHERE id::text = $3::text',
+      [status, message || null, String(driver_id)]
     );
     // Send FCM notification to driver
-    const dr = await db.query('SELECT u.phone FROM drivers d JOIN users u ON d.id=u.id WHERE d.id=$1', [driver_id]);
+    const dr = await db.query('SELECT u.phone FROM drivers d JOIN users u ON d.id=u.id WHERE d.id::text = $1::text', [String(driver_id)]);
     if (dr.rows[0]) {
       const dPhone = dr.rows[0].phone;
       if (status === 'approved') {

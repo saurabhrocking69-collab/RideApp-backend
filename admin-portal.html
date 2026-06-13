@@ -629,7 +629,7 @@ function renderVerifications(){
     var dr=list[i];
     var st=dr.verification_status||'pending';
     var aadhaarMasked=dr.aadhaar_number?'****'+dr.aadhaar_number.slice(-4):'';
-    html+='<div style="border:2px solid '+vStatusBorder(st)+';border-radius:16px;padding:20px;margin-bottom:18px">';
+    html+='<div data-card-id="'+dr.id+'" style="border:2px solid '+vStatusBorder(st)+';border-radius:16px;padding:20px;margin-bottom:18px;transition:border-color 0.3s">';
 
     // Header
     html+='<div style="display:flex;align-items:flex-start;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:14px">';
@@ -641,7 +641,7 @@ function renderVerifications(){
     if(dr.vehicle_no) html+='<span style="background:#1a1a2e;color:#fff;padding:2px 10px;border-radius:20px;font-size:12px;font-weight:700;letter-spacing:1px">'+dr.vehicle_no+'</span>';
     html+='</div>';
     html+='</div>';
-    html+=vStatusChip(st);
+    html+='<span class="v-status-chip" style="padding:6px 16px;border-radius:20px;font-weight:800;font-size:12px;background:'+(STATUS_BG[st]||'#eee')+';color:'+(STATUS_COLORS[st]||'#333')+';white-space:nowrap;transition:all 0.3s">'+(st.toUpperCase())+'</span>';
     html+='</div>';
 
     // Documents
@@ -658,18 +658,18 @@ function renderVerifications(){
     html+='<div style="background:#fff;border-radius:10px;padding:10px;border:1px solid #f0f0f0"><div style="font-size:10px;color:#888;font-weight:700;margin-bottom:3px">DL NAME</div><div style="font-size:13px;font-weight:600">'+(dr.dl_name||'&mdash;')+'</div></div>';
     html+='<div style="background:#fff;border-radius:10px;padding:10px;border:1px solid '+(dr.dl_number?'#bfdbfe':'#fee2e2')+'"><div style="font-size:10px;color:#888;font-weight:700;margin-bottom:3px">DL NUMBER</div><div style="font-size:13px;font-weight:700;color:'+(dr.dl_number?'#1565c0':'#dc2626')+'">'+(dr.dl_number||'Not provided')+'</div></div>';
     html+='<div style="background:#fff;border-radius:10px;padding:10px;border:1px solid '+(dr.aadhaar_number?'#bbf7d0':'#fee2e2')+'"><div style="font-size:10px;color:#888;font-weight:700;margin-bottom:3px">AADHAAR</div><div style="font-size:13px;font-weight:700;color:'+(dr.aadhaar_number?'#166534':'#dc2626')+'">'+(aadhaarMasked||'Not provided')+'</div></div>';
-    if(dr.admin_message) html+='<div style="background:#fffbf0;border-radius:10px;padding:10px;border:1px solid #fde68a;grid-column:1/-1"><div style="font-size:10px;color:#888;font-weight:700;margin-bottom:3px">LAST ADMIN MESSAGE</div><div style="font-size:13px;color:#78350f">'+dr.admin_message+'</div></div>';
+    html+='<div class="v-last-msg" style="'+(dr.admin_message?'':'display:none;')+'background:#fffbf0;border-radius:10px;padding:10px;border:1px solid #fde68a;grid-column:1/-1;font-size:13px;color:#78350f">'+(dr.admin_message||'')+'</div>';
     html+='</div>';
 
     // Action
-    html+='<div style="border-top:1px solid #e5e7eb;padding-top:14px">';
-    html+='<div style="font-size:11px;color:#888;margin-bottom:6px;font-weight:600">MESSAGE TO DRIVER (appears in their app):</div>';
+    html+='<div class="v-actions" style="border-top:1px solid #e5e7eb;padding-top:14px">';
+    html+='<div style="font-size:11px;color:#888;margin-bottom:6px;font-weight:600">MESSAGE TO DRIVER:</div>';
     html+='<textarea id="vmsg-'+dr.id+'" rows="2" placeholder="eg. Aapka DL missing hai / Approved ho gaye!" style="width:100%;padding:10px;border:1px solid #e0e0e0;border-radius:10px;font-size:13px;resize:vertical;margin-bottom:10px;font-family:inherit;box-sizing:border-box">'+(dr.admin_message||'')+'</textarea>';
     html+='<div style="display:flex;gap:8px;flex-wrap:wrap">';
-    html+='<button data-vid="'+dr.id+'" data-vaction="approved" style="flex:1;min-width:100px;padding:10px 16px;background:#16a34a;color:#fff;border:none;border-radius:10px;font-weight:700;cursor:pointer;font-size:13px">Approve</button>';
-    html+='<button data-vid="'+dr.id+'" data-vaction="resubmit" style="flex:1;min-width:100px;padding:10px 16px;background:#2563eb;color:#fff;border:none;border-radius:10px;font-weight:700;cursor:pointer;font-size:13px">Resubmit</button>';
-    html+='<button data-vid="'+dr.id+'" data-vaction="rejected" style="flex:1;min-width:100px;padding:10px 16px;background:#dc2626;color:#fff;border:none;border-radius:10px;font-weight:700;cursor:pointer;font-size:13px">Reject</button>';
-    html+='<button data-vid="'+dr.id+'" data-vaction="suspended" style="padding:10px 16px;background:#6b7280;color:#fff;border:none;border-radius:10px;font-weight:700;cursor:pointer;font-size:13px">Suspend</button>';
+    html+='<button data-vid="'+dr.id+'" data-vaction="approved" style="flex:1;min-width:90px;padding:10px 14px;background:#16a34a;color:#fff;border:none;border-radius:10px;font-weight:700;cursor:pointer;font-size:13px">✅ Approve</button>';
+    html+='<button data-vid="'+dr.id+'" data-vaction="resubmit" style="flex:1;min-width:90px;padding:10px 14px;background:#2563eb;color:#fff;border:none;border-radius:10px;font-weight:700;cursor:pointer;font-size:13px">📋 Resubmit</button>';
+    html+='<button data-vid="'+dr.id+'" data-vaction="rejected" style="flex:1;min-width:90px;padding:10px 14px;background:#dc2626;color:#fff;border:none;border-radius:10px;font-weight:700;cursor:pointer;font-size:13px">❌ Reject</button>';
+    html+='<button data-vid="'+dr.id+'" data-vaction="suspended" style="padding:10px 14px;background:#6b7280;color:#fff;border:none;border-radius:10px;font-weight:700;cursor:pointer;font-size:13px">⏸ Suspend</button>';
     html+='</div>';
     html+='<div id="vstatus-'+dr.id+'" style="font-size:13px;margin-top:8px;font-weight:700"></div>';
     html+='</div>';
@@ -677,10 +677,10 @@ function renderVerifications(){
   }
   document.getElementById('verify-list').innerHTML=html;
 
-  // Attach click listeners after DOM is set
+  // Attach click listeners — use raw string ID, never parseInt (breaks UUIDs)
   document.querySelectorAll('[data-vid][data-vaction]').forEach(function(btn){
     btn.addEventListener('click',function(){
-      var id=parseInt(this.getAttribute('data-vid'));
+      var id=this.getAttribute('data-vid');
       var status=this.getAttribute('data-vaction');
       var msgId='vmsg-'+id;
       verifyDriver(id,status,msgId,this);
@@ -704,13 +704,55 @@ async function loadVerifications(){
   }
 }
 
-function vShowStatus(id,msg,color){
-  var el=document.getElementById('vstatus-'+id);
-  if(el){el.textContent=msg;el.style.color=color;el.style.fontWeight='700';el.style.fontSize='13px';}
-  // Also show in top banner
+var STATUS_COLORS={approved:'#16a34a',rejected:'#dc2626',resubmit:'#2563eb',suspended:'#6b7280',pending:'#f59e0b'};
+var STATUS_BG={approved:'#dcfce7',rejected:'#fee2e2',resubmit:'#dbeafe',suspended:'#f3f4f6',pending:'#fef3c7'};
+
+function vUpdateCardInPlace(id,status,adminMsg){
+  // Update the card border + status chip without reloading the page
+  var card=document.querySelector('[data-card-id="'+id+'"]');
+  if(card){
+    card.style.borderColor=STATUS_COLORS[status]||'#9ca3af';
+    var chip=card.querySelector('.v-status-chip');
+    if(chip){
+      var lbl={approved:'APPROVED',rejected:'REJECTED',resubmit:'RESUBMIT',suspended:'SUSPENDED',pending:'PENDING'};
+      chip.textContent=lbl[status]||status.toUpperCase();
+      chip.style.background=STATUS_BG[status]||'#eee';
+      chip.style.color=STATUS_COLORS[status]||'#333';
+    }
+    // Hide action buttons, show done message
+    var actDiv=card.querySelector('.v-actions');
+    if(actDiv){
+      actDiv.innerHTML='<div style="padding:12px;background:'+STATUS_BG[status]+';border-radius:10px;color:'+STATUS_COLORS[status]+';font-weight:700;font-size:14px">✅ '+status.toUpperCase()+' — Saved</div>';
+    }
+    if(adminMsg){
+      var msgBox=card.querySelector('.v-last-msg');
+      if(msgBox){msgBox.textContent=adminMsg;msgBox.style.display='block';}
+    }
+    // Also update _allDrivers cache so filter chips still work
+    for(var i=0;i<_allDrivers.length;i++){
+      if(String(_allDrivers[i].id)===String(id)){
+        _allDrivers[i].verification_status=status;
+        if(adminMsg)_allDrivers[i].admin_message=adminMsg;
+      }
+    }
+    // Update count badge
+    var counts={pending:0,resubmit:0,rejected:0,approved:0,suspended:0};
+    _allDrivers.forEach(function(dr){if(counts[dr.verification_status]!==undefined)counts[dr.verification_status]++;});
+    var vc=document.getElementById('verify-counts');
+    if(vc)vc.textContent='Total: '+_allDrivers.length+' · ⏳'+counts.pending+' pending · 📋'+counts.resubmit+' resubmit · ✅'+counts.approved+' · ❌'+counts.rejected;
+  }
+  // Top banner
   var banner=document.getElementById('verify-action-banner');
-  if(banner){banner.textContent=msg;banner.style.color=color;banner.style.display='block';}
+  if(banner){
+    banner.textContent='✅ Driver '+status.toUpperCase()+' — Notification sent';
+    banner.style.color=STATUS_COLORS[status];
+    banner.style.borderColor=STATUS_COLORS[status];
+    banner.style.background=STATUS_BG[status];
+    banner.style.display='block';
+    setTimeout(function(){banner.style.display='none';},4000);
+  }
 }
+
 async function verifyDriver(id,status,msgInputId,btn){
   var orig=btn?btn.textContent:'';
   if(btn){btn.disabled=true;btn.textContent='Sending...';}
@@ -724,15 +766,15 @@ async function verifyDriver(id,status,msgInputId,btn){
     });
     var d=await resp.json();
     if(d.success){
-      vShowStatus(id,'✅ '+status.toUpperCase()+' — Driver ko notification gaya','#16a34a');
-      if(btn){btn.textContent='✓ Done';}
-      setTimeout(loadVerifications,1500);
+      vUpdateCardInPlace(id,status,message);
     } else {
-      vShowStatus(id,'❌ Error: '+(d.error||'Server error'),'#dc2626');
+      var el=document.getElementById('vstatus-'+id);
+      if(el){el.textContent='❌ '+(d.error||'Error');el.style.color='#dc2626';}
       if(btn){btn.disabled=false;btn.textContent=orig;}
     }
   }catch(e){
-    vShowStatus(id,'❌ Network error: '+e.message,'#dc2626');
+    var el=document.getElementById('vstatus-'+id);
+    if(el){el.textContent='❌ '+e.message;el.style.color='#dc2626';}
     if(btn){btn.disabled=false;btn.textContent=orig;}
   }
 }
