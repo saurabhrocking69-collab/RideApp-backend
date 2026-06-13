@@ -2545,30 +2545,27 @@ app.post('/api/hourly/complete', async (req, res) => {
     if (!r.rows[0]) return res.status(404).json({ error: 'Active booking nahi mila' });
     const b = r.rows[0];
 
-    // Layer 1: 20-min minimum lock after OTP start
-    const elapsedMin = b.started_at ? (Date.now() - new Date(b.started_at).getTime()) / 60000 : 999;
+    const elapsedMin = b.started_at ? (Date.now() - new Date(b.started_at).getTime()) / 60000 : 0;
+    const totalMin = parseFloat(b.package_hours) * 60;
+
+    // 20-min startup lock — prevents accidental completion right after OTP
     if (elapsedMin < 20) {
       const waitMin = Math.ceil(20 - elapsedMin);
-      return res.json({ success: false, too_early: true, wait_mins: waitMin, message: `Trip complete karne ke liye ${waitMin} min aur wait karo` });
+      return res.json({ success: false, too_early: true, wait_mins: waitMin, message: `Trip abhi ${Math.floor(elapsedMin)} min pehle shuru hui — ${waitMin} min aur wait karo` });
     }
 
-    // Layer 2: < 70% time elapsed without mutual early-end → need customer confirmation
-    const proportion = elapsedMin / (parseFloat(b.package_hours) * 60);
-    if (proportion < 0.70 && !b.early_end_confirmed) {
-      await db.query('UPDATE hourly_bookings SET pending_customer_confirm=true, actual_km=$1 WHERE id=$2', [actual_km||0, booking_id]);
-      sendFCM(b.customer_phone, '⚠️ Driver ne Trip Complete Kiya', 'App kholein — confirm ya dispute karein (10 min mein auto-confirm)');
-      // Auto-confirm after 10 minutes if customer doesn't respond
-      setTimeout(async () => {
-        try {
-          const check = await db.query("SELECT id FROM hourly_bookings WHERE id=$1 AND pending_customer_confirm=true AND status='active'", [booking_id]);
-          if (check.rows[0]) await doCompleteHourly(booking_id, actual_km||0);
-        } catch (_e) {}
-      }, 10 * 60 * 1000);
-      return res.json({ success: true, pending_confirm: true, message: 'Customer confirmation ka intezaar — 10 min mein auto-complete hoga' });
+    // Package time lock — driver cannot complete before full package time is done
+    // Exception: mutual early termination (early_end_confirmed=true) goes through /api/hourly/early-end-confirm which completes directly
+    if (elapsedMin < totalMin) {
+      const remMin = Math.ceil(totalMin - elapsedMin);
+      const remH = Math.floor(remMin / 60);
+      const remM = remMin % 60;
+      const remStr = remH > 0 ? `${remH} ghante ${remM > 0 ? remM + ' minute' : ''}` : `${remMin} minute`;
+      return res.json({ success: false, time_locked: true, remaining_min: remMin, message: `Package time baaki hai — ${remStr} aur chalao. Jaldi khatam karna ho to customer se Early End agree karo.` });
     }
 
-    // Normal completion (≥70% time or mutual early-end already confirmed)
-    const result = await doCompleteHourly(booking_id, actual_km||0);
+    // Package time fully elapsed — complete
+    const result = await doCompleteHourly(booking_id, actual_km || 0);
     res.json({ success: true, ...result });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
