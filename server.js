@@ -2461,6 +2461,28 @@ app.get('/api/hourly/driver-active', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+app.get('/api/hourly/active', async (req, res) => {
+  const { phone } = req.query;
+  if (!phone) return res.status(400).json({ error: 'phone required' });
+  try {
+    const r = await db.query(
+      `SELECT * FROM hourly_bookings WHERE customer_phone=$1 AND status IN ('pending','matched','active') ORDER BY created_at DESC LIMIT 1`,
+      [phone]
+    );
+    if (!r.rows[0]) return res.json({ booking: null, driver: null });
+    const b = r.rows[0];
+    let driver = null;
+    if (b.driver_phone) {
+      const dr = await db.query(
+        `SELECT u.name, u.phone, d.vehicle_type, d.vehicle_number FROM users u JOIN drivers d ON u.phone=d.phone WHERE u.phone=$1`,
+        [b.driver_phone]
+      );
+      driver = dr.rows[0] || null;
+    }
+    res.json({ booking: b, driver });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
 // ── Hourly completion helper (called from complete + auto-confirm timer) ──
 async function doCompleteHourly(booking_id, actual_km) {
   const client = await db.connect();
