@@ -694,9 +694,11 @@ async function loadVerifications(){
 }
 
 async function verifyDriver(id,status,msgInputId,btn){
+  console.log('[verifyDriver] called id='+id+' status='+status);
   var orig=btn?btn.textContent:'';
-  if(btn){btn.disabled=true;btn.textContent='...';}
-  var message=document.getElementById(msgInputId)?document.getElementById(msgInputId).value.trim()||null:null;
+  if(btn){btn.disabled=true;btn.textContent='Sending...';}
+  var msgEl=document.getElementById(msgInputId);
+  var message=msgEl?msgEl.value.trim()||null:null;
   try{
     var d=await fetch(API+'/api/admin/verify-driver',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({driver_id:id,status:status,message:message})}).then(function(r){return r.json();});
     var el=document.getElementById('vstatus-'+id);
