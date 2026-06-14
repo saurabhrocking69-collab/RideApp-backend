@@ -1914,14 +1914,20 @@ app.get('/api/driver/pending-ride', async (req, res) => {
       return res.json({ ride: null, suspended: true });
     }
 
-    // Driver vehicle type + metrics
+    // Driver vehicle type + metrics — only approved, online drivers get rides
     const driverResult = await db.query(
-      `SELECT d.vehicle_type, d.rating FROM drivers d JOIN users u ON d.id = u.id WHERE u.phone = $1`,
+      `SELECT d.vehicle_type, d.rating, d.verification_status, d.is_online
+       FROM drivers d JOIN users u ON d.id = u.id
+       WHERE u.phone = $1`,
       [phone]
     );
     if (driverResult.rows.length === 0) return res.json({ ride: null });
-    const vehicleType = driverResult.rows[0].vehicle_type;
-    const driverRating = driverResult.rows[0].rating;
+    const dr = driverResult.rows[0];
+    if (dr.verification_status !== 'approved') return res.json({ ride: null, not_approved: true });
+    if (!dr.is_online) return res.json({ ride: null });
+    // 'ultra_luxury' in driver DB maps to 'luxury' ride_type (customer app uses 'luxury')
+    const vehicleType = dr.vehicle_type === 'ultra_luxury' ? 'luxury' : dr.vehicle_type;
+    const driverRating = dr.rating;
 
     // Driver metrics
     const dm = await db.query('SELECT * FROM driver_metrics WHERE phone = $1', [phone]);
@@ -2023,8 +2029,11 @@ app.post('/api/fare-estimate', async (req, res) => {
 
 // POST /api/rides/extension-request
 app.post('/api/rides/extension-request', async (req, res) => {
-  const { original_ride_id, customer_phone, new_drop, new_drop_lat, new_drop_lng } = req.body;
-  if (!original_ride_id || !customer_phone || !new_drop) return res.status(400).json({ error: 'Fields missing' });
+  const { customer_phone, new_drop } = req.body;
+  const original_ride_id = parseInt(req.body.original_ride_id);
+  const new_drop_lat = req.body.new_drop_lat ? parseFloat(req.body.new_drop_lat) : null;
+  const new_drop_lng = req.body.new_drop_lng ? parseFloat(req.body.new_drop_lng) : null;
+  if (!original_ride_id || isNaN(original_ride_id) || !customer_phone || !new_drop) return res.status(400).json({ error: 'Fields missing' });
   try {
     const rideRes = await db.query(
       `SELECT r.*, u_d.phone AS driver_phone, u_d.name AS driver_name
@@ -2069,8 +2078,8 @@ app.post('/api/rides/extension-request', async (req, res) => {
                NOW() + INTERVAL '15 minutes', NOW() + INTERVAL '60 seconds')
        RETURNING *`,
       [original_ride_id, customer_phone, ride.driver_phone,
-       ride.drop_location, ride.drop_lat, ride.drop_lng,
-       new_drop, new_drop_lat || null, new_drop_lng || null,
+       ride.drop_location, ride.drop_lat || null, ride.drop_lng || null,
+       new_drop, new_drop_lat, new_drop_lng,
        ride.ride_type, estFare]
     );
 
