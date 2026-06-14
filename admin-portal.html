@@ -300,6 +300,34 @@ input,select,textarea{outline:none}
       <div class="card-title">📊 Current Hourly Fares</div>
       <div id="fares-display" style="font-size:12px;color:#666">Loading...</div>
     </div>
+    <div class="grid2" style="margin-top:14px">
+      <div class="card">
+        <div class="card-title">🚗 Standard Ride Fare Editor</div>
+        <p style="font-size:12px;color:#666;margin-bottom:10px">Auto · Bike · Car · E-Riksha · <strong style="color:#9C27B0">Ultra Luxury</strong> ke base fare set karo</p>
+        <select id="std-fare-vehicle" class="input-sm" style="margin-bottom:8px" onchange="loadStdFare()">
+          <option value="bike">🏍️ Bike</option>
+          <option value="auto">🛺 Auto</option>
+          <option value="car">🚕 Car</option>
+          <option value="eriksha">🛵 E-Riksha</option>
+          <option value="luxury">🚙 Ultra Luxury ★</option>
+        </select>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px">
+          <input id="std-base-fare" type="number" placeholder="Base fare (₹)" class="input-sm">
+          <input id="std-per-km" type="number" placeholder="Per KM rate (₹)" class="input-sm">
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-bottom:10px">
+          <input id="std-night-mult" type="number" step="0.1" min="1" max="3" placeholder="Night ×" class="input-sm">
+          <input id="std-night-start" type="text" placeholder="Night start" class="input-sm">
+          <input id="std-night-end" type="text" placeholder="Night end" class="input-sm">
+        </div>
+        <button onclick="saveStdFare()" style="width:100%;background:#1a1a2e;color:#fff;border:none;border-radius:8px;padding:10px;cursor:pointer;font-weight:700;font-size:13px">💾 Save Standard Fare</button>
+        <div id="std-fare-status" style="font-size:12px;color:#4CAF50;margin-top:8px"></div>
+      </div>
+      <div class="card">
+        <div class="card-title">📊 Current Standard Fares</div>
+        <div id="std-fares-display" style="font-size:12px;color:#666">Loading...</div>
+      </div>
+    </div>
   </div>
 </div>
 
@@ -321,7 +349,7 @@ function showSection(id,btn){
   if(id==='rides') loadRides();
   if(id==='topups') loadTopups();
   if(id==='verify') loadVerifications();
-  if(id==='settings') loadFares();
+  if(id==='settings'){loadFares();loadStdFares();}
   if(id==='marketing'){loadCampaigns();loadPromos();loadReferrals();}
 }
 
@@ -832,6 +860,59 @@ async function loadFares(){
   });
   html+='</tbody></table></div>';
   document.getElementById('fares-display').innerHTML=html;
+}
+
+// ── Standard Ride Fares ─────────────────────────────────
+var stdFaresCache={};
+async function loadStdFares(){
+  try{
+    const d=await fetch(API+'/api/fare-settings').then(r=>r.json());
+    stdFaresCache={};
+    if(d.fares) d.fares.forEach(f=>{stdFaresCache[f.vehicle_type]=f;});
+    const types=[{id:'bike',icon:'🏍️',label:'Bike'},{id:'auto',icon:'🛺',label:'Auto'},{id:'car',icon:'🚕',label:'Car'},{id:'eriksha',icon:'🛵',label:'E-Riksha'},{id:'luxury',icon:'🚙',label:'Ultra Luxury'}];
+    let html='<div style="overflow-x:auto"><table style="font-size:11px;width:100%"><thead><tr><th>Vehicle</th><th>Base Fare</th><th>Per KM</th><th>Night ×</th><th>Night Hrs</th></tr></thead><tbody>';
+    types.forEach(function(t){
+      var f=stdFaresCache[t.id];
+      if(f){
+        html+='<tr'+(t.id==='luxury'?' style="background:#f3e5f5;font-weight:600"':'')+'>'+
+          '<td>'+t.icon+' '+t.label+'</td>'+
+          '<td>₹'+parseFloat(f.base_fare).toFixed(0)+'</td>'+
+          '<td>₹'+parseFloat(f.per_km_rate).toFixed(0)+'/km</td>'+
+          '<td>'+parseFloat(f.night_multiplier).toFixed(1)+'×</td>'+
+          '<td style="font-size:10px;color:#888">'+(f.night_start||'22:00')+'–'+(f.night_end||'06:00')+'</td></tr>';
+      } else {
+        html+='<tr><td>'+t.icon+' '+t.label+'</td><td colspan="4" style="color:#bbb;text-align:center;font-size:10px">Default (not yet saved)</td></tr>';
+      }
+    });
+    html+='</tbody></table></div>';
+    document.getElementById('std-fares-display').innerHTML=html;
+    loadStdFare();
+  }catch(e){document.getElementById('std-fares-display').textContent='Error loading';}
+}
+function loadStdFare(){
+  var v=document.getElementById('std-fare-vehicle').value;
+  var f=stdFaresCache[v];
+  var defs={bike:{b:15,k:8,n:1.5},auto:{b:25,k:12,n:1.5},car:{b:40,k:15,n:1.5},eriksha:{b:20,k:10,n:1.5},luxury:{b:80,k:25,n:1.8}};
+  var def=defs[v]||{b:25,k:12,n:1.5};
+  document.getElementById('std-base-fare').value=f?parseFloat(f.base_fare):def.b;
+  document.getElementById('std-per-km').value=f?parseFloat(f.per_km_rate):def.k;
+  document.getElementById('std-night-mult').value=f?parseFloat(f.night_multiplier):def.n;
+  document.getElementById('std-night-start').value=f?(f.night_start||'22:00'):'22:00';
+  document.getElementById('std-night-end').value=f?(f.night_end||'06:00'):'06:00';
+}
+async function saveStdFare(){
+  var vehicle_type=document.getElementById('std-fare-vehicle').value;
+  var base_fare=parseFloat(document.getElementById('std-base-fare').value);
+  var per_km_rate=parseFloat(document.getElementById('std-per-km').value);
+  var night_multiplier=parseFloat(document.getElementById('std-night-mult').value)||1.5;
+  var night_start=document.getElementById('std-night-start').value||'22:00';
+  var night_end=document.getElementById('std-night-end').value||'06:00';
+  var el=document.getElementById('std-fare-status');
+  if(!base_fare||!per_km_rate){el.style.color='#c62828';el.textContent='❌ Base fare aur Per KM rate required';return;}
+  var d=await fetch(API+'/api/admin/fare-settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({vehicle_type,base_fare,per_km_rate,night_multiplier,night_start,night_end})}).then(r=>r.json());
+  el.style.color=d.success?'#2e7d32':'#c62828';
+  el.textContent=d.success?'✅ '+vehicle_type+' fare saved! Base ₹'+base_fare+', ₹'+per_km_rate+'/km':'❌ '+(d.error||'Error');
+  if(d.success) loadStdFares();
 }
 
 // ── Marketing ───────────────────────────────────────────

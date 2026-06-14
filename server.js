@@ -315,7 +315,7 @@ app.post('/api/rides/book', async (req, res) => {
     const fareRes = await db.query(
       'SELECT * FROM fare_settings WHERE vehicle_type = $1', [ride_type]
     );
-    const fareSettings = fareRes.rows[0] || { base_fare: 25, per_km_rate: 12, night_multiplier: 1.5, night_start: '22:00', night_end: '06:00' };
+    const fareSettings = fareRes.rows[0] || (ride_type === 'luxury' ? { base_fare: 80, per_km_rate: 25, night_multiplier: 1.8, night_start: '22:00', night_end: '06:00' } : { base_fare: 25, per_km_rate: 12, night_multiplier: 1.5, night_start: '22:00', night_end: '06:00' });
     
     // Night time check karo
     const now = new Date();
@@ -1353,15 +1353,20 @@ app.get('/api/fare-settings', async (req, res) => {
   }
 });
 
-// Admin: Update fare settings
+// Admin: Update fare settings (UPSERT — works even if row not yet inserted)
 app.post('/api/admin/fare-settings', async (req, res) => {
   const { vehicle_type, base_fare, per_km_rate, night_multiplier, night_start, night_end } = req.body;
   try {
     await db.query(
-      `UPDATE fare_settings 
-       SET base_fare = $1, per_km_rate = $2, night_multiplier = $3,
-           night_start = $4, night_end = $5, updated_at = NOW()
-       WHERE vehicle_type = $6`,
+      `WITH updated AS (
+         UPDATE fare_settings
+         SET base_fare=$1, per_km_rate=$2, night_multiplier=$3, night_start=$4, night_end=$5, updated_at=NOW()
+         WHERE vehicle_type=$6
+         RETURNING 1
+       )
+       INSERT INTO fare_settings (vehicle_type, base_fare, per_km_rate, night_multiplier, night_start, night_end)
+       SELECT $6, $1, $2, $3, $4, $5
+       WHERE NOT EXISTS (SELECT 1 FROM updated)`,
       [base_fare, per_km_rate, night_multiplier, night_start, night_end, vehicle_type]
     );
     res.json({ success: true, message: 'Fare updated!' });
@@ -1990,7 +1995,7 @@ app.post('/api/fare-estimate', async (req, res) => {
   const { ride_type, distance } = req.body;
   try {
     const fareRes = await db.query('SELECT * FROM fare_settings WHERE vehicle_type = $1', [ride_type]);
-    const f = fareRes.rows[0] || { base_fare: 25, per_km_rate: 12, night_multiplier: 1.5, night_start: '22:00', night_end: '06:00' };
+    const f = fareRes.rows[0] || (ride_type === 'luxury' ? { base_fare: 80, per_km_rate: 25, night_multiplier: 1.8, night_start: '22:00', night_end: '06:00' } : { base_fare: 25, per_km_rate: 12, night_multiplier: 1.5, night_start: '22:00', night_end: '06:00' });
     const dist = parseFloat(distance) || 3;
 
     const now = new Date();
@@ -3109,6 +3114,10 @@ db.query(`CREATE TABLE IF NOT EXISTS razorpay_topups (
   status VARCHAR(20) DEFAULT 'pending',
   created_at TIMESTAMP DEFAULT NOW()
 )`).catch(e => console.log('razorpay_topups:', e.message));
+
+db.query(`INSERT INTO fare_settings (vehicle_type, base_fare, per_km_rate, night_multiplier, night_start, night_end)
+  SELECT 'luxury', 80, 25, 1.8, '22:00', '06:00'
+  WHERE NOT EXISTS (SELECT 1 FROM fare_settings WHERE vehicle_type = 'luxury')`).catch(() => {});
 
 // GET /api/wallet/topup/url — returns Razorpay.me link for given amount
 app.get('/api/wallet/topup/url', (req, res) => {
