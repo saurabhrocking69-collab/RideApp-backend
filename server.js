@@ -2012,12 +2012,152 @@ app.post('/api/fare-estimate', async (req, res) => {
 //  PAYMENT FLOW APIs
 // ══════════════════════════════════════════════════
 
+// ══════════════════════════════════════════════════
+//  RIDE EXTENSION — same driver, new destination
+// ══════════════════════════════════════════════════
+
+// POST /api/rides/extension-request
+app.post('/api/rides/extension-request', async (req, res) => {
+  const { original_ride_id, customer_phone, new_drop, new_drop_lat, new_drop_lng } = req.body;
+  if (!original_ride_id || !customer_phone || !new_drop) return res.status(400).json({ error: 'Fields missing' });
+  try {
+    const rideRes = await db.query(
+      `SELECT r.*, u_d.phone AS driver_phone, u_d.name AS driver_name
+       FROM rides r
+       JOIN users u_d ON r.driver_id::text = u_d.id::text
+       WHERE r.id = $1`, [original_ride_id]
+    );
+    if (!rideRes.rows[0]) return res.json({ success: false, error: 'Ride nahi mili' });
+    const ride = rideRes.rows[0];
+    if (ride.status !== 'completed') return res.json({ success: false, error: 'Ride abhi complete nahi hui' });
+
+    // 15-min window from ride completion
+    const completedAt = ride.completed_at || ride.created_at;
+    const minAgo = (Date.now() - new Date(completedAt).getTime()) / 60000;
+    if (minAgo > 15) return res.json({ success: false, expired: true, error: '15-minute window khatam ho gayi — naya ride book karo' });
+
+    // Driver must be free
+    const busy = await db.query(
+      `SELECT id FROM rides WHERE driver_id = (SELECT id FROM users WHERE phone=$1)
+       AND status IN ('accepted','inride','matched','arrived') LIMIT 1`, [ride.driver_phone]
+    );
+    if (busy.rows[0]) return res.json({ success: false, busy: true, error: 'Driver abhi doosre customer ke saath busy hai' });
+
+    // Fare estimate
+    let estFare = 50;
+    if (new_drop_lat && new_drop_lng && ride.drop_lat && ride.drop_lng) {
+      const km = haversineKm(parseFloat(ride.drop_lat), parseFloat(ride.drop_lng), parseFloat(new_drop_lat), parseFloat(new_drop_lng));
+      const fs = await db.query('SELECT * FROM fare_settings WHERE vehicle_type=$1', [ride.ride_type]);
+      const f = fs.rows[0] || { base_fare: 25, per_km_rate: 12 };
+      estFare = Math.max(20, Math.round(parseFloat(f.base_fare) + km * parseFloat(f.per_km_rate)));
+    }
+
+    // Cancel any old pending extension for this driver
+    await db.query("UPDATE ride_extensions SET status='cancelled' WHERE driver_phone=$1 AND status='pending'", [ride.driver_phone]);
+
+    const extR = await db.query(
+      `INSERT INTO ride_extensions
+         (original_ride_id, customer_phone, driver_phone, pickup, pickup_lat, pickup_lng,
+          new_drop, new_drop_lat, new_drop_lng, vehicle_type, estimated_fare,
+          window_expires_at, response_expires_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,
+               NOW() + INTERVAL '15 minutes', NOW() + INTERVAL '60 seconds')
+       RETURNING *`,
+      [original_ride_id, customer_phone, ride.driver_phone,
+       ride.drop_location, ride.drop_lat, ride.drop_lng,
+       new_drop, new_drop_lat || null, new_drop_lng || null,
+       ride.ride_type, estFare]
+    );
+
+    sendFCM(ride.driver_phone, '🔄 Ride Extension!', `${ride.drop_location} → ${new_drop} — ₹${estFare} | Accept karo 60 sec mein`);
+
+    // Auto-expire after 62 sec if no response
+    const extId = extR.rows[0].id;
+    setTimeout(async () => {
+      try { await db.query("UPDATE ride_extensions SET status='expired' WHERE id=$1 AND status='pending'", [extId]); } catch (_e) {}
+    }, 62000);
+
+    res.json({ success: true, extension_id: extId, estimated_fare: estFare, driver_name: ride.driver_name, driver_phone: ride.driver_phone });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// GET /api/rides/extension-status/:id  (customer polls)
+app.get('/api/rides/extension-status/:id', async (req, res) => {
+  try {
+    const r = await db.query('SELECT * FROM ride_extensions WHERE id=$1', [req.params.id]);
+    if (!r.rows[0]) return res.status(404).json({ error: 'Nahi mila' });
+    const ext = r.rows[0];
+    if (ext.status === 'pending' && new Date(ext.response_expires_at) < new Date()) {
+      await db.query("UPDATE ride_extensions SET status='expired' WHERE id=$1", [ext.id]);
+      return res.json({ status: 'expired' });
+    }
+    res.json({ status: ext.status, new_ride_id: ext.new_ride_id, estimated_fare: ext.estimated_fare, seconds_left: Math.max(0, Math.ceil((new Date(ext.response_expires_at).getTime() - Date.now()) / 1000)) });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// GET /api/rides/extension-pending?phone=  (driver polls)
+app.get('/api/rides/extension-pending', async (req, res) => {
+  const { phone } = req.query;
+  if (!phone) return res.status(400).json({ error: 'phone required' });
+  try {
+    const r = await db.query(
+      `SELECT e.*, u.name AS customer_name
+       FROM ride_extensions e JOIN users u ON u.phone = e.customer_phone
+       WHERE e.driver_phone=$1 AND e.status='pending' AND e.response_expires_at > NOW()
+       ORDER BY e.created_at DESC LIMIT 1`, [phone]
+    );
+    if (!r.rows[0]) return res.json({ extension: null });
+    const ext = r.rows[0];
+    res.json({ extension: { ...ext, seconds_left: Math.max(0, Math.ceil((new Date(ext.response_expires_at).getTime() - Date.now()) / 1000)) } });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// POST /api/rides/extension-accept
+app.post('/api/rides/extension-accept', async (req, res) => {
+  const { extension_id } = req.body;
+  const client = await db.connect();
+  try {
+    await client.query('BEGIN');
+    const extR = await client.query(
+      "SELECT * FROM ride_extensions WHERE id=$1 AND status='pending' AND response_expires_at > NOW()", [extension_id]
+    );
+    if (!extR.rows[0]) { await client.query('ROLLBACK'); client.release(); return res.json({ success: false, error: 'Request expired ya nahi mili' }); }
+    const ext = extR.rows[0];
+
+    const newRide = await client.query(
+      `INSERT INTO rides (passenger_id, driver_id, pickup, pickup_lat, pickup_lng, drop_location, drop_lat, drop_lng, ride_type, fare, status, payment_method)
+       SELECT passenger_id, driver_id, $1, $2, $3, $4, $5, $6, ride_type, $7, 'matched', payment_method
+       FROM rides WHERE id = $8 RETURNING *`,
+      [ext.pickup, ext.pickup_lat, ext.pickup_lng, ext.new_drop, ext.new_drop_lat, ext.new_drop_lng, ext.estimated_fare, ext.original_ride_id]
+    );
+    await client.query("UPDATE ride_extensions SET status='accepted', new_ride_id=$1 WHERE id=$2", [newRide.rows[0].id, extension_id]);
+    await client.query('COMMIT');
+    client.release();
+
+    sendFCM(ext.customer_phone, '✅ Extension Accepted!', `Driver aa raha hai — ${ext.new_drop}`);
+    res.json({ success: true, new_ride_id: newRide.rows[0].id, fare: ext.estimated_fare });
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => {}); client.release();
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/rides/extension-reject
+app.post('/api/rides/extension-reject', async (req, res) => {
+  const { extension_id } = req.body;
+  try {
+    const r = await db.query("UPDATE ride_extensions SET status='rejected' WHERE id=$1 RETURNING customer_phone, new_drop", [extension_id]);
+    if (r.rows[0]) sendFCM(r.rows[0].customer_phone, '❌ Extension Reject', 'Driver ne reject kiya — naya ride book karo');
+    res.json({ success: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
 // ── Driver: Trip complete (payment pending) ───────
 app.post('/api/rides/complete', async (req, res) => {
   const { ride_id } = req.body;
   try {
     const upd = await db.query(
-      `UPDATE rides SET status = 'completed', payment_status = 'pending' WHERE id = $1 RETURNING id, fare, payment_method`,
+      `UPDATE rides SET status = 'completed', payment_status = 'pending', completed_at = NOW() WHERE id = $1 RETURNING id, fare, payment_method`,
       [ride_id]
     );
     if (!upd.rows[0]) return res.status(404).json({ error: 'Ride nahi mili' });
@@ -2902,6 +3042,21 @@ const RAZORPAY_ME_URL = 'https://razorpay.me/@rajawat101';
 
 // Ensure razorpay_topups table exists
 db.query('ALTER TABLE drivers ADD COLUMN IF NOT EXISTS upi_id VARCHAR(100)').catch(() => {});
+db.query('ALTER TABLE rides ADD COLUMN IF NOT EXISTS completed_at TIMESTAMP DEFAULT NULL').catch(() => {});
+db.query(`CREATE TABLE IF NOT EXISTS ride_extensions (
+  id SERIAL PRIMARY KEY,
+  original_ride_id INTEGER NOT NULL,
+  customer_phone VARCHAR(20) NOT NULL,
+  driver_phone VARCHAR(20) NOT NULL,
+  pickup VARCHAR(500), pickup_lat FLOAT, pickup_lng FLOAT,
+  new_drop VARCHAR(500) NOT NULL, new_drop_lat FLOAT, new_drop_lng FLOAT,
+  vehicle_type VARCHAR(20), estimated_fare FLOAT,
+  status VARCHAR(20) DEFAULT 'pending',
+  created_at TIMESTAMP DEFAULT NOW(),
+  window_expires_at TIMESTAMP NOT NULL,
+  response_expires_at TIMESTAMP NOT NULL,
+  new_ride_id INTEGER
+)`).catch(() => {});
 db.query('ALTER TABLE hourly_bookings ADD COLUMN IF NOT EXISTS scheduled_at TIMESTAMP DEFAULT NULL').catch(() => {});
 db.query('ALTER TABLE hourly_bookings ADD COLUMN IF NOT EXISTS pending_customer_confirm BOOLEAN DEFAULT FALSE').catch(() => {});
 db.query('ALTER TABLE hourly_bookings ADD COLUMN IF NOT EXISTS dispute_raised BOOLEAN DEFAULT FALSE').catch(() => {});
