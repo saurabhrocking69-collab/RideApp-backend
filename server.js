@@ -430,6 +430,19 @@ app.post('/api/driver/register', async (req, res) => {
   }
 });
 
+// ── Update user name + gender after onboarding ─
+app.post('/api/auth/update-name', async (req, res) => {
+  const { phone, name, gender } = req.body;
+  try {
+    await db.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS gender VARCHAR(10)').catch(() => {});
+    await db.query(
+      'UPDATE users SET name=$1, gender=$2 WHERE phone=$3',
+      [name, gender || null, phone]
+    );
+    res.json({ success: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
 // ── Ride Book ───────────────────────────────────
 app.post('/api/rides/book', async (req, res) => {
   const { passenger_phone, pickup, drop_location, ride_type, pickup_lat, pickup_lng, drop_lat, drop_lng, discount, promo_code } = req.body;
