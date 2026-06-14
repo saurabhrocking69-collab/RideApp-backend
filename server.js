@@ -107,6 +107,137 @@ function haversineKm(lat1, lon1, lat2, lon2) {
   return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
 }
 
+// ─── Driver scoring: distance (40) + idle time (40) + acceptance (15) + rating (5) ───
+function scoreDriver(driver, distKm, now) {
+  const idleMs  = now - new Date(driver.idle_since || 0).getTime();
+  const idleMin = Math.min(idleMs / 60000, 120);
+  const distScore  = (distKm !== null && distKm !== undefined) ? Math.max(0, (10 - distKm) / 10) * 40 : 0;
+  const idleScore  = (idleMin / 120) * 40;
+  const accScore   = (parseFloat(driver.acceptance_rate || 100) / 100) * 15;
+  const ratScore   = ((parseFloat(driver.rating || 5)) - 1) / 4 * 5;
+  return distScore + idleScore + accScore + ratScore;
+}
+
+// ─── Smart Ride Assignment Engine ───
+// Sends ride to top-scored driver → 30s window → auto-advance on timeout/reject
+async function assignRideToNextDriver(rideId, pickupLat, pickupLng, rideType, queue, radiusKm) {
+  if (radiusKm === undefined) radiusKm = 5;
+  try {
+    // Confirm ride still needs a driver
+    const rideCheck = await db.query(
+      `SELECT id FROM rides WHERE id=$1 AND status='requested' AND driver_id IS NULL`, [rideId]
+    );
+    if (!rideCheck.rows[0]) return;
+
+    let remaining = queue;
+
+    // Build fresh scored queue when needed
+    if (remaining === null || remaining === undefined) {
+      const drRes = await db.query(
+        `SELECT u.phone,
+                COALESCE(d.rating, 5.0)                                         AS rating,
+                COALESCE(dm.acceptance_rate, 100)                               AS acceptance_rate,
+                COALESCE(dm.idle_since, NOW() - INTERVAL '30 minutes')          AS idle_since,
+                dl.lat, dl.lng
+         FROM drivers d
+         JOIN users u ON d.id = u.id
+         LEFT JOIN driver_metrics dm ON dm.phone = u.phone
+         LEFT JOIN driver_locations dl ON dl.phone = u.phone
+         WHERE d.verification_status = 'approved'
+           AND d.is_online = true
+           AND (d.vehicle_type = $1 OR (d.vehicle_type = 'ultra_luxury' AND $1 = 'luxury'))
+           AND NOT EXISTS (
+             SELECT 1 FROM rides r2
+             WHERE r2.driver_id = d.id AND r2.status IN ('matched','arrived','started')
+           )`,
+        [rideType]
+      );
+
+      const now = Date.now();
+      const scored = drRes.rows
+        .map(d => {
+          let distKm = null;
+          if (pickupLat && pickupLng && d.lat && d.lng)
+            distKm = haversineKm(parseFloat(pickupLat), parseFloat(pickupLng), parseFloat(d.lat), parseFloat(d.lng));
+          return { phone: d.phone, distKm, score: scoreDriver(d, distKm, now) };
+        })
+        .filter(d => d.distKm === null || d.distKm <= radiusKm)
+        .sort((a, b) => b.score - a.score);
+
+      remaining = scored.map(d => d.phone);
+    }
+
+    // No drivers in current radius — expand or give up
+    if (!remaining || remaining.length === 0) {
+      if (radiusKm < 15) {
+        setTimeout(() => {
+          assignRideToNextDriver(rideId, pickupLat, pickupLng, rideType, null, radiusKm + 5).catch(() => {});
+        }, 45000);
+      }
+      // Clear soft-lock so fallback polling can pick up the ride
+      await db.query(
+        `UPDATE rides SET assigned_to_phone=NULL, assignment_expires_at=NULL
+         WHERE id=$1 AND status='requested' AND driver_id IS NULL`, [rideId]
+      );
+      return;
+    }
+
+    const nextPhone = remaining[0];
+    const newQueue  = remaining.slice(1);
+
+    // Soft-lock ride for this driver (30 seconds)
+    const upd = await db.query(
+      `UPDATE rides
+       SET assigned_to_phone=$1, assignment_expires_at=NOW()+INTERVAL '30 seconds', assignment_queue=$2
+       WHERE id=$3 AND status='requested' AND driver_id IS NULL
+       RETURNING id`,
+      [nextPhone, JSON.stringify(newQueue), rideId]
+    );
+    if (!upd.rows[0]) return; // race — ride already taken
+
+    // Track offer in driver metrics
+    await db.query(
+      `INSERT INTO driver_metrics (phone, rides_offered) VALUES ($1, 1)
+       ON CONFLICT (phone) DO UPDATE SET rides_offered = driver_metrics.rides_offered + 1`,
+      [nextPhone]
+    );
+
+    // FCM push to driver
+    sendFCM(nextPhone, '🚗 Naya Ride Request!', '📍 Pickup nearby — 30 sec mein accept karo!');
+
+    // Auto-advance if driver doesn't respond in 32s
+    setTimeout(async () => {
+      try {
+        const r = await db.query(
+          `SELECT assigned_to_phone, assignment_queue FROM rides
+           WHERE id=$1 AND status='requested' AND driver_id IS NULL`, [rideId]
+        );
+        if (!r.rows[0] || r.rows[0].assigned_to_phone !== nextPhone) return;
+        const nextQueue = JSON.parse(r.rows[0].assignment_queue || '[]');
+        await assignRideToNextDriver(rideId, pickupLat, pickupLng, rideType, nextQueue, radiusKm);
+      } catch (_e) {}
+    }, 32000);
+
+  } catch (_e) {}
+}
+
+// ─── Background: recover rides with expired soft-locks (server restart safety) ───
+setInterval(async () => {
+  try {
+    const expired = await db.query(
+      `SELECT id, pickup_lat, pickup_lng, ride_type, assignment_queue
+       FROM rides
+       WHERE status='requested' AND driver_id IS NULL
+         AND assigned_to_phone IS NOT NULL
+         AND assignment_expires_at < NOW() - INTERVAL '3 seconds'`
+    );
+    for (const ride of expired.rows) {
+      const q = JSON.parse(ride.assignment_queue || '[]');
+      assignRideToNextDriver(ride.id, ride.pickup_lat, ride.pickup_lng, ride.ride_type, q).catch(() => {});
+    }
+  } catch (_e) {}
+}, 20000);
+
 // ─── DRIVER SCORE (multi-factor) ───
 function calculateDriverScore(driver, distanceKm) {
   // Distance: 0km=1.0, 5km=0.0
@@ -348,7 +479,16 @@ app.post('/api/rides/book', async (req, res) => {
       ride_id:  ride.rows[0].id,
       status:   'requested'
     });
-    } catch (err) {
+
+    // Trigger smart assignment (async — does not delay response)
+    assignRideToNextDriver(
+      ride.rows[0].id,
+      pickup_lat || null,
+      pickup_lng || null,
+      ride_type
+    ).catch(() => {});
+
+  } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
@@ -494,34 +634,75 @@ app.get('/api/driver/pending-ride-OLD', async (req, res) => {
 app.post('/api/rides/accept', async (req, res) => {
   const { ride_id, driver_phone } = req.body;
   try {
-    // Driver ID nikalo
-    const driver = await db.query(
-      'SELECT id FROM users WHERE phone = $1', [driver_phone]
-    );
-    if (driver.rows.length === 0)
-      return res.status(404).json({ success: false, message: 'Driver nahi mila' });
+    const driver = await db.query('SELECT id FROM users WHERE phone=$1', [driver_phone]);
+    if (!driver.rows[0]) return res.status(404).json({ success: false, message: 'Driver nahi mila' });
 
     const otp = Math.floor(1000 + Math.random() * 9000).toString();
 
-    // Driver assign karo + status matched + OTP set karo
-    await db.query(
-      `UPDATE rides SET status = 'matched', start_otp = $1, driver_id = $2 WHERE id = $3`,
+    // Atomic accept: only succeeds if ride is still unassigned (race-condition safe)
+    const upd = await db.query(
+      `UPDATE rides
+       SET status='matched', start_otp=$1, driver_id=$2,
+           assigned_to_phone=NULL, assignment_expires_at=NULL, assignment_queue='[]'
+       WHERE id=$3 AND status='requested' AND driver_id IS NULL
+       RETURNING id`,
       [otp, driver.rows[0].id, ride_id]
     );
+    if (!upd.rows[0])
+      return res.json({ success: false, message: 'Ride already kisi aur driver ne le li — agli dekho!' });
+
+    // Track acceptance in metrics
+    await db.query(
+      `INSERT INTO driver_metrics (phone, rides_accepted, idle_since) VALUES ($1, 1, NOW())
+       ON CONFLICT (phone) DO UPDATE SET rides_accepted=driver_metrics.rides_accepted+1, idle_since=NOW()`,
+      [driver_phone]
+    );
+    const dm = await db.query('SELECT rides_offered, rides_accepted FROM driver_metrics WHERE phone=$1', [driver_phone]);
+    if (dm.rows[0] && dm.rows[0].rides_offered > 0) {
+      const rate = (parseFloat(dm.rows[0].rides_accepted) / parseFloat(dm.rows[0].rides_offered)) * 100;
+      await db.query('UPDATE driver_metrics SET acceptance_rate=$1 WHERE phone=$2', [Math.min(100, rate).toFixed(2), driver_phone]);
+    }
+
     // Customer ko notification bhejo
     const rideData = await db.query(
-      `SELECT u.phone as passenger_phone, u.fcm_token as passenger_token 
-       FROM rides r JOIN users u ON r.passenger_id = u.id WHERE r.id = $1`,
-      [ride_id]
+      `SELECT u.phone as passenger_phone FROM rides r JOIN users u ON r.passenger_id=u.id WHERE r.id=$1`, [ride_id]
     );
-    if (rideData.rows[0]?.passenger_phone) {
+    if (rideData.rows[0]?.passenger_phone)
       sendFCM(rideData.rows[0].passenger_phone, '🚗 Driver Mil Gaya!', 'Aapka driver aa raha hai. OTP ready karo!');
-    }
+
     res.json({ success: true, message: 'Ride accepted!', otp });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
+// ── Driver: Reject ride offer (advance queue immediately) ──
+app.post('/api/rides/reject-offer', async (req, res) => {
+  const { ride_id, driver_phone } = req.body;
+  try {
+    const r = await db.query(
+      `SELECT assigned_to_phone, assignment_queue, pickup_lat, pickup_lng, ride_type
+       FROM rides WHERE id=$1 AND status='requested' AND driver_id IS NULL`, [ride_id]
+    );
+    if (!r.rows[0] || r.rows[0].assigned_to_phone !== driver_phone)
+      return res.json({ success: false, error: 'Not your assignment' });
+
+    const { pickup_lat, pickup_lng, ride_type, assignment_queue } = r.rows[0];
+    const nextQueue = JSON.parse(assignment_queue || '[]');
+
+    // Recalculate acceptance rate (they rejected → lower rate)
+    const dm = await db.query('SELECT rides_offered, rides_accepted FROM driver_metrics WHERE phone=$1', [driver_phone]);
+    if (dm.rows[0] && parseFloat(dm.rows[0].rides_offered) > 0) {
+      const rate = (parseFloat(dm.rows[0].rides_accepted) / parseFloat(dm.rows[0].rides_offered)) * 100;
+      await db.query('UPDATE driver_metrics SET acceptance_rate=$1 WHERE phone=$2', [Math.min(100, rate).toFixed(2), driver_phone]);
+    }
+
+    res.json({ success: true });
+
+    // Immediately advance to next driver (async after response)
+    assignRideToNextDriver(ride_id, pickup_lat, pickup_lng, ride_type, nextQueue).catch(() => {});
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
 // ── Ride Status Check ───────────────────────────
 app.get('/api/rides/status/:rideId', async (req, res) => {
   try {
@@ -1904,73 +2085,53 @@ app.post('/api/driver/update-location', async (req, res) => {
   }
 });
 
-// ─── Smart pending-ride (geohash + scoring + fairness) ───
+// ─── Smart pending-ride (assignment-based) ───
 app.get('/api/driver/pending-ride', async (req, res) => {
   const { phone } = req.query;
   try {
     // Suspension check
-    const susp = await db.query('SELECT suspended_until FROM driver_metrics WHERE phone = $1', [phone]);
-    if (susp.rows[0]?.suspended_until && new Date(susp.rows[0].suspended_until) > new Date()) {
+    const susp = await db.query('SELECT suspended_until FROM driver_metrics WHERE phone=$1', [phone]);
+    if (susp.rows[0]?.suspended_until && new Date(susp.rows[0].suspended_until) > new Date())
       return res.json({ ride: null, suspended: true });
-    }
 
-    // Driver vehicle type + metrics — only approved, online drivers get rides
-    const driverResult = await db.query(
-      `SELECT d.vehicle_type, d.rating, d.verification_status, d.is_online
-       FROM drivers d JOIN users u ON d.id = u.id
-       WHERE u.phone = $1`,
-      [phone]
+    // Only approved + online drivers get rides
+    const drRes = await db.query(
+      `SELECT d.vehicle_type, d.verification_status, d.is_online
+       FROM drivers d JOIN users u ON d.id = u.id WHERE u.phone=$1`, [phone]
     );
-    if (driverResult.rows.length === 0) return res.json({ ride: null });
-    const dr = driverResult.rows[0];
+    if (!drRes.rows[0]) return res.json({ ride: null });
+    const dr = drRes.rows[0];
     if (dr.verification_status !== 'approved') return res.json({ ride: null, not_approved: true });
     if (!dr.is_online) return res.json({ ride: null });
-    // 'ultra_luxury' in driver DB maps to 'luxury' ride_type (customer app uses 'luxury')
-    const vehicleType = dr.vehicle_type === 'ultra_luxury' ? 'luxury' : dr.vehicle_type;
-    const driverRating = dr.rating;
 
-    // Driver metrics
-    const dm = await db.query('SELECT * FROM driver_metrics WHERE phone = $1', [phone]);
-    const metrics = dm.rows[0] || { acceptance_rate: 100, idle_since: new Date() };
-
-    // Driver location + geocell
-    const locRes = await db.query('SELECT lat, lng, geocell FROM driver_locations WHERE phone = $1', [phone]);
-    const driverLoc = locRes.rows[0];
-
-    // Matching unassigned rides
-    const ridesRes = await db.query(
+    // PRIMARY: ride specifically assigned to this driver with active window
+    const assigned = await db.query(
       `SELECT r.*, p.name AS passenger_name, p.phone AS passenger_phone
        FROM rides r JOIN users p ON r.passenger_id = p.id
-       WHERE r.status = 'requested' AND r.driver_id IS NULL AND r.ride_type = $1
-       ORDER BY r.created_at ASC`,
-      [vehicleType]
+       WHERE r.assigned_to_phone=$1
+         AND r.status='requested' AND r.driver_id IS NULL
+         AND r.assignment_expires_at > NOW()
+       LIMIT 1`, [phone]
     );
-    if (ridesRes.rows.length === 0) return res.json({ ride: null });
-
-    // Agar location nahi → oldest ride
-    if (!driverLoc || !driverLoc.lat) return res.json({ ride: ridesRes.rows[0] });
-
-    // Nearby cells of driver
-    const nearbyCells = getNearbyCells(parseFloat(driverLoc.lat), parseFloat(driverLoc.lng));
-
-    // Best ride pick karo — nearest within range
-    let bestRide = null, minDist = Infinity;
-    for (const ride of ridesRes.rows) {
-      if (ride.pickup_lat && ride.pickup_lng) {
-        const dist = haversineKm(parseFloat(driverLoc.lat), parseFloat(driverLoc.lng), parseFloat(ride.pickup_lat), parseFloat(ride.pickup_lng));
-        if (dist < minDist && dist <= 5) { minDist = dist; bestRide = ride; }
-      }
+    if (assigned.rows[0]) {
+      const r = assigned.rows[0];
+      const secLeft = Math.max(0, Math.ceil((new Date(r.assignment_expires_at).getTime() - Date.now()) / 1000));
+      return res.json({ ride: { ...r, seconds_to_accept: secLeft } });
     }
 
-    if (bestRide) {
-      bestRide.distance_to_pickup = minDist.toFixed(1) + ' km';
-      // Track offered
-      await db.query(`INSERT INTO driver_metrics (phone, rides_offered) VALUES ($1, 1) ON CONFLICT (phone) DO UPDATE SET rides_offered = driver_metrics.rides_offered + 1`, [phone]);
-      return res.json({ ride: bestRide });
-    }
+    // FALLBACK: ride has been waiting > 2 min with no active assignment (GPS-less drivers, exhausted queues)
+    const vehicleType = dr.vehicle_type === 'ultra_luxury' ? 'luxury' : dr.vehicle_type;
+    const fallback = await db.query(
+      `SELECT r.*, p.name AS passenger_name, p.phone AS passenger_phone
+       FROM rides r JOIN users p ON r.passenger_id = p.id
+       WHERE r.status='requested' AND r.driver_id IS NULL AND r.ride_type=$1
+         AND (r.assigned_to_phone IS NULL OR r.assignment_expires_at < NOW())
+         AND r.created_at < NOW() - INTERVAL '2 minutes'
+       ORDER BY r.created_at ASC LIMIT 1`, [vehicleType]
+    );
+    if (fallback.rows[0]) return res.json({ ride: fallback.rows[0] });
 
-    // Koi nearby nahi → oldest fallback
-    res.json({ ride: ridesRes.rows[0] });
+    return res.json({ ride: null });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -2171,11 +2332,23 @@ app.post('/api/rides/complete', async (req, res) => {
   const { ride_id } = req.body;
   try {
     const upd = await db.query(
-      `UPDATE rides SET status = 'completed', payment_status = 'pending', completed_at = NOW() WHERE id = $1 RETURNING id, fare, payment_method`,
+      `UPDATE rides SET status = 'completed', payment_status = 'pending', completed_at = NOW() WHERE id = $1 RETURNING id, fare, payment_method, driver_id`,
       [ride_id]
     );
     if (!upd.rows[0]) return res.status(404).json({ error: 'Ride nahi mili' });
     res.json({ success: true, fare: upd.rows[0].fare, payment_method: upd.rows[0].payment_method, message: 'Trip complete! Payment ka intezaar karo.' });
+
+    // Reset idle_since so driver gets priority for next ride
+    if (upd.rows[0].driver_id) {
+      const drvPhone = await db.query('SELECT phone FROM users WHERE id=$1', [upd.rows[0].driver_id]);
+      if (drvPhone.rows[0]) {
+        await db.query(
+          `INSERT INTO driver_metrics (phone, idle_since) VALUES ($1, NOW())
+           ON CONFLICT (phone) DO UPDATE SET idle_since=NOW()`,
+          [drvPhone.rows[0].phone]
+        ).catch(() => {});
+      }
+    }
     // FCM fire-and-forget (does not affect response)
     try {
       const compData = await db.query(
@@ -3057,6 +3230,9 @@ const RAZORPAY_ME_URL = 'https://razorpay.me/@rajawat101';
 // Ensure razorpay_topups table exists
 db.query('ALTER TABLE drivers ADD COLUMN IF NOT EXISTS upi_id VARCHAR(100)').catch(() => {});
 db.query('ALTER TABLE rides ADD COLUMN IF NOT EXISTS completed_at TIMESTAMP DEFAULT NULL').catch(() => {});
+db.query('ALTER TABLE rides ADD COLUMN IF NOT EXISTS assigned_to_phone VARCHAR(20) DEFAULT NULL').catch(() => {});
+db.query('ALTER TABLE rides ADD COLUMN IF NOT EXISTS assignment_expires_at TIMESTAMP DEFAULT NULL').catch(() => {});
+db.query('ALTER TABLE rides ADD COLUMN IF NOT EXISTS assignment_queue JSONB DEFAULT \'[]\'').catch(() => {});
 db.query(`CREATE TABLE IF NOT EXISTS ride_extensions (
   id SERIAL PRIMARY KEY,
   original_ride_id INTEGER NOT NULL,
