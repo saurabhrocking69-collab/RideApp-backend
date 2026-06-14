@@ -311,7 +311,7 @@ async function getDistance(pickup, dropLocation) {
 
 // ── Test Routes ─────────────────────────────────
 app.get('/', (req, res) => {
-  res.json({ message: '🚖 RideApp backend chal raha hai!' });
+  res.json({ message: '🚖 Sppero backend chal raha hai!' });
 });
 
 app.get('/test-db', async (req, res) => {
@@ -1214,7 +1214,7 @@ app.post('/api/upload', async (req, res) => {
   }
 });
 
-// ── Driver Registration (Spero Buddy) ───────────────
+// ── Driver Registration (Sppero Buddy) ───────────────
 app.post('/api/driver/register-buddy', async (req, res) => {
   const {
     phone, name, vehicle_type, vehicle_no, vehicle_brand, vehicle_model,
@@ -1342,13 +1342,13 @@ app.post('/api/admin/verify-driver', async (req, res) => {
     if (dr.rows[0]) {
       const dPhone = dr.rows[0].phone;
       if (status === 'approved') {
-        sendFCM(dPhone, '🎉 Spero Buddy Captain — Approved!', 'Aapke documents verify ho gaye! Ab app mein login karke rides lo.');
+        sendFCM(dPhone, '🎉 Sppero Buddy Captain — Approved!', 'Aapke documents verify ho gaye! Ab app mein login karke rides lo.');
       } else if (status === 'rejected') {
         sendFCM(dPhone, '❌ Documents Reject Ho Gaye', message || 'Aapke documents mein problem hai — app mein dekho aur dobara upload karo.');
       } else if (status === 'resubmit') {
         sendFCM(dPhone, '📋 Documents Resubmit Karein', message || 'Admin ne kuch documents dobara maange hain — app mein message padho.');
       } else if (status === 'suspended') {
-        sendFCM(dPhone, '⚠️ Account Suspend Ho Gaya', message || 'Aapka Spero Buddy Captain account suspend kar diya gaya hai.');
+        sendFCM(dPhone, '⚠️ Account Suspend Ho Gaya', message || 'Aapka Sppero Buddy Captain account suspend kar diya gaya hai.');
       }
     }
     res.json({ success: true, message: `Driver ${status} ho gaya` });
@@ -1440,7 +1440,7 @@ app.post('/api/driver/login', async (req, res) => {
       [phone]
     );
     if (result.rows.length === 0) {
-      return res.json({ success: false, message: 'Yeh number registered nahi hai. Pehle Spero Buddy banein.' });
+      return res.json({ success: false, message: 'Yeh number registered nahi hai. Pehle Sppero Buddy banein.' });
     }
     const d = result.rows[0];
     res.json({
