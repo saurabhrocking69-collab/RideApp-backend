@@ -66,11 +66,16 @@ app.use('/api/', rateLimit({
 // ── Health Check ────────────────────────────────
 app.get('/health', (_req, res) => res.json({ status: 'ok', uptime: Math.floor(process.uptime()), ts: Date.now() }));
 
-// ── PostgreSQL (PgBouncer-ready) ────────────────
-// Set PGBOUNCER_URL in Railway when you add the PgBouncer service.
-// Without it, connects directly to Postgres as before.
+// ── PostgreSQL ──────────────────────────────────
+const _dbConnStr = process.env.PGBOUNCER_URL || process.env.DATABASE_PUBLIC_URL || process.env.DATABASE_URL;
+try {
+  const _u = new URL(_dbConnStr || '');
+  console.log('🗄️ DB host:', _u.hostname, '| port:', _u.port || '5432');
+} catch (_e) {
+  console.log('⚠️ DB conn string missing or invalid. PGHOST:', process.env.PGHOST || 'NOT SET');
+}
 const db = new Pool({
-  connectionString: process.env.PGBOUNCER_URL || process.env.DATABASE_PUBLIC_URL || process.env.DATABASE_URL,
+  connectionString: _dbConnStr,
   ssl: { rejectUnauthorized: false },
   max: parseInt(process.env.DB_POOL_MAX || '10'),
   idleTimeoutMillis: 30000,
