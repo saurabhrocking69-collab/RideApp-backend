@@ -414,8 +414,8 @@ app.post('/api/auth/send-otp', async (req, res) => {
     }
 
     const otp = Math.floor(100000 + Math.random() * 900000).toString();
-    await redis.setEx('otp:' + phone, 300, otp);
-    await redis.setEx('otp:sent:' + phone, 60, '1');
+    await redis.setEx('otp:' + phone, 600, otp);        // 10 min expire
+    await redis.setEx('otp:sent:' + phone, 30, '1');    // 30 sec resend block
     await redis.del('otp:attempts:' + phone);
 
     console.log('📱 OTP for', phone, ':', otp);
