@@ -393,35 +393,37 @@ app.get('/test-db', async (req, res) => {
   res.json({ users_count: result.rows[0].count });
 });
 
-// ── OTP Send (Fast2SMS) ─────────────────────────
+// ── OTP Send ─────────────────────────────────────
 app.post('/api/auth/send-otp', async (req, res) => {
   const { phone } = req.body;
   if (!phone || phone.length !== 10) return res.status(400).json({ error: 'Sahi phone number do' });
+  try {
+    // Block check (3 wrong attempts)
+    const blocked = await redis.get('otp:block:' + phone);
+    if (blocked) {
+      const ttl = await redis.ttl('otp:block:' + phone);
+      const mins = Math.ceil(ttl / 60);
+      return res.status(429).json({ error: `Bahut zyada attempts! ${mins} min baad try karo` });
+    }
 
-  // Block check (3 wrong attempts)
-  const blocked = await redis.get('otp:block:' + phone);
-  if (blocked) {
-    const ttl = await redis.ttl('otp:block:' + phone);
-    const mins = Math.ceil(ttl / 60);
-    return res.status(429).json({ error: `Bahut zyada attempts! ${mins} min baad try karo` });
+    // Resend throttle (60 sec)
+    const recentSend = await redis.get('otp:sent:' + phone);
+    if (recentSend) {
+      const ttl = await redis.ttl('otp:sent:' + phone);
+      return res.status(429).json({ error: `${ttl} second baad resend karo` });
+    }
+
+    const otp = Math.floor(100000 + Math.random() * 900000).toString();
+    await redis.setEx('otp:' + phone, 300, otp);
+    await redis.setEx('otp:sent:' + phone, 60, '1');
+    await redis.del('otp:attempts:' + phone);
+
+    console.log('📱 OTP for', phone, ':', otp);
+    res.json({ message: 'OTP bheja gaya', success: true, otp });
+  } catch (err) {
+    console.error('send-otp error:', err.message);
+    res.status(500).json({ error: 'OTP bhejne mein dikkat. Dobara try karo.' });
   }
-
-  // Resend throttle (60 sec)
-  const existing = await redis.get('otp:' + phone);
-  const recentSend = await redis.get('otp:sent:' + phone);
-  if (recentSend) {
-    const ttl = await redis.ttl('otp:sent:' + phone);
-    return res.status(429).json({ error: `${ttl} second baad resend karo` });
-  }
-
-  const otp = Math.floor(100000 + Math.random() * 900000).toString();
-  await redis.setEx('otp:' + phone, 300, otp);        // 5 min expire
-  await redis.setEx('otp:sent:' + phone, 60, '1');    // 60 sec resend block
-  await redis.del('otp:attempts:' + phone);            // Reset attempts
-
-  // Test OTP — screen pe dikhao
-  console.log('📱 Test OTP for', phone, ':', otp);
-  res.json({ message: 'OTP bheja gaya', success: true, otp });
 });
 
 // ── OTP Verify ──────────────────────────────────
@@ -480,8 +482,8 @@ app.post('/api/auth/verify-otp', async (req, res) => {
     );
     res.json({ message: 'Login successful!', token, user: user.rows[0] });
   } catch (err) {
-    console.error('verify-otp error:', err);
-    res.status(500).json({ error: 'Server error. Dobara try karo.' });
+    console.error('verify-otp error:', err.message);
+    res.status(500).json({ error: `Login error: ${err.message}` });
   }
 });
 
