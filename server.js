@@ -1,3 +1,4 @@
+const crypto = require('crypto');
 const { initializeApp: initFirebaseApp, cert } = require('firebase-admin/app');
 const { getMessaging } = require('firebase-admin/messaging');
 
@@ -1278,21 +1279,47 @@ app.post('/api/driver/payout', async (req, res) => {
   const { phone, amount } = req.body;
   try {
     const driver = await db.query(
-      `SELECT w.driver_id, w.balance FROM driver_wallet w
-       JOIN users u ON w.driver_id = u.id WHERE u.phone = $1`,
+      `SELECT w.driver_id, w.balance, COALESCE(w.pending_commission, 0) as pending_commission
+       FROM driver_wallet w JOIN users u ON w.driver_id = u.id WHERE u.phone = $1`,
       [phone]
     );
-    if (driver.rows.length === 0) return res.status(404).json({ error: 'Driver nahi mila' });
+    if (!driver.rows[0]) return res.status(404).json({ error: 'Driver nahi mila' });
     const balance = parseFloat(driver.rows[0].balance);
+    const pendingCommission = parseFloat(driver.rows[0].pending_commission);
 
-    if (balance < amount) {
-      return res.json({ success: false, message: 'Balance kam hai', balance });
-    }
+    if (balance < amount) return res.json({ success: false, message: 'Balance kam hai', balance });
+
+    // Auto-deduct pending commission from this payout before releasing to driver
+    const commDeduct = Math.min(pendingCommission, amount);
+    const actualPayout = amount - commDeduct;
+
     const result = await db.query(
-      'UPDATE driver_wallet SET balance = balance - $1, total_withdrawn = total_withdrawn + $1 WHERE driver_id = $2 RETURNING balance',
-      [amount, driver.rows[0].driver_id]
+      `UPDATE driver_wallet
+       SET balance = balance - $1,
+           total_withdrawn = total_withdrawn + $2,
+           pending_commission = GREATEST(0, COALESCE(pending_commission, 0) - $3)
+       WHERE driver_id = $4 RETURNING balance, pending_commission`,
+      [amount, actualPayout, commDeduct, driver.rows[0].driver_id]
     );
-    res.json({ success: true, balance: parseFloat(result.rows[0].balance), message: 'Payout request submitted!' });
+
+    if (commDeduct > 0) {
+      await db.query(
+        `UPDATE driver_commissions SET status = 'settled' WHERE driver_phone = $1 AND status = 'cash_owed'`,
+        [phone]
+      ).catch(() => {});
+    }
+
+    const newPending = parseFloat(result.rows[0].pending_commission);
+    res.json({
+      success: true,
+      balance: parseFloat(result.rows[0].balance),
+      actual_payout: actualPayout,
+      commission_deducted: commDeduct,
+      pending_commission: newPending,
+      message: commDeduct > 0
+        ? `Payout bhej di! ₹${commDeduct.toFixed(0)} commission platform ne rakha.`
+        : 'Payout request submitted!'
+    });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -2189,6 +2216,15 @@ app.get('/api/driver/pending-ride', async (req, res) => {
     if (susp.rows[0]?.suspended_until && new Date(susp.rows[0].suspended_until) > new Date())
       return res.json({ ride: null, suspended: true });
 
+    // Commission block check
+    const commWallet = await db.query(
+      `SELECT COALESCE(w.pending_commission, 0) as pending_commission
+       FROM driver_wallet w JOIN users u ON w.driver_id = u.id WHERE u.phone = $1`, [phone]
+    );
+    const pendingComm = parseFloat(commWallet.rows[0]?.pending_commission || 0);
+    if (pendingComm >= 300)
+      return res.json({ ride: null, commission_blocked: true, pending_commission: pendingComm });
+
     // Only approved + online drivers get rides
     const drRes = await db.query(
       `SELECT d.vehicle_type, d.verification_status, d.is_online
@@ -2515,24 +2551,147 @@ app.post('/api/rides/payment-complete', async (req, res) => {
 // ── Driver: Cash/UPI-direct payment confirm ────────
 app.post('/api/rides/cash-confirm', async (req, res) => {
   const { ride_id, phone, payment_method } = req.body;
-  // upi_direct = customer ne driver ka QR scan kiya / UPI pe diya
   const method = payment_method === 'upi_direct' ? 'upi' : 'cash';
   try {
     const rideRes = await db.query('SELECT * FROM rides WHERE id = $1', [ride_id]);
+    if (!rideRes.rows[0]) return res.status(404).json({ error: 'Ride nahi mili' });
     const fare = parseFloat(rideRes.rows[0].fare);
     const commission = Math.round(fare * 0.15 * 100) / 100;
+
     await db.query(
       `UPDATE rides SET payment_status = 'completed', payment_method = $1, commission_amount = $2 WHERE id = $3`,
       [method, commission, ride_id]
     );
+    // Driver received cash; marks commission as owed (not yet collected by platform)
     await db.query(
-      `UPDATE driver_commissions SET status = 'collected', payment_method = $1 WHERE ride_id = $2`,
+      `UPDATE driver_commissions SET status = 'cash_owed', payment_method = $1 WHERE ride_id = $2`,
       [method, ride_id]
     );
-    res.json({ success: true, message: 'Payment confirmed!' });
+    // Add to driver's pending commission debt
+    const walletRes = await db.query(
+      `UPDATE driver_wallet SET pending_commission = COALESCE(pending_commission, 0) + $1
+       WHERE driver_id = (SELECT id FROM users WHERE phone = $2)
+       RETURNING pending_commission`,
+      [commission, phone]
+    );
+    const totalPending = parseFloat(walletRes.rows[0]?.pending_commission || 0);
+
+    // Notify + block when threshold crossed
+    if (totalPending >= 300) {
+      sendFCM(phone,
+        '⚠️ Commission Due - Rides Blocked!',
+        `Aapka pending commission ₹${totalPending.toFixed(0)} ho gaya. Pay karo nayi rides lene ke liye.`,
+        { type: 'commission_due', pending_commission: String(totalPending) }
+      ).catch(() => {});
+    }
+
+    res.json({ success: true, message: 'Payment confirmed!', pending_commission: totalPending });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
+});
+
+// ── Driver: Commission status ─────────────────────
+app.get('/api/driver/commission-status', async (req, res) => {
+  const { phone } = req.query;
+  try {
+    const w = await db.query(
+      `SELECT COALESCE(pending_commission, 0) as pending_commission
+       FROM driver_wallet w JOIN users u ON w.driver_id = u.id WHERE u.phone = $1`, [phone]
+    );
+    const pending = parseFloat(w.rows[0]?.pending_commission || 0);
+    const records = await db.query(
+      `SELECT ride_id, fare, commission, payment_method, status, created_at
+       FROM driver_commissions WHERE driver_phone = $1 AND status = 'cash_owed'
+       ORDER BY created_at DESC LIMIT 20`, [phone]
+    );
+    res.json({ pending_commission: pending, is_blocked: pending >= 300, records: records.rows });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ── Driver: Create Razorpay order for commission payment ─────────
+app.post('/api/driver/commission-pay', async (req, res) => {
+  const { phone } = req.body;
+  try {
+    const w = await db.query(
+      `SELECT COALESCE(pending_commission, 0) as pending_commission
+       FROM driver_wallet w JOIN users u ON w.driver_id = u.id WHERE u.phone = $1`, [phone]
+    );
+    const pending = parseFloat(w.rows[0]?.pending_commission || 0);
+    if (pending <= 0) return res.json({ success: false, message: 'Koi pending commission nahi hai' });
+    if (!razorpay) return res.status(500).json({ error: 'Payment gateway not configured' });
+
+    const order = await razorpay.orders.create({
+      amount: Math.round(pending * 100),
+      currency: 'INR',
+      receipt: `comm_${phone}_${Date.now()}`,
+      notes: { driver_phone: phone, purpose: 'commission_payment' },
+    });
+    await db.query(
+      `INSERT INTO driver_commission_payments (driver_phone, amount, payment_id, status)
+       VALUES ($1, $2, $3, 'initiated')`,
+      [phone, pending, order.id]
+    );
+    res.json({
+      success: true,
+      order_id: order.id,
+      amount: order.amount,
+      currency: 'INR',
+      key_id: process.env.RAZORPAY_KEY_ID,
+    });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ── Driver: Verify commission payment signature ───────────────────
+app.post('/api/driver/commission-pay-verify', async (req, res) => {
+  const { phone, razorpay_order_id, razorpay_payment_id, razorpay_signature } = req.body;
+  try {
+    if (!razorpay_order_id || !razorpay_payment_id || !razorpay_signature)
+      return res.status(400).json({ error: 'Missing payment fields' });
+
+    // Verify HMAC signature
+    const expected = crypto
+      .createHmac('sha256', process.env.RAZORPAY_KEY_SECRET)
+      .update(`${razorpay_order_id}|${razorpay_payment_id}`)
+      .digest('hex');
+    if (expected !== razorpay_signature)
+      return res.status(400).json({ error: 'Invalid payment signature' });
+
+    // Get the amount tied to this order
+    const payRow = await db.query(
+      `SELECT amount FROM driver_commission_payments WHERE payment_id = $1 AND driver_phone = $2`,
+      [razorpay_order_id, phone]
+    );
+    if (!payRow.rows[0]) return res.status(400).json({ error: 'Order not found' });
+    const amount = parseFloat(payRow.rows[0].amount);
+
+    // Mark paid
+    await db.query(
+      `UPDATE driver_commission_payments SET status = 'paid', payment_id = $1
+       WHERE payment_id = $2 AND driver_phone = $3`,
+      [razorpay_payment_id, razorpay_order_id, phone]
+    );
+    // Clear debt
+    await db.query(
+      `UPDATE driver_wallet SET pending_commission = GREATEST(0, COALESCE(pending_commission, 0) - $1)
+       WHERE driver_id = (SELECT id FROM users WHERE phone = $2)`, [amount, phone]
+    );
+    // Check if fully cleared → settle commission records
+    const remaining = await db.query(
+      `SELECT COALESCE(pending_commission, 0) as pc
+       FROM driver_wallet w JOIN users u ON w.driver_id = u.id WHERE u.phone = $1`, [phone]
+    );
+    if (parseFloat(remaining.rows[0]?.pc || 0) <= 0) {
+      await db.query(
+        `UPDATE driver_commissions SET status = 'settled' WHERE driver_phone = $1 AND status = 'cash_owed'`, [phone]
+      ).catch(() => {});
+    }
+    sendFCM(phone, '✅ Commission Paid!',
+      `₹${amount.toFixed(0)} commission clear ho gaya. Ab aap nayi rides le sakte hain!`,
+      { type: 'commission_cleared' }
+    ).catch(() => {});
+    res.json({ success: true, message: 'Commission paid!', pending_commission: parseFloat(remaining.rows[0]?.pc || 0) });
+  } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 // ── Payment status check (driver polling) ─────────
@@ -3347,6 +3506,15 @@ db.query(`CREATE TABLE IF NOT EXISTS ride_extensions (
   new_ride_id INTEGER
 )`).catch(() => {});
 db.query('ALTER TABLE hourly_bookings ADD COLUMN IF NOT EXISTS scheduled_at TIMESTAMP DEFAULT NULL').catch(() => {});
+db.query('ALTER TABLE driver_wallet ADD COLUMN IF NOT EXISTS pending_commission DECIMAL(10,2) DEFAULT 0').catch(() => {});
+db.query(`CREATE TABLE IF NOT EXISTS driver_commission_payments (
+  id SERIAL PRIMARY KEY,
+  driver_phone VARCHAR(15) NOT NULL,
+  amount DECIMAL(10,2) NOT NULL,
+  payment_id VARCHAR(100),
+  status VARCHAR(20) DEFAULT 'pending',
+  created_at TIMESTAMP DEFAULT NOW()
+)`).catch(() => {});
 db.query('ALTER TABLE hourly_bookings ADD COLUMN IF NOT EXISTS pending_customer_confirm BOOLEAN DEFAULT FALSE').catch(() => {});
 db.query('ALTER TABLE hourly_bookings ADD COLUMN IF NOT EXISTS dispute_raised BOOLEAN DEFAULT FALSE').catch(() => {});
 db.query('ALTER TABLE hourly_bookings ADD COLUMN IF NOT EXISTS early_end_reject_count INTEGER DEFAULT 0').catch(() => {});
@@ -3403,7 +3571,81 @@ db.query(`INSERT INTO fare_settings (vehicle_type, base_fare, per_km_rate, night
   SELECT 'luxury', 80, 25, 1.8, '22:00', '06:00'
   WHERE NOT EXISTS (SELECT 1 FROM fare_settings WHERE vehicle_type = 'luxury')`).catch(() => {});
 
-// GET /api/wallet/topup/url — returns Razorpay.me link for given amount
+// POST /api/wallet/topup/order — create Razorpay order for wallet recharge (native SDK)
+app.post('/api/wallet/topup/order', async (req, res) => {
+  const { phone, amount } = req.body;
+  const paise = Math.round(parseFloat(amount || 0) * 100);
+  if (paise < 100) return res.status(400).json({ error: 'Minimum ₹1 chahiye' });
+  if (!razorpay) return res.status(500).json({ error: 'Payment gateway not configured' });
+  try {
+    const user = await db.query('SELECT id FROM users WHERE phone=$1', [phone]);
+    if (!user.rows[0]) return res.status(404).json({ error: 'User nahi mila' });
+    const order = await razorpay.orders.create({
+      amount: paise,
+      currency: 'INR',
+      receipt: `topup_${phone}_${Date.now()}`,
+      notes: { phone, purpose: 'wallet_topup' },
+    });
+    res.json({
+      success: true,
+      order_id: order.id,
+      amount: order.amount,
+      currency: 'INR',
+      key_id: process.env.RAZORPAY_KEY_ID,
+    });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// POST /api/wallet/topup/verify — verify Razorpay signature + credit wallet
+app.post('/api/wallet/topup/verify', async (req, res) => {
+  const { phone, razorpay_order_id, razorpay_payment_id, razorpay_signature, amount } = req.body;
+  if (!razorpay_order_id || !razorpay_payment_id || !razorpay_signature)
+    return res.status(400).json({ error: 'Missing payment fields' });
+
+  // Verify HMAC
+  const expected = crypto
+    .createHmac('sha256', process.env.RAZORPAY_KEY_SECRET)
+    .update(`${razorpay_order_id}|${razorpay_payment_id}`)
+    .digest('hex');
+  if (expected !== razorpay_signature)
+    return res.status(400).json({ error: 'Invalid payment signature' });
+
+  const client = await db.connect();
+  try {
+    // Prevent duplicate credits
+    const dup = await client.query(
+      "SELECT id FROM razorpay_topups WHERE payment_id=$1 AND status='confirmed'", [razorpay_payment_id]
+    );
+    if (dup.rows.length > 0) return res.json({ success: false, error: 'Payment already processed' });
+
+    const rupees = Math.round(parseFloat(amount) * 100) === Math.round(parseFloat(amount) * 100)
+      ? parseFloat(amount)
+      : parseFloat(amount) / 100;
+
+    await client.query('BEGIN');
+    const user = await client.query('SELECT id FROM users WHERE phone=$1', [phone]);
+    if (!user.rows[0]) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'User nahi mila' }); }
+    const userId = user.rows[0].id;
+    await client.query('INSERT INTO customer_wallet (user_id) VALUES ($1) ON CONFLICT (user_id) DO NOTHING', [userId]);
+    const w = await client.query(
+      'UPDATE customer_wallet SET balance=balance+$1, updated_at=NOW() WHERE user_id=$2 RETURNING balance',
+      [rupees, userId]
+    );
+    await client.query(
+      "INSERT INTO transactions (user_id,type,amount,description) VALUES ($1,'credit',$2,$3)",
+      [userId, rupees, `Wallet recharge ₹${rupees} (${razorpay_payment_id})`]
+    );
+    await client.query(
+      "INSERT INTO razorpay_topups (user_phone,amount,payment_id,status) VALUES ($1,$2,$3,'confirmed')",
+      [phone, rupees, razorpay_payment_id]
+    );
+    await client.query('COMMIT');
+    res.json({ success: true, balance: parseFloat(w.rows[0].balance), message: `₹${rupees} wallet mein add ho gaya!` });
+  } catch (err) { await client.query('ROLLBACK'); res.status(500).json({ error: err.message }); }
+  finally { client.release(); }
+});
+
+// GET /api/wallet/topup/url — legacy Razorpay.me link (kept for fallback)
 app.get('/api/wallet/topup/url', (req, res) => {
   const { amount } = req.query;
   const paise = Math.round(parseFloat(amount || 0) * 100);
