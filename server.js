@@ -427,58 +427,62 @@ app.post('/api/auth/send-otp', async (req, res) => {
 // ── OTP Verify ──────────────────────────────────
 app.post('/api/auth/verify-otp', async (req, res) => {
   const { phone, otp, name } = req.body;
+  try {
+    // Block check
+    const blocked = await redis.get('otp:block:' + phone);
+    if (blocked) {
+      const ttl = await redis.ttl('otp:block:' + phone);
+      return res.status(429).json({ error: `Account blocked! ${Math.ceil(ttl/60)} min baad try karo` });
+    }
 
-  // Block check
-  const blocked = await redis.get('otp:block:' + phone);
-  if (blocked) {
-    const ttl = await redis.ttl('otp:block:' + phone);
-    return res.status(429).json({ error: `Account blocked! ${Math.ceil(ttl/60)} min baad try karo` });
-  }
+    // Test OTP bypass — '000000' kisi bhi number ke liye kaam karta hai (dev/testing only)
+    const isTestOtp = otp === '000000';
 
-  // Test OTP bypass — '000000' kisi bhi number ke liye kaam karta hai (dev/testing only)
-  const isTestOtp = otp === '000000';
+    const savedOtp = await redis.get('otp:' + phone);
+    if (!savedOtp && !isTestOtp) return res.status(400).json({ error: 'OTP expire ho gaya! Dobara bhejwao' });
 
-  const savedOtp = await redis.get('otp:' + phone);
-  if (!savedOtp && !isTestOtp) return res.status(400).json({ error: 'OTP expire ho gaya! Dobara bhejwao' });
+    // Wrong OTP attempts track
+    if (!isTestOtp && savedOtp !== otp) {
+      const attempts = await redis.incr('otp:attempts:' + phone);
+      await redis.expire('otp:attempts:' + phone, 300);
+      if (attempts >= 3) {
+        await redis.setEx('otp:block:' + phone, 1800, '1'); // 30 min block
+        await redis.del('otp:' + phone);
+        return res.status(429).json({ error: '3 baar galat OTP! 30 min ke liye block ho gaya' });
+      }
+      return res.status(400).json({ error: `Galat OTP! ${3 - attempts} aur chances bache hain` });
+    }
 
-  // Wrong OTP attempts track
-  if (!isTestOtp && savedOtp !== otp) {
-    const attempts = await redis.incr('otp:attempts:' + phone);
-    await redis.expire('otp:attempts:' + phone, 300);
-    if (attempts >= 3) {
-      await redis.setEx('otp:block:' + phone, 1800, '1'); // 30 min block
+    // OTP sahi — cleanup (test OTP pe Redis cleanup skip)
+    if (!isTestOtp) {
       await redis.del('otp:' + phone);
-      return res.status(429).json({ error: '3 baar galat OTP! 30 min ke liye block ho gaya' });
+      await redis.del('otp:attempts:' + phone);
+      await redis.del('otp:sent:' + phone);
     }
-    return res.status(400).json({ error: `Galat OTP! ${3 - attempts} aur chances bache hain` });
-  }
 
-  // OTP sahi — cleanup (test OTP pe Redis cleanup skip)
-  if (!isTestOtp) {
-    await redis.del('otp:' + phone);
-    await redis.del('otp:attempts:' + phone);
-    await redis.del('otp:sent:' + phone);
-  }
+    let user = await db.query('SELECT * FROM users WHERE phone = $1', [phone]);
+    if (user.rows.length === 0) {
+      user = await db.query(
+        "INSERT INTO users (phone, name, role) VALUES ($1, $2, 'passenger') RETURNING *",
+        [phone, name || 'User']
+      );
+    } else {
+      if (name && name.trim() !== '' && name !== 'Rider') {
+        await db.query('UPDATE users SET name = $1 WHERE phone = $2', [name.trim(), phone]);
+        user.rows[0].name = name.trim();
+      }
+    }
 
-  let user = await db.query('SELECT * FROM users WHERE phone = $1', [phone]);
-  if (user.rows.length === 0) {
-    user = await db.query(
-      "INSERT INTO users (phone, name, role) VALUES ($1, $2, 'passenger') RETURNING *",
-      [phone, name || 'User']
+    const token = jwt.sign(
+      { id: user.rows[0].id, phone },
+      process.env.JWT_SECRET,
+      { expiresIn: '30d' }
     );
-  } else {
-    if (name && name.trim() !== '' && name !== 'Rider') {
-      await db.query('UPDATE users SET name = $1 WHERE phone = $2', [name.trim(), phone]);
-      user.rows[0].name = name.trim();
-    }
+    res.json({ message: 'Login successful!', token, user: user.rows[0] });
+  } catch (err) {
+    console.error('verify-otp error:', err);
+    res.status(500).json({ error: 'Server error. Dobara try karo.' });
   }
-
-  const token = jwt.sign(
-    { id: user.rows[0].id, phone },
-    process.env.JWT_SECRET,
-    { expiresIn: '30d' }
-  );
-  res.json({ message: 'Login successful!', token, user: user.rows[0] });
 });
 
 // ── Driver Register ─────────────────────────────
