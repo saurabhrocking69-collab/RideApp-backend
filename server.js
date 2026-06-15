@@ -279,7 +279,8 @@ async function _bmqAssignNext({ rideId, pickupLat, pickupLng, rideType, queue, r
     [nextPhone]
   );
 
-  sendFCM(nextPhone, '🚗 Naya Ride Request!', '📍 Pickup nearby — 60 sec mein accept karo!', { type: 'new_ride', ride_id: String(rideId) });
+  const rideEmoji = { bike: '🏍️', auto: '🛺', car: '🚕', eriksha: '🛵', luxury: '🚙' }[rideType] || '🚗';
+  sendFCM(nextPhone, `${rideEmoji} Naya Ride Request!`, `📍 ${rideType.toUpperCase()} ride nearby — 60 sec mein accept karo!`, { type: 'new_ride', ride_id: String(rideId) });
   io.to('driver_' + nextPhone).emit('newRideAssigned', { rideId, secondsToAccept: 60 });
 
   // Delayed auto-advance — survives server restart unlike setTimeout
@@ -526,7 +527,7 @@ app.post('/api/rides/book', async (req, res) => {
   const { passenger_phone, pickup, drop_location, ride_type, pickup_lat, pickup_lng, drop_lat, drop_lng, discount, promo_code } = req.body;
   if (!passenger_phone || String(passenger_phone).length !== 10) return res.status(400).json({ error: 'Valid phone do' });
   if (!pickup || !drop_location) return res.status(400).json({ error: 'Pickup aur drop location chahiye' });
-  if (!['auto', 'bike', 'car', 'luxury'].includes(ride_type)) return res.status(400).json({ error: 'Invalid ride type' });
+  if (!['auto', 'bike', 'car', 'eriksha', 'luxury'].includes(ride_type)) return res.status(400).json({ error: 'Invalid ride type' });
   try {
     const passenger = await db.query(
       'SELECT * FROM users WHERE phone = $1', [passenger_phone]
@@ -540,7 +541,14 @@ app.post('/api/rides/book', async (req, res) => {
     const fareRes = await db.query(
       'SELECT * FROM fare_settings WHERE vehicle_type = $1', [ride_type]
     );
-    const fareSettings = fareRes.rows[0] || (ride_type === 'luxury' ? { base_fare: 80, per_km_rate: 25, night_multiplier: 1.8, night_start: '22:00', night_end: '06:00' } : { base_fare: 25, per_km_rate: 12, night_multiplier: 1.5, night_start: '22:00', night_end: '06:00' });
+    const defaultFares = {
+      luxury:  { base_fare: 80,  per_km_rate: 25, night_multiplier: 1.8, night_start: '22:00', night_end: '06:00' },
+      car:     { base_fare: 40,  per_km_rate: 15, night_multiplier: 1.5, night_start: '22:00', night_end: '06:00' },
+      auto:    { base_fare: 25,  per_km_rate: 12, night_multiplier: 1.5, night_start: '22:00', night_end: '06:00' },
+      eriksha: { base_fare: 20,  per_km_rate: 10, night_multiplier: 1.3, night_start: '22:00', night_end: '06:00' },
+      bike:    { base_fare: 15,  per_km_rate: 8,  night_multiplier: 1.3, night_start: '22:00', night_end: '06:00' },
+    };
+    const fareSettings = fareRes.rows[0] || defaultFares[ride_type] || defaultFares.auto;
     
     // Night time check karo
     const now = new Date();
@@ -812,7 +820,8 @@ app.get('/api/rides/status/:rideId', async (req, res) => {
   try {
     const result = await db.query(
       `SELECT r.*, u.name as driver_name, u.phone as driver_phone,
-              d.vehicle_no, d.vehicle_brand, d.vehicle_model, d.upi_id as driver_upi_id
+              d.vehicle_no, d.vehicle_brand, d.vehicle_model, d.upi_id as driver_upi_id,
+              d.verification_status as driver_verification_status, d.rating as driver_rating
        FROM rides r
        LEFT JOIN users u ON r.driver_id = u.id
        LEFT JOIN drivers d ON r.driver_id = d.id
