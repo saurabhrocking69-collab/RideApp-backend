@@ -2216,12 +2216,15 @@ app.get('/api/driver/pending-ride', async (req, res) => {
     if (susp.rows[0]?.suspended_until && new Date(susp.rows[0].suspended_until) > new Date())
       return res.json({ ride: null, suspended: true });
 
-    // Commission block check
-    const commWallet = await db.query(
-      `SELECT COALESCE(w.pending_commission, 0) as pending_commission
-       FROM driver_wallet w JOIN users u ON w.driver_id = u.id WHERE u.phone = $1`, [phone]
-    );
-    const pendingComm = parseFloat(commWallet.rows[0]?.pending_commission || 0);
+    // Commission block check (wrapped defensively — column may not exist on older DB)
+    let pendingComm = 0;
+    try {
+      const commWallet = await db.query(
+        `SELECT COALESCE(w.pending_commission, 0) as pending_commission
+         FROM driver_wallet w JOIN users u ON w.driver_id = u.id WHERE u.phone = $1`, [phone]
+      );
+      pendingComm = parseFloat(commWallet.rows[0]?.pending_commission || 0);
+    } catch (_e) {}
     if (pendingComm >= 300)
       return res.json({ ride: null, commission_blocked: true, pending_commission: pendingComm });
 
