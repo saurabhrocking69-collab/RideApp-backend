@@ -266,7 +266,7 @@ async function _bmqAssignNext({ rideId, pickupLat, pickupLng, rideType, queue, r
 
   const upd = await db.query(
     `UPDATE rides
-     SET assigned_to_phone=$1, assignment_expires_at=NOW()+INTERVAL '30 seconds', assignment_queue=$2
+     SET assigned_to_phone=$1, assignment_expires_at=NOW()+INTERVAL '60 seconds', assignment_queue=$2
      WHERE id=$3 AND status='requested' AND driver_id IS NULL
      RETURNING id`,
     [nextPhone, JSON.stringify(newQueue), rideId]
@@ -279,13 +279,13 @@ async function _bmqAssignNext({ rideId, pickupLat, pickupLng, rideType, queue, r
     [nextPhone]
   );
 
-  sendFCM(nextPhone, '🚗 Naya Ride Request!', '📍 Pickup nearby — 30 sec mein accept karo!', { type: 'new_ride', ride_id: String(rideId) });
-  io.to('driver_' + nextPhone).emit('newRideAssigned', { rideId, secondsToAccept: 30 });
+  sendFCM(nextPhone, '🚗 Naya Ride Request!', '📍 Pickup nearby — 60 sec mein accept karo!', { type: 'new_ride', ride_id: String(rideId) });
+  io.to('driver_' + nextPhone).emit('newRideAssigned', { rideId, secondsToAccept: 60 });
 
   // Delayed auto-advance — survives server restart unlike setTimeout
   await rideQueue.add('ride-assignment',
     { type: 'auto-advance', rideId, expectedPhone: nextPhone, pickupLat, pickupLng, rideType, queue: newQueue, radiusKm },
-    { delay: 32000 }
+    { delay: 62000 }
   );
 }
 
