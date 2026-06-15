@@ -280,7 +280,7 @@ async function _bmqAssignNext({ rideId, pickupLat, pickupLng, rideType, queue, r
     [nextPhone]
   );
 
-  sendFCM(nextPhone, '🚗 Naya Ride Request!', '📍 Pickup nearby — 30 sec mein accept karo!');
+  sendFCM(nextPhone, '🚗 Naya Ride Request!', '📍 Pickup nearby — 30 sec mein accept karo!', { type: 'new_ride', ride_id: String(rideId) });
   io.to('driver_' + nextPhone).emit('newRideAssigned', { rideId, secondsToAccept: 30 });
 
   // Delayed auto-advance — survives server restart unlike setTimeout
@@ -766,7 +766,7 @@ app.post('/api/rides/accept', async (req, res) => {
       `SELECT u.phone as passenger_phone FROM rides r JOIN users u ON r.passenger_id=u.id WHERE r.id=$1`, [ride_id]
     );
     if (rideData.rows[0]?.passenger_phone)
-      sendFCM(rideData.rows[0].passenger_phone, '🚗 Driver Mil Gaya!', 'Aapka driver aa raha hai. OTP ready karo!');
+      sendFCM(rideData.rows[0].passenger_phone, '🚗 Driver Mil Gaya!', 'Aapka driver aa raha hai — OTP ready karo!', { type: 'ride_matched', ride_id: String(ride_id) });
 
     emitRideUpdate(ride_id, { status: 'matched' });
     res.json({ success: true, message: 'Ride accepted!', otp });
@@ -889,7 +889,7 @@ app.post('/api/rides/arrived', async (req, res) => {
       [ride_id]
     );
     if (arrData.rows[0]?.passenger_phone) {
-      sendFCM(arrData.rows[0].passenger_phone, '🚗 Driver Aa gaya!', 'Aapka driver pickup pe hai. OTP batao aur trip shuru karo!');
+      sendFCM(arrData.rows[0].passenger_phone, '🚗 Driver Aa Gaya!', 'Driver pickup pe hai — OTP batao aur trip shuru karo!', { type: 'driver_arrived', ride_id: String(ride_id) });
     }
     emitRideUpdate(ride_id, { status: 'arrived' });
     res.json({ success: true, message: 'Pickup pe pahunch gaye!' });
@@ -915,6 +915,10 @@ app.post('/api/rides/start', async (req, res) => {
     );
     emitRideUpdate(ride_id, { status: 'started' });
     res.json({ success: true, message: 'Trip shuru!' });
+    // Notify customer that trip has started
+    db.query(`SELECT u.phone FROM rides r JOIN users u ON r.passenger_id=u.id WHERE r.id=$1`, [ride_id])
+      .then(r => { if (r.rows[0]) sendFCM(r.rows[0].phone, '🚀 Trip Shuru Ho Gaya!', 'Aapka ride chal raha hai. Safe journey!', { type: 'trip_started', ride_id: String(ride_id) }); })
+      .catch(() => {});
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -2033,12 +2037,7 @@ app.post('/api/rides/cancel-smart', async (req, res) => {
 
       // Driver ko notification — ride cancel ho gayi
       if (ride.driver_phone) {
-        try {
-          await db.query(
-            `INSERT INTO notifications (user_phone, title, body, created_at) VALUES ($1, $2, $3, NOW())`,
-            [ride.driver_phone, '🚫 Ride Cancel', `Customer ne ride cancel kar di. Reason: ${reason || 'N/A'}`]
-          );
-        } catch (_e) {}
+        sendFCM(ride.driver_phone, '🚫 Ride Cancel Ho Gayi', `Customer ne cancel kar di. Reason: ${reason || 'N/A'}`, { type: 'ride_cancelled' });
       }
     }
 
@@ -2073,12 +2072,7 @@ app.post('/api/rides/cancel-smart', async (req, res) => {
 
       // Customer ko notification — driver ne cancel kiya
       if (ride.passenger_phone) {
-        try {
-          await db.query(
-            `INSERT INTO notifications (user_phone, title, body, created_at) VALUES ($1, $2, $3, NOW())`,
-            [ride.passenger_phone, '🚫 Driver ne Cancel Kiya', `Driver ne aapki ride cancel kar di. Reason: ${reason || 'N/A'}. Naya driver dhundh rahe hain...`]
-          );
-        } catch (_e) {}
+        sendFCM(ride.passenger_phone, '🚫 Driver ne Cancel Kiya', `Reason: ${reason || 'N/A'}. Naya driver dhundh rahe hain...`, { type: 'ride_cancelled' });
       }
     }
 
@@ -2461,8 +2455,8 @@ app.post('/api/rides/complete', async (req, res) => {
          WHERE r.id = $1`, [ride_id]
       );
       if (compData.rows[0]) {
-        sendFCM(compData.rows[0].passenger_phone, '🏁 Trip Complete!', 'Payment karo aur driver ko rate karo!');
-        sendFCM(compData.rows[0].driver_phone, '✅ Trip Complete!', 'Payment ka intezaar karo.');
+        sendFCM(compData.rows[0].passenger_phone, '🏁 Trip Complete!', 'Payment karo aur driver ko rate karo!', { type: 'trip_completed', ride_id: String(ride_id) });
+        sendFCM(compData.rows[0].driver_phone, '✅ Trip Complete!', 'Payment aa rahi hai — wait karo.', { type: 'payment_pending' });
       }
     } catch (_e) {}
   } catch (err) { res.status(500).json({ error: err.message }); }
@@ -2719,7 +2713,8 @@ app.post('/api/auth/save-fcm-token', async (req, res) => {
 });
 
 // ── Send FCM notification ─────────────────────────
-async function sendFCM(phone, title, body) {
+// data = { type, ride_id } — app uses this to navigate on tap
+async function sendFCM(phone, title, body, data = {}) {
   try {
     const user = await db.query('SELECT fcm_token FROM users WHERE phone = $1', [phone]);
     const token = user.rows[0]?.fcm_token;
@@ -2730,11 +2725,11 @@ async function sendFCM(phone, title, body) {
       const expoRes = await fetch('https://exp.host/--/api/v2/push/send', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'Accept': 'application/json', 'Accept-Encoding': 'gzip, deflate' },
-        body: JSON.stringify({ to: token, title, body, sound: 'default', priority: 'high', channelId: 'default' })
+        body: JSON.stringify({ to: token, title, body, sound: 'default', priority: 'high', channelId: 'default', data })
       });
       const expoData = await expoRes.json().catch(() => ({}));
       if (expoData?.data?.status === 'error') {
-        console.log('❌ Expo push error for', phone, ':', expoData.data.message, '| token:', token.substring(0, 30));
+        console.log('❌ Expo push error for', phone, ':', expoData.data.message);
       } else {
         console.log('✅ Expo FCM sent to', phone, '| status:', expoData?.data?.status || 'ok');
       }
@@ -2746,6 +2741,8 @@ async function sendFCM(phone, title, body) {
     await firebaseMessaging.send({
       token,
       notification: { title, body },
+      // Firebase data values must be strings
+      data: Object.fromEntries(Object.entries(data).map(([k, v]) => [k, String(v)])),
       android: { priority: 'high', notification: { sound: 'default', channelId: 'default' } },
     });
     console.log('✅ Firebase FCM sent to', phone);
