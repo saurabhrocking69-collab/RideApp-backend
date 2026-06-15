@@ -50,10 +50,15 @@ const io     = new Server(server, { cors: { origin: '*' } });
 app.use(cors());
 app.use(express.json({ limit: '12mb' }));
 
-// ── PostgreSQL ──────────────────────────────────
-const db = new Pool({ 
-  connectionString: process.env.DATABASE_PUBLIC_URL || process.env.DATABASE_URL,
-  ssl: process.env.DATABASE_PUBLIC_URL ? { rejectUnauthorized: false } : false
+// ── PostgreSQL (PgBouncer-ready) ────────────────
+// Set PGBOUNCER_URL in Railway when you add the PgBouncer service.
+// Without it, connects directly to Postgres as before.
+const db = new Pool({
+  connectionString: process.env.PGBOUNCER_URL || process.env.DATABASE_PUBLIC_URL || process.env.DATABASE_URL,
+  ssl: { rejectUnauthorized: false },
+  max: parseInt(process.env.DB_POOL_MAX || '10'),
+  idleTimeoutMillis: 30000,
+  connectionTimeoutMillis: 5000,
 });
 db.connect()
   .then(() => console.log('✅ PostgreSQL connected!'))
@@ -118,125 +123,15 @@ function scoreDriver(driver, distKm, now) {
   return distScore + idleScore + accScore + ratScore;
 }
 
-// ─── Smart Ride Assignment Engine ───
-// Sends ride to top-scored driver → 30s window → auto-advance on timeout/reject
+// ─── Thin wrapper — existing call sites unchanged ───
 async function assignRideToNextDriver(rideId, pickupLat, pickupLng, rideType, queue, radiusKm) {
-  if (radiusKm === undefined) radiusKm = 5;
-  try {
-    // Confirm ride still needs a driver
-    const rideCheck = await db.query(
-      `SELECT id FROM rides WHERE id=$1 AND status='requested' AND driver_id IS NULL`, [rideId]
-    );
-    if (!rideCheck.rows[0]) return;
-
-    let remaining = queue;
-
-    // Build fresh scored queue when needed
-    if (remaining === null || remaining === undefined) {
-      const drRes = await db.query(
-        `SELECT u.phone,
-                COALESCE(d.rating, 5.0)                                         AS rating,
-                COALESCE(dm.acceptance_rate, 100)                               AS acceptance_rate,
-                COALESCE(dm.idle_since, NOW() - INTERVAL '30 minutes')          AS idle_since,
-                dl.lat, dl.lng
-         FROM drivers d
-         JOIN users u ON d.id = u.id
-         LEFT JOIN driver_metrics dm ON dm.phone = u.phone
-         LEFT JOIN driver_locations dl ON dl.phone = u.phone
-         WHERE d.verification_status = 'approved'
-           AND d.is_online = true
-           AND (d.vehicle_type = $1 OR (d.vehicle_type = 'ultra_luxury' AND $1 = 'luxury'))
-           AND NOT EXISTS (
-             SELECT 1 FROM rides r2
-             WHERE r2.driver_id = d.id AND r2.status IN ('matched','arrived','started')
-           )`,
-        [rideType]
-      );
-
-      const now = Date.now();
-      const scored = drRes.rows
-        .map(d => {
-          let distKm = null;
-          if (pickupLat && pickupLng && d.lat && d.lng)
-            distKm = haversineKm(parseFloat(pickupLat), parseFloat(pickupLng), parseFloat(d.lat), parseFloat(d.lng));
-          return { phone: d.phone, distKm, score: scoreDriver(d, distKm, now) };
-        })
-        .filter(d => d.distKm === null || d.distKm <= radiusKm)
-        .sort((a, b) => b.score - a.score);
-
-      remaining = scored.map(d => d.phone);
-    }
-
-    // No drivers in current radius — expand or give up
-    if (!remaining || remaining.length === 0) {
-      if (radiusKm < 15) {
-        setTimeout(() => {
-          assignRideToNextDriver(rideId, pickupLat, pickupLng, rideType, null, radiusKm + 5).catch(() => {});
-        }, 45000);
-      }
-      // Clear soft-lock so fallback polling can pick up the ride
-      await db.query(
-        `UPDATE rides SET assigned_to_phone=NULL, assignment_expires_at=NULL
-         WHERE id=$1 AND status='requested' AND driver_id IS NULL`, [rideId]
-      );
-      return;
-    }
-
-    const nextPhone = remaining[0];
-    const newQueue  = remaining.slice(1);
-
-    // Soft-lock ride for this driver (30 seconds)
-    const upd = await db.query(
-      `UPDATE rides
-       SET assigned_to_phone=$1, assignment_expires_at=NOW()+INTERVAL '30 seconds', assignment_queue=$2
-       WHERE id=$3 AND status='requested' AND driver_id IS NULL
-       RETURNING id`,
-      [nextPhone, JSON.stringify(newQueue), rideId]
-    );
-    if (!upd.rows[0]) return; // race — ride already taken
-
-    // Track offer in driver metrics
-    await db.query(
-      `INSERT INTO driver_metrics (phone, rides_offered) VALUES ($1, 1)
-       ON CONFLICT (phone) DO UPDATE SET rides_offered = driver_metrics.rides_offered + 1`,
-      [nextPhone]
-    );
-
-    // FCM push to driver
-    sendFCM(nextPhone, '🚗 Naya Ride Request!', '📍 Pickup nearby — 30 sec mein accept karo!');
-
-    // Auto-advance if driver doesn't respond in 32s
-    setTimeout(async () => {
-      try {
-        const r = await db.query(
-          `SELECT assigned_to_phone, assignment_queue FROM rides
-           WHERE id=$1 AND status='requested' AND driver_id IS NULL`, [rideId]
-        );
-        if (!r.rows[0] || r.rows[0].assigned_to_phone !== nextPhone) return;
-        const nextQueue = JSON.parse(r.rows[0].assignment_queue || '[]');
-        await assignRideToNextDriver(rideId, pickupLat, pickupLng, rideType, nextQueue, radiusKm);
-      } catch (_e) {}
-    }, 32000);
-
-  } catch (_e) {}
+  await rideQueue.add('ride-assignment', {
+    type: 'assign-next',
+    rideId, pickupLat, pickupLng, rideType,
+    queue: queue || null,
+    radiusKm: radiusKm || 5,
+  });
 }
-
-// ─── Background: recover rides with expired soft-locks (server restart safety) ───
-setInterval(async () => {
-  try {
-    const expired = await db.query(
-      `SELECT id, pickup_lat, pickup_lng, ride_type, assignment_queue
-       FROM rides
-       WHERE status='requested' AND driver_id IS NULL
-         AND assigned_to_phone IS NOT NULL
-         AND assignment_expires_at < NOW() - INTERVAL '3 seconds'`
-    );
-    for (const ride of expired.rows) {
-      const q = JSON.parse(ride.assignment_queue || '[]');
-      assignRideToNextDriver(ride.id, ride.pickup_lat, ride.pickup_lng, ride.ride_type, q).catch(() => {});
-    }
-  } catch (_e) {}
-}, 20000);
 
 // ─── DRIVER SCORE (multi-factor) ───
 function calculateDriverScore(driver, distanceKm) {
@@ -253,14 +148,150 @@ function calculateDriverScore(driver, distanceKm) {
   return (distScore * 0.40) + (ratingScore * 0.20) + (accScore * 0.20) + (idleScore * 0.20);
 }
 
-// ── Redis ───────────────────────────────────────
-const redis = createClient({ 
+// ── Redis (OTP / rate-limit) ────────────────────
+const redis = createClient({
   url: process.env.REDIS_URL,
   socket: { tls: process.env.REDIS_URL?.includes('rediss') }
 });
 redis.connect();
 redis.on('ready', () => console.log('✅ Redis connected!'));
 redis.on('error', (err) => console.log('❌ Redis error:', err.message));
+
+// ── BullMQ (ride assignment job queue) ──────────
+const { Queue, Worker } = require('bullmq');
+const { Redis: IORedis } = require('ioredis');
+
+const makeBmqConn = () => new IORedis(process.env.REDIS_URL || 'redis://localhost:6379', {
+  maxRetriesPerRequest: null,
+  enableReadyCheck: false,
+  ...(process.env.REDIS_URL?.startsWith('rediss://') ? { tls: {} } : {}),
+});
+
+const rideQueue = new Queue('ride-assignment', { connection: makeBmqConn() });
+
+// ── BullMQ Worker ────────────────────────────────
+const rideWorker = new Worker('ride-assignment', async (job) => {
+  const d = job.data;
+  if (d.type === 'assign-next')   await _bmqAssignNext(d);
+  if (d.type === 'auto-advance')  await _bmqAutoAdvance(d);
+}, { connection: makeBmqConn(), concurrency: 5 });
+
+rideWorker.on('failed', (job, err) => {
+  console.error('❌ BullMQ job failed:', job?.id, err.message);
+});
+
+// ── Job handler: assign to next scored driver ────
+async function _bmqAssignNext({ rideId, pickupLat, pickupLng, rideType, queue, radiusKm = 5 }) {
+  const rideCheck = await db.query(
+    `SELECT id FROM rides WHERE id=$1 AND status='requested' AND driver_id IS NULL`, [rideId]
+  );
+  if (!rideCheck.rows[0]) return;
+
+  let remaining = queue;
+
+  if (remaining === null || remaining === undefined) {
+    const drRes = await db.query(
+      `SELECT u.phone,
+              COALESCE(d.rating, 5.0)                                AS rating,
+              COALESCE(dm.acceptance_rate, 100)                      AS acceptance_rate,
+              COALESCE(dm.idle_since, NOW() - INTERVAL '30 minutes') AS idle_since,
+              dl.lat, dl.lng
+       FROM drivers d
+       JOIN users u ON d.id = u.id
+       LEFT JOIN driver_metrics dm ON dm.phone = u.phone
+       LEFT JOIN driver_locations dl ON dl.phone = u.phone
+       WHERE d.verification_status = 'approved'
+         AND d.is_online = true
+         AND (d.vehicle_type = $1 OR (d.vehicle_type = 'ultra_luxury' AND $1 = 'luxury'))
+         AND NOT EXISTS (
+           SELECT 1 FROM rides r2
+           WHERE r2.driver_id = d.id AND r2.status IN ('matched','arrived','started')
+         )`,
+      [rideType]
+    );
+    const now = Date.now();
+    const scored = drRes.rows
+      .map(dr => {
+        let distKm = null;
+        if (pickupLat && pickupLng && dr.lat && dr.lng)
+          distKm = haversineKm(parseFloat(pickupLat), parseFloat(pickupLng), parseFloat(dr.lat), parseFloat(dr.lng));
+        return { phone: dr.phone, distKm, score: scoreDriver(dr, distKm, now) };
+      })
+      .filter(dr => dr.distKm === null || dr.distKm <= radiusKm)
+      .sort((a, b) => b.score - a.score);
+    remaining = scored.map(dr => dr.phone);
+  }
+
+  if (!remaining || remaining.length === 0) {
+    if (radiusKm < 15) {
+      await rideQueue.add('ride-assignment',
+        { type: 'assign-next', rideId, pickupLat, pickupLng, rideType, queue: null, radiusKm: radiusKm + 5 },
+        { delay: 45000 }
+      );
+    }
+    await db.query(
+      `UPDATE rides SET assigned_to_phone=NULL, assignment_expires_at=NULL
+       WHERE id=$1 AND status='requested' AND driver_id IS NULL`, [rideId]
+    );
+    return;
+  }
+
+  const nextPhone = remaining[0];
+  const newQueue  = remaining.slice(1);
+
+  const upd = await db.query(
+    `UPDATE rides
+     SET assigned_to_phone=$1, assignment_expires_at=NOW()+INTERVAL '30 seconds', assignment_queue=$2
+     WHERE id=$3 AND status='requested' AND driver_id IS NULL
+     RETURNING id`,
+    [nextPhone, JSON.stringify(newQueue), rideId]
+  );
+  if (!upd.rows[0]) return;
+
+  await db.query(
+    `INSERT INTO driver_metrics (phone, rides_offered) VALUES ($1, 1)
+     ON CONFLICT (phone) DO UPDATE SET rides_offered = driver_metrics.rides_offered + 1`,
+    [nextPhone]
+  );
+
+  sendFCM(nextPhone, '🚗 Naya Ride Request!', '📍 Pickup nearby — 30 sec mein accept karo!');
+
+  // Delayed auto-advance — survives server restart unlike setTimeout
+  await rideQueue.add('ride-assignment',
+    { type: 'auto-advance', rideId, expectedPhone: nextPhone, pickupLat, pickupLng, rideType, queue: newQueue, radiusKm },
+    { delay: 32000 }
+  );
+}
+
+// ── Job handler: advance queue if driver didn't respond ──
+async function _bmqAutoAdvance({ rideId, expectedPhone, pickupLat, pickupLng, rideType, queue, radiusKm = 5 }) {
+  const r = await db.query(
+    `SELECT assigned_to_phone, assignment_queue FROM rides
+     WHERE id=$1 AND status='requested' AND driver_id IS NULL`, [rideId]
+  );
+  if (!r.rows[0] || r.rows[0].assigned_to_phone !== expectedPhone) return;
+  const nextQueue = JSON.parse(r.rows[0].assignment_queue || '[]');
+  await rideQueue.add('ride-assignment',
+    { type: 'assign-next', rideId, pickupLat, pickupLng, rideType, queue: nextQueue, radiusKm }
+  );
+}
+
+// ── Startup: re-queue any rides stuck without a driver ──
+setTimeout(async () => {
+  try {
+    const stuck = await db.query(
+      `SELECT id, pickup_lat, pickup_lng, ride_type FROM rides
+       WHERE status='requested' AND driver_id IS NULL`
+    );
+    for (const r of stuck.rows) {
+      await rideQueue.add('ride-assignment', {
+        type: 'assign-next', rideId: r.id, pickupLat: r.pickup_lat, pickupLng: r.pickup_lng,
+        rideType: r.ride_type, queue: null, radiusKm: 5
+      });
+    }
+    if (stuck.rows.length) console.log(`✅ Re-queued ${stuck.rows.length} stuck rides on startup`);
+  } catch (_e) {}
+}, 3000);
 
 // ── Auth Middleware ─────────────────────────────
 const auth = (req, res, next) => {
