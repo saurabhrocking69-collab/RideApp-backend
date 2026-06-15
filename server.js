@@ -2216,7 +2216,7 @@ app.get('/api/driver/pending-ride', async (req, res) => {
     if (susp.rows[0]?.suspended_until && new Date(susp.rows[0].suspended_until) > new Date())
       return res.json({ ride: null, suspended: true });
 
-    // Commission block check (wrapped defensively — column may not exist on older DB)
+    // Commission info (never blocks rides — drivers are always eligible)
     let pendingComm = 0;
     try {
       const commWallet = await db.query(
@@ -2225,8 +2225,6 @@ app.get('/api/driver/pending-ride', async (req, res) => {
       );
       pendingComm = parseFloat(commWallet.rows[0]?.pending_commission || 0);
     } catch (_e) {}
-    if (pendingComm >= 300)
-      return res.json({ ride: null, commission_blocked: true, pending_commission: pendingComm });
 
     // Only approved + online drivers get rides
     const drRes = await db.query(
@@ -2534,12 +2532,60 @@ app.post('/api/rides/payment-complete', async (req, res) => {
       [payment_method, commission, ride_id]
     );
     // Commission record
-    await db.query(
+    const commRow = await db.query(
       `INSERT INTO driver_commissions (driver_phone, ride_id, fare, commission, payment_method, status)
        SELECT u.phone, $1, $2, $3, $4, 'collected'
-       FROM rides r JOIN users u ON r.driver_id = u.id WHERE r.id = $1`,
+       FROM rides r JOIN users u ON r.driver_id = u.id WHERE r.id = $1
+       RETURNING driver_phone`,
       [ride_id, fare, commission, payment_method]
     );
+
+    // Credit driver wallet (auto-deduct any pending cash commissions)
+    try {
+      const drPhone = commRow.rows[0]?.driver_phone;
+      if (drPhone) {
+        const drInfo = await db.query(
+          `SELECT u.id, COALESCE(w.pending_commission, 0) as pending_commission
+           FROM users u LEFT JOIN driver_wallet w ON w.driver_id = u.id
+           WHERE u.phone = $1`, [drPhone]
+        );
+        if (drInfo.rows[0]) {
+          const driverId = drInfo.rows[0].id;
+          const pendingCashComm = parseFloat(drInfo.rows[0].pending_commission || 0);
+          const driverEarning = Math.round((fare - commission) * 100) / 100;
+          const autoDeduct = Math.min(pendingCashComm, driverEarning);
+          const actualCredit = Math.round((driverEarning - autoDeduct) * 100) / 100;
+
+          await db.query(
+            `INSERT INTO driver_wallet (driver_id, balance, total_earned, pending_commission)
+             VALUES ($1, $2, $3, 0)
+             ON CONFLICT (driver_id) DO UPDATE SET
+               balance = driver_wallet.balance + $2,
+               total_earned = driver_wallet.total_earned + $3,
+               pending_commission = GREATEST(0, COALESCE(driver_wallet.pending_commission, 0) - $4)`,
+            [driverId, actualCredit, driverEarning, autoDeduct]
+          );
+
+          if (autoDeduct > 0) {
+            // Mark oldest pending cash commissions as auto_settled
+            await db.query(
+              `UPDATE driver_commissions SET status = 'auto_settled'
+               WHERE driver_phone = $1 AND status = 'cash_owed'`, [drPhone]
+            ).catch(() => {});
+            sendFCM(drPhone, '💰 Earning Credited',
+              `₹${actualCredit.toFixed(0)} wallet mein add hua! (₹${autoDeduct.toFixed(0)} pending commission deduct hua)`,
+              { type: 'earning_credited', amount: String(actualCredit), commission_deducted: String(autoDeduct) }
+            ).catch(() => {});
+          } else {
+            sendFCM(drPhone, '💰 Earning Credited',
+              `₹${driverEarning.toFixed(0)} wallet mein add ho gaya!`,
+              { type: 'earning_credited', amount: String(driverEarning) }
+            ).catch(() => {});
+          }
+        }
+      }
+    } catch (_e) {}
+
     // Add loyalty points (10 per ride)
     try {
       const u = await db.query('SELECT id FROM users WHERE phone=$1', [phone]);
@@ -2579,14 +2625,12 @@ app.post('/api/rides/cash-confirm', async (req, res) => {
     );
     const totalPending = parseFloat(walletRes.rows[0]?.pending_commission || 0);
 
-    // Notify + block when threshold crossed
-    if (totalPending >= 300) {
-      sendFCM(phone,
-        '⚠️ Commission Due - Rides Blocked!',
-        `Aapka pending commission ₹${totalPending.toFixed(0)} ho gaya. Pay karo nayi rides lene ke liye.`,
-        { type: 'commission_due', pending_commission: String(totalPending) }
-      ).catch(() => {});
-    }
+    // Always notify driver about pending commission
+    sendFCM(phone,
+      '💰 Commission Due',
+      `₹${commission.toFixed(0)} commission baqi hai. Total pending: ₹${totalPending.toFixed(0)}. App mein pay karo.`,
+      { type: 'commission_due', pending_commission: String(totalPending) }
+    ).catch(() => {});
 
     res.json({ success: true, message: 'Payment confirmed!', pending_commission: totalPending });
   } catch (err) {
@@ -2608,7 +2652,50 @@ app.get('/api/driver/commission-status', async (req, res) => {
        FROM driver_commissions WHERE driver_phone = $1 AND status = 'cash_owed'
        ORDER BY created_at DESC LIMIT 20`, [phone]
     );
-    res.json({ pending_commission: pending, is_blocked: pending >= 300, records: records.rows });
+    res.json({ pending_commission: pending, is_blocked: false, records: records.rows });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ── Driver: Full commission history ───────────────
+app.get('/api/driver/commission-history', async (req, res) => {
+  const { phone } = req.query;
+  try {
+    const walletRow = await db.query(
+      `SELECT COALESCE(w.pending_commission, 0) as pending_commission,
+              COALESCE(w.balance, 0) as balance,
+              COALESCE(w.total_earned, 0) as total_earned
+       FROM driver_wallet w JOIN users u ON w.driver_id = u.id WHERE u.phone = $1`, [phone]
+    );
+
+    const commRows = await db.query(
+      `SELECT dc.id, dc.ride_id, dc.fare, dc.commission, dc.payment_method, dc.status, dc.created_at
+       FROM driver_commissions dc
+       WHERE dc.driver_phone = $1
+       ORDER BY dc.created_at DESC LIMIT 50`, [phone]
+    );
+
+    const payRows = await db.query(
+      `SELECT id, amount, payment_id, status, created_at
+       FROM driver_commission_payments WHERE driver_phone = $1
+       ORDER BY created_at DESC LIMIT 20`, [phone]
+    );
+
+    const records = commRows.rows;
+    const totalCommission = records.reduce((s, r) => s + parseFloat(r.commission), 0);
+    const settledCommission = records
+      .filter(r => ['settled', 'collected', 'auto_settled'].includes(r.status))
+      .reduce((s, r) => s + parseFloat(r.commission), 0);
+    const pendingCommission = parseFloat(walletRow.rows[0]?.pending_commission || 0);
+
+    res.json({
+      pending_commission: pendingCommission,
+      total_commission: Math.round(totalCommission * 100) / 100,
+      settled_commission: Math.round(settledCommission * 100) / 100,
+      wallet_balance: parseFloat(walletRow.rows[0]?.balance || 0),
+      total_earned: parseFloat(walletRow.rows[0]?.total_earned || 0),
+      records,
+      payments: payRows.rows,
+    });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
