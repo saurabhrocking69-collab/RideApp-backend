@@ -25,6 +25,8 @@ const { Server }   = require('socket.io');
 const { Pool }     = require('pg');
 const { createClient } = require('redis');
 const jwt          = require('jsonwebtoken');
+const rateLimit    = require('express-rate-limit');
+const { createAdapter } = require('@socket.io/redis-adapter');
 
 const cloudinary = require('cloudinary').v2;
 cloudinary.config({
@@ -49,6 +51,19 @@ const io     = new Server(server, { cors: { origin: '*' } });
 
 app.use(cors());
 app.use(express.json({ limit: '12mb' }));
+
+// ── Rate Limiting ───────────────────────────────
+app.use('/api/auth/send-otp', rateLimit({
+  windowMs: 60_000, max: 3,
+  message: { error: 'Bahut zyada attempts! 1 minute baad try karo' },
+}));
+app.use('/api/', rateLimit({
+  windowMs: 60_000, max: 400,
+  message: { error: 'Too many requests, slow down' },
+}));
+
+// ── Health Check ────────────────────────────────
+app.get('/health', (_req, res) => res.json({ status: 'ok', uptime: Math.floor(process.uptime()), ts: Date.now() }));
 
 // ── PostgreSQL (PgBouncer-ready) ────────────────
 // Set PGBOUNCER_URL in Railway when you add the PgBouncer service.
@@ -154,7 +169,18 @@ const redis = createClient({
   socket: { tls: process.env.REDIS_URL?.includes('rediss') }
 });
 redis.connect();
-redis.on('ready', () => console.log('✅ Redis connected!'));
+redis.on('ready', async () => {
+  console.log('✅ Redis connected!');
+  // Socket.io Redis adapter — enables multi-instance pub/sub
+  try {
+    const subClient = redis.duplicate();
+    await subClient.connect();
+    io.adapter(createAdapter(redis, subClient));
+    console.log('✅ Socket.io Redis adapter ready');
+  } catch (e) {
+    console.log('⚠️ Socket.io Redis adapter failed:', e.message);
+  }
+});
 redis.on('error', (err) => console.log('❌ Redis error:', err.message));
 
 // ── BullMQ (ride assignment job queue) ──────────
@@ -255,6 +281,7 @@ async function _bmqAssignNext({ rideId, pickupLat, pickupLng, rideType, queue, r
   );
 
   sendFCM(nextPhone, '🚗 Naya Ride Request!', '📍 Pickup nearby — 30 sec mein accept karo!');
+  io.to('driver_' + nextPhone).emit('newRideAssigned', { rideId, secondsToAccept: 30 });
 
   // Delayed auto-advance — survives server restart unlike setTimeout
   await rideQueue.add('ride-assignment',
@@ -276,8 +303,23 @@ async function _bmqAutoAdvance({ rideId, expectedPhone, pickupLat, pickupLng, ri
   );
 }
 
-// ── Startup: re-queue any rides stuck without a driver ──
+// ── Startup: DB indexes + re-queue stuck rides ──
 setTimeout(async () => {
+  // DB Indexes — idempotent, safe to run every startup
+  const indexes = [
+    `CREATE INDEX IF NOT EXISTS idx_rides_status            ON rides(status)`,
+    `CREATE INDEX IF NOT EXISTS idx_rides_driver_id         ON rides(driver_id)`,
+    `CREATE INDEX IF NOT EXISTS idx_rides_passenger_id      ON rides(passenger_id)`,
+    `CREATE INDEX IF NOT EXISTS idx_rides_assigned_phone    ON rides(assigned_to_phone)`,
+    `CREATE INDEX IF NOT EXISTS idx_rides_created_at        ON rides(created_at)`,
+    `CREATE INDEX IF NOT EXISTS idx_driver_locations_phone  ON driver_locations(phone)`,
+    `CREATE INDEX IF NOT EXISTS idx_drivers_online          ON drivers(is_online, verification_status)`,
+    `CREATE INDEX IF NOT EXISTS idx_driver_metrics_phone    ON driver_metrics(phone)`,
+  ];
+  for (const sql of indexes) await db.query(sql).catch(() => {});
+  console.log('✅ DB indexes ready');
+
+  // Re-queue any rides stuck without a driver (from server restart)
   try {
     const stuck = await db.query(
       `SELECT id, pickup_lat, pickup_lng, ride_type FROM rides
@@ -477,6 +519,9 @@ app.post('/api/auth/update-name', async (req, res) => {
 // ── Ride Book ───────────────────────────────────
 app.post('/api/rides/book', async (req, res) => {
   const { passenger_phone, pickup, drop_location, ride_type, pickup_lat, pickup_lng, drop_lat, drop_lng, discount, promo_code } = req.body;
+  if (!passenger_phone || String(passenger_phone).length !== 10) return res.status(400).json({ error: 'Valid phone do' });
+  if (!pickup || !drop_location) return res.status(400).json({ error: 'Pickup aur drop location chahiye' });
+  if (!['auto', 'bike', 'car', 'luxury'].includes(ride_type)) return res.status(400).json({ error: 'Invalid ride type' });
   try {
     const passenger = await db.query(
       'SELECT * FROM users WHERE phone = $1', [passenger_phone]
@@ -585,19 +630,27 @@ app.post('/api/rides/complete-OLD', async (req, res) => {
 
 // ── Socket.io ───────────────────────────────────
 io.on('connection', (socket) => {
-  console.log('🔌 Connected:', socket.id);
-  socket.on('driverOnline', ({ driverId }) => {
-    socket.join('driver_' + driverId);
-    console.log('🟢 Driver online:', driverId);
+  // Customer joins their ride room for real-time updates
+  socket.on('joinRide', ({ rideId }) => {
+    socket.join('ride_' + rideId);
   });
+  // Driver joins their phone room for real-time ride assignments
+  socket.on('driverJoin', ({ phone }) => {
+    socket.join('driver_' + phone);
+  });
+  // Legacy location update
   socket.on('locationUpdate', ({ driverId, lat, lng }) => {
-    console.log('📍 Driver ' + driverId + ': ' + lat + ', ' + lng);
     io.emit('driverMoved_' + driverId, { lat, lng });
   });
-  socket.on('disconnect', () => {
-    console.log('🔴 Disconnected:', socket.id);
+  socket.on('driverOnline', ({ driverId }) => {
+    socket.join('driver_' + driverId);
   });
 });
+
+// Emit ride status update to customer (and anyone listening to this ride)
+function emitRideUpdate(rideId, data) {
+  io.to('ride_' + rideId).emit('rideUpdate', { rideId, ...data });
+}
 
 
 // ── Driver Pending Ride (Smart Matching) ─────────
@@ -677,6 +730,7 @@ app.get('/api/driver/pending-ride-OLD', async (req, res) => {
 // ── Driver Accept Ride ──────────────────────────
 app.post('/api/rides/accept', async (req, res) => {
   const { ride_id, driver_phone } = req.body;
+  if (!ride_id || !driver_phone) return res.status(400).json({ success: false, message: 'ride_id aur driver_phone chahiye' });
   try {
     const driver = await db.query('SELECT id FROM users WHERE phone=$1', [driver_phone]);
     if (!driver.rows[0]) return res.status(404).json({ success: false, message: 'Driver nahi mila' });
@@ -714,6 +768,7 @@ app.post('/api/rides/accept', async (req, res) => {
     if (rideData.rows[0]?.passenger_phone)
       sendFCM(rideData.rows[0].passenger_phone, '🚗 Driver Mil Gaya!', 'Aapka driver aa raha hai. OTP ready karo!');
 
+    emitRideUpdate(ride_id, { status: 'matched' });
     res.json({ success: true, message: 'Ride accepted!', otp });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -834,8 +889,9 @@ app.post('/api/rides/arrived', async (req, res) => {
       [ride_id]
     );
     if (arrData.rows[0]?.passenger_phone) {
-      sendFCM(arrData.rows[0].passenger_phone, '🚗 Driver  Aa gaya!', 'Aapka driver pickup pe hai. OTP batao aur trip shuru karo!');
+      sendFCM(arrData.rows[0].passenger_phone, '🚗 Driver Aa gaya!', 'Aapka driver pickup pe hai. OTP batao aur trip shuru karo!');
     }
+    emitRideUpdate(ride_id, { status: 'arrived' });
     res.json({ success: true, message: 'Pickup pe pahunch gaye!' });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -857,6 +913,7 @@ app.post('/api/rides/start', async (req, res) => {
       "UPDATE rides SET status = 'started' WHERE id = $1",
       [ride_id]
     );
+    emitRideUpdate(ride_id, { status: 'started' });
     res.json({ success: true, message: 'Trip shuru!' });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -2380,6 +2437,7 @@ app.post('/api/rides/complete', async (req, res) => {
       [ride_id]
     );
     if (!upd.rows[0]) return res.status(404).json({ error: 'Ride nahi mili' });
+    emitRideUpdate(ride_id, { status: 'completed', fare: upd.rows[0].fare, payment_method: upd.rows[0].payment_method });
     res.json({ success: true, fare: upd.rows[0].fare, payment_method: upd.rows[0].payment_method, message: 'Trip complete! Payment ka intezaar karo.' });
 
     // Reset idle_since so driver gets priority for next ride
@@ -4142,4 +4200,18 @@ const addLoyaltyPoints = async (userId, points) => {
 // ── Start Server ────────────────────────────────
 server.listen(process.env.PORT, '0.0.0.0', () => {
   console.log('🚀 Server running on port ' + process.env.PORT);
-})
+});
+
+// ── Graceful Shutdown ────────────────────────────
+async function shutdown() {
+  console.log('⏳ Graceful shutdown started...');
+  try { await rideWorker.close(); } catch (_e) {}
+  try { await rideQueue.close(); } catch (_e) {}
+  server.close(() => {
+    console.log('✅ Server closed cleanly');
+    process.exit(0);
+  });
+  setTimeout(() => process.exit(1), 10000); // Force exit after 10s
+}
+process.on('SIGTERM', shutdown);
+process.on('SIGINT',  shutdown);
