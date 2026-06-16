@@ -253,6 +253,14 @@ async function _bmqAssignNext({ rideId, pickupLat, pickupLng, rideType, queue, r
         { type: 'assign-next', rideId, pickupLat, pickupLng, rideType, queue: null, radiusKm: radiusKm + 5 },
         { delay: 45000 }
       );
+    } else {
+      // All radii exhausted — no driver found. Notify customer.
+      await db.query(`UPDATE rides SET status='cancelled', assigned_to_phone=NULL, assignment_expires_at=NULL WHERE id=$1 AND status='requested' AND driver_id IS NULL`, [rideId]);
+      const pRes = await db.query(`SELECT u.phone FROM rides r JOIN users u ON r.passenger_id=u.id WHERE r.id=$1`, [rideId]);
+      if (pRes.rows[0]) {
+        sendFCM(pRes.rows[0].phone, '😔 Driver Nahi Mila', 'Is area mein abhi koi driver available nahi hai. Thodi der baad try karo.', { type: 'no_driver_found', ride_id: String(rideId) });
+        io.to('ride_' + rideId).emit('rideUpdate', { rideId, status: 'no_driver', message: 'Koi driver available nahi hai — baad mein try karo' });
+      }
     }
     await db.query(
       `UPDATE rides SET assigned_to_phone=NULL, assignment_expires_at=NULL
@@ -313,8 +321,11 @@ setTimeout(async () => {
     `CREATE INDEX IF NOT EXISTS idx_rides_assigned_phone    ON rides(assigned_to_phone)`,
     `CREATE INDEX IF NOT EXISTS idx_rides_created_at        ON rides(created_at)`,
     `CREATE INDEX IF NOT EXISTS idx_driver_locations_phone  ON driver_locations(phone)`,
+    `CREATE INDEX IF NOT EXISTS idx_driver_locations_geocell ON driver_locations(geocell)`,
     `CREATE INDEX IF NOT EXISTS idx_drivers_online          ON drivers(is_online, verification_status)`,
     `CREATE INDEX IF NOT EXISTS idx_driver_metrics_phone    ON driver_metrics(phone)`,
+    `CREATE INDEX IF NOT EXISTS idx_hourly_customer_phone   ON hourly_bookings(customer_phone, status)`,
+    `CREATE INDEX IF NOT EXISTS idx_hourly_driver_phone     ON hourly_bookings(driver_phone, status)`,
   ];
   for (const sql of indexes) await db.query(sql).catch(() => {});
   console.log('✅ DB indexes ready');
@@ -346,6 +357,19 @@ const auth = (req, res, next) => {
     res.status(401).json({ error: 'Invalid token' });
   }
 };
+
+// ── Admin Auth Middleware ────────────────────────
+// Set ADMIN_SECRET env var in Railway to protect all admin routes
+const adminAuth = (req, res, next) => {
+  const secret = process.env.ADMIN_SECRET;
+  if (!secret) return next(); // ADMIN_SECRET not configured → allow (set it in Railway!)
+  const provided = req.headers['x-admin-key'] || req.query._ak;
+  if (provided !== secret) {
+    return res.status(401).json({ error: 'Admin access denied', hint: 'Pass x-admin-key header or _ak query param' });
+  }
+  next();
+};
+app.use('/api/admin/', adminAuth);
 
 // ── Distance Calculate (OpenStreetMap - Free) ───
 async function getDistance(pickup, dropLocation) {
@@ -418,7 +442,7 @@ app.post('/api/auth/send-otp', async (req, res) => {
     await redis.del('otp:attempts:' + phone);
 
     console.log('📱 OTP for', phone, ':', otp);
-    res.json({ message: 'OTP bheja gaya', success: true, otp });
+    res.json({ message: 'OTP bheja gaya', success: true });
   } catch (err) {
     console.error('send-otp error:', err.message);
     res.status(500).json({ error: 'OTP bhejne mein dikkat. Dobara try karo.' });
@@ -436,8 +460,8 @@ app.post('/api/auth/verify-otp', async (req, res) => {
       return res.status(429).json({ error: `Account blocked! ${Math.ceil(ttl/60)} min baad try karo` });
     }
 
-    // Test OTP bypass — '000000' kisi bhi number ke liye kaam karta hai (dev/testing only)
-    const isTestOtp = otp === '000000';
+    // Test OTP bypass — only in non-production environments
+    const isTestOtp = otp === '000000' && process.env.NODE_ENV !== 'production';
 
     const savedOtp = await redis.get('otp:' + phone);
     if (!savedOtp && !isTestOtp) return res.status(400).json({ error: 'OTP expire ho gaya! Dobara bhejwao' });
@@ -651,9 +675,15 @@ io.on('connection', (socket) => {
   socket.on('driverJoin', ({ phone }) => {
     socket.join('driver_' + phone);
   });
-  // Legacy location update
-  socket.on('locationUpdate', ({ driverId, lat, lng }) => {
-    io.emit('driverMoved_' + driverId, { lat, lng });
+  // Driver location update — targeted to the active ride room only
+  socket.on('locationUpdate', ({ driverId, lat, lng, rideId }) => {
+    if (rideId) {
+      // Send to specific ride room (customer listening there)
+      io.to('ride_' + rideId).emit('driverMoved', { lat, lng });
+    } else {
+      // Fallback: broadcast to driver-specific event (legacy clients)
+      socket.broadcast.emit('driverMoved_' + driverId, { lat, lng });
+    }
   });
   socket.on('driverOnline', ({ driverId }) => {
     socket.join('driver_' + driverId);
@@ -891,8 +921,15 @@ app.get('/api/driver/active-ride', async (req, res) => {
 
 // ── Driver: Pickup pe pahunch gaya ──────────────────
 app.post('/api/rides/arrived', async (req, res) => {
-  const { ride_id } = req.body;
+  const { ride_id, driver_phone } = req.body;
   try {
+    // Verify driver owns this ride
+    if (driver_phone) {
+      const owner = await db.query(
+        `SELECT 1 FROM rides r JOIN users u ON r.driver_id=u.id WHERE r.id=$1 AND u.phone=$2`, [ride_id, driver_phone]
+      );
+      if (!owner.rows[0]) return res.status(403).json({ error: 'Yeh ride tumhari nahi hai' });
+    }
     await db.query(
       "UPDATE rides SET status = 'arrived' WHERE id = $1",
       [ride_id]
@@ -914,14 +951,19 @@ app.post('/api/rides/arrived', async (req, res) => {
 
 // ── Driver: Trip shuru karo ─────────────────────────
 app.post('/api/rides/start', async (req, res) => {
-  const { ride_id, otp } = req.body;
+  const { ride_id, otp, driver_phone } = req.body;
   try {
     const check = await db.query(
-      'SELECT start_otp FROM rides WHERE id = $1',
+      `SELECT r.start_otp, u.phone as dr_phone FROM rides r LEFT JOIN users u ON r.driver_id=u.id WHERE r.id=$1`,
       [ride_id]
     );
+    if (!check.rows[0]) return res.status(404).json({ success: false, message: 'Ride nahi mili' });
     if (check.rows[0]?.start_otp !== otp) {
       return res.status(400).json({ success: false, message: 'Galat OTP!' });
+    }
+    // Verify driver owns this ride
+    if (driver_phone && check.rows[0].dr_phone && check.rows[0].dr_phone !== driver_phone) {
+      return res.status(403).json({ success: false, message: 'Yeh ride tumhari nahi hai' });
     }
     await db.query(
       "UPDATE rides SET status = 'started' WHERE id = $1",
@@ -938,10 +980,17 @@ app.post('/api/rides/start', async (req, res) => {
   }
 });
 
-// ── Driver: Trip cancel karo ────────────────────────
+// ── Driver: Trip cancel karo (legacy — use cancel-smart instead) ──────────────────────────
 app.post('/api/rides/cancel', async (req, res) => {
-  const { ride_id, reason } = req.body;
+  const { ride_id, reason, driver_phone } = req.body;
   try {
+    // Verify driver owns this ride (if driver_phone provided)
+    if (driver_phone) {
+      const owner = await db.query(
+        `SELECT 1 FROM rides r JOIN users u ON r.driver_id=u.id WHERE r.id=$1 AND u.phone=$2`, [ride_id, driver_phone]
+      );
+      if (!owner.rows[0]) return res.status(403).json({ error: 'Yeh ride tumhari nahi hai' });
+    }
     await db.query(
       "UPDATE rides SET status = 'cancelled' WHERE id = $1",
       [ride_id]
@@ -976,16 +1025,26 @@ app.post('/api/payment/create-order', async (req, res) => {
   }
 });
 
-// ── Payment Verify karo ─────────────────────────────
+// ── Payment Verify karo (with HMAC signature check) ─────────────────────────────
 app.post('/api/payment/verify', async (req, res) => {
-  const { ride_id, payment_id, amount, method } = req.body;
+  const { ride_id, razorpay_payment_id, razorpay_order_id, razorpay_signature, payment_id, amount, method } = req.body;
+  const pid = razorpay_payment_id || payment_id;
   try {
+    // Verify HMAC signature if provided (new clients send it)
+    if (razorpay_order_id && razorpay_signature && process.env.RAZORPAY_KEY_SECRET) {
+      const expected = crypto
+        .createHmac('sha256', process.env.RAZORPAY_KEY_SECRET)
+        .update(`${razorpay_order_id}|${pid}`)
+        .digest('hex');
+      if (expected !== razorpay_signature)
+        return res.status(400).json({ success: false, error: 'Invalid payment signature' });
+    }
     await db.query(
-      `INSERT INTO payments (ride_id, amount, method, status)
-       VALUES ($1, $2, $3, 'completed')`,
+      `INSERT INTO payments (ride_id, amount, method, status) VALUES ($1, $2, $3, 'completed')
+       ON CONFLICT DO NOTHING`,
       [ride_id, amount, method || 'online']
     );
-    res.json({ success: true, message: 'Payment successful!' });
+    res.json({ success: true, message: 'Payment verified!' });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
   }
@@ -1656,17 +1715,25 @@ app.post('/api/rides/rate', async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
-// Auto-cancel stale rides (older than 5 min)
+// Auto-cancel stale rides (15 min — matches BullMQ's max 3-round radius expansion window)
 setInterval(async () => {
   try {
     await db.query(`
       UPDATE rides SET status = 'cancelled'
       WHERE status = 'requested'
       AND driver_id IS NULL
-      AND created_at < NOW() - INTERVAL '5 minutes'
+      AND created_at < NOW() - INTERVAL '15 minutes'
     `);
   } catch (_e) {}
 }, 60000);
+
+// Clean up stale offline driver locations from in-memory store (every 5 min)
+setInterval(() => {
+  const cutoff = Date.now() - 5 * 60 * 1000; // 5 minutes
+  for (const phone of Object.keys(driverLocations)) {
+    if (driverLocations[phone].updated < cutoff) delete driverLocations[phone];
+  }
+}, 5 * 60 * 1000);
 // ── Fare Settings APIs ──────────────────────────
 
 // Get fare settings (customer app ke liye)
@@ -2202,7 +2269,7 @@ app.get('/api/admin/cancellation-stats', async (req, res) => {
 //  Purane update-location aur pending-ride ko REPLACE karo
 // ══════════════════════════════════════════════════
 
-// ─── Driver location update (with geocell) ───
+// ─── Driver location update (with geocell + real-time push to customer) ───
 app.post('/api/driver/update-location', async (req, res) => {
   const { phone, lat, lng } = req.body;
   try {
@@ -2214,6 +2281,14 @@ app.post('/api/driver/update-location', async (req, res) => {
        ON CONFLICT (phone) DO UPDATE SET lat = $2, lng = $3, geocell = $4, updated_at = NOW()`,
       [phone, lat, lng, geocell]
     );
+    // Push location to customer via Socket.io ride room (real-time tracking)
+    const activeRide = await db.query(
+      `SELECT r.id FROM rides r JOIN users u ON r.driver_id=u.id
+       WHERE u.phone=$1 AND r.status IN ('matched','arrived','started') LIMIT 1`, [phone]
+    );
+    if (activeRide.rows[0]) {
+      io.to('ride_' + activeRide.rows[0].id).emit('driverMoved', { lat: parseFloat(lat), lng: parseFloat(lng) });
+    }
     res.json({ success: true });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -2474,8 +2549,15 @@ app.post('/api/rides/extension-reject', async (req, res) => {
 
 // ── Driver: Trip complete (payment pending) ───────
 app.post('/api/rides/complete', async (req, res) => {
-  const { ride_id } = req.body;
+  const { ride_id, driver_phone } = req.body;
   try {
+    // Verify driver owns this ride
+    if (driver_phone) {
+      const owner = await db.query(
+        `SELECT 1 FROM rides r JOIN users u ON r.driver_id=u.id WHERE r.id=$1 AND u.phone=$2 AND r.status='started'`, [ride_id, driver_phone]
+      );
+      if (!owner.rows[0]) return res.status(403).json({ error: 'Yeh ride tumhari nahi hai ya abhi started nahi hai' });
+    }
     const upd = await db.query(
       `UPDATE rides SET status = 'completed', payment_status = 'pending', completed_at = NOW() WHERE id = $1 RETURNING id, fare, payment_method, driver_id`,
       [ride_id]
@@ -3179,7 +3261,7 @@ app.get('/api/hourly/active', async (req, res) => {
     let driver = null;
     if (b.driver_phone) {
       const dr = await db.query(
-        `SELECT u.name, u.phone, d.vehicle_type, d.vehicle_number FROM users u JOIN drivers d ON u.phone=d.phone WHERE u.phone=$1`,
+        `SELECT u.name, u.phone, d.vehicle_type, d.vehicle_no, d.vehicle_brand, d.vehicle_model FROM users u JOIN drivers d ON d.id=u.id WHERE u.phone=$1`,
         [b.driver_phone]
       );
       driver = dr.rows[0] || null;
@@ -3758,26 +3840,38 @@ app.get('/api/wallet/topup/url', (req, res) => {
 });
 
 // POST /api/wallet/topup/confirm — credit wallet after Razorpay.me payment
+// Requires valid Razorpay payment_id — verifies against Razorpay API before crediting
 app.post('/api/wallet/topup/confirm', async (req, res) => {
-  const { phone, amount, payment_id } = req.body;
+  const { phone, payment_id } = req.body;
+  if (!phone || !payment_id || !payment_id.startsWith('pay_'))
+    return res.status(400).json({ error: 'Valid phone and Razorpay payment_id required' });
+  if (!razorpay) return res.status(500).json({ error: 'Payment gateway not configured' });
   const client = await db.connect();
   try {
-    if (!phone || !amount || amount <= 0) return res.status(400).json({ error: 'Invalid request' });
-    // Check duplicate payment_id
-    if (payment_id) {
-      const dup = await client.query("SELECT id FROM razorpay_topups WHERE payment_id=$1 AND status='confirmed'", [payment_id]);
-      if (dup.rows.length > 0) return res.json({ success: false, error: 'Payment ID already used' });
+    // Prevent duplicate credits
+    const dup = await client.query("SELECT id FROM razorpay_topups WHERE payment_id=$1 AND status='confirmed'", [payment_id]);
+    if (dup.rows.length > 0) return res.json({ success: false, error: 'Payment already processed' });
+
+    // Verify payment with Razorpay — use their reported amount, not client-supplied
+    let rzpPayment;
+    try {
+      rzpPayment = await razorpay.payments.fetch(payment_id);
+    } catch (_e) {
+      return res.status(400).json({ error: 'Invalid payment ID — Razorpay se verify nahi ho saka' });
     }
+    if (rzpPayment.status !== 'captured') return res.status(400).json({ error: `Payment ${rzpPayment.status} — captured nahi hai` });
+    const rupees = rzpPayment.amount / 100; // Razorpay stores in paise
+
     await client.query('BEGIN');
     const user = await client.query('SELECT id FROM users WHERE phone=$1', [phone]);
     if (!user.rows[0]) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'User nahi mila' }); }
     const userId = user.rows[0].id;
     await client.query('INSERT INTO customer_wallet (user_id) VALUES ($1) ON CONFLICT (user_id) DO NOTHING', [userId]);
-    const w = await client.query('UPDATE customer_wallet SET balance=balance+$1, updated_at=NOW() WHERE user_id=$2 RETURNING balance', [amount, userId]);
-    await client.query("INSERT INTO transactions (user_id,type,amount,description) VALUES ($1,'credit',$2,$3)", [userId, amount, payment_id ? `Wallet recharge via Razorpay (${payment_id})` : 'Wallet recharge']);
-    await client.query('INSERT INTO razorpay_topups (user_phone,amount,payment_id,status) VALUES ($1,$2,$3,$4)', [phone, amount, payment_id || null, payment_id ? 'confirmed' : 'unverified']);
+    const w = await client.query('UPDATE customer_wallet SET balance=balance+$1, updated_at=NOW() WHERE user_id=$2 RETURNING balance', [rupees, userId]);
+    await client.query("INSERT INTO transactions (user_id,type,amount,description) VALUES ($1,'credit',$2,$3)", [userId, rupees, `Wallet recharge ₹${rupees} (${payment_id})`]);
+    await client.query("INSERT INTO razorpay_topups (user_phone,amount,payment_id,status) VALUES ($1,$2,$3,'confirmed')", [phone, rupees, payment_id]);
     await client.query('COMMIT');
-    res.json({ success: true, balance: parseFloat(w.rows[0].balance), message: `₹${amount} wallet mein add ho gaya!` });
+    res.json({ success: true, balance: parseFloat(w.rows[0].balance), message: `₹${rupees} wallet mein add ho gaya!` });
   } catch (err) { await client.query('ROLLBACK'); res.status(500).json({ error: err.message }); }
   finally { client.release(); }
 });
@@ -4534,6 +4628,83 @@ const addLoyaltyPoints = async (userId, points) => {
     await db.query('INSERT INTO customer_loyalty (user_id, total_points) VALUES ($1,$2) ON CONFLICT (user_id) DO UPDATE SET total_points=customer_loyalty.total_points+$2, updated_at=NOW()', [userId, points]);
   } catch (_e) {}
 };
+
+// POST /api/loyalty/redeem — convert points to wallet credit (100 points = ₹10)
+app.post('/api/loyalty/redeem', async (req, res) => {
+  const { phone, points } = req.body;
+  if (!phone || !points || points < 100) return res.status(400).json({ error: 'Minimum 100 points chahiye redeem karne ke liye' });
+  if (points % 100 !== 0) return res.status(400).json({ error: 'Points 100 ke multiple mein hone chahiye' });
+  try {
+    const user = await db.query('SELECT id FROM users WHERE phone=$1', [phone]);
+    if (!user.rows[0]) return res.status(404).json({ error: 'User nahi mila' });
+    const userId = user.rows[0].id;
+    const loyalty = await db.query('SELECT total_points FROM customer_loyalty WHERE user_id=$1', [userId]);
+    const available = parseInt(loyalty.rows[0]?.total_points || 0);
+    if (available < points) return res.json({ success: false, message: `Sirf ${available} points hain, ${points} chahiye` });
+    const cashback = Math.floor(points / 100) * 10;
+    const client = await db.connect();
+    try {
+      await client.query('BEGIN');
+      await client.query('UPDATE customer_loyalty SET total_points=total_points-$1, total_redeemed=total_redeemed+$1 WHERE user_id=$2', [points, userId]);
+      await client.query('INSERT INTO customer_wallet (user_id) VALUES ($1) ON CONFLICT (user_id) DO NOTHING', [userId]);
+      const w = await client.query('UPDATE customer_wallet SET balance=balance+$1, updated_at=NOW() WHERE user_id=$2 RETURNING balance', [cashback, userId]);
+      await client.query("INSERT INTO transactions (user_id,type,amount,description) VALUES ($1,'credit',$2,'Loyalty points redeem')", [userId, cashback]);
+      await client.query('COMMIT');
+      res.json({ success: true, points_used: points, cashback_credited: cashback, new_balance: parseFloat(w.rows[0].balance), message: `${points} points redeem ho gaye! ₹${cashback} wallet mein add ho gaya.` });
+    } catch (err) { await client.query('ROLLBACK'); throw err; }
+    finally { client.release(); }
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ══════════════════════════════════════════════════
+//  RAZORPAY WEBHOOK — server-side payment confirmation
+//  Set webhook URL in Razorpay Dashboard:
+//  https://rideapp-backend-production-5e1c.up.railway.app/api/payment/razorpay-webhook
+//  Secret: RAZORPAY_WEBHOOK_SECRET env var
+// ══════════════════════════════════════════════════
+app.post('/api/payment/razorpay-webhook', express.raw({ type: 'application/json' }), async (req, res) => {
+  const webhookSecret = process.env.RAZORPAY_WEBHOOK_SECRET;
+  if (webhookSecret) {
+    const signature = req.headers['x-razorpay-signature'];
+    const expectedSig = crypto.createHmac('sha256', webhookSecret).update(req.body).digest('hex');
+    if (signature !== expectedSig) return res.status(400).json({ error: 'Invalid webhook signature' });
+  }
+  try {
+    const event = JSON.parse(req.body.toString());
+    const payment = event?.payload?.payment?.entity;
+    if (!payment) return res.json({ status: 'ignored' });
+
+    if (event.event === 'payment.captured') {
+      const paymentId = payment.id;
+      const notes = payment.notes || {};
+      const phone = notes.phone;
+
+      // Check if it's a wallet topup (receipt starts with 'topup_')
+      const orderId = payment.order_id;
+      const orderRes = await db.query("SELECT id FROM razorpay_topups WHERE payment_id=$1 AND status='confirmed'", [paymentId]);
+      if (orderRes.rows.length === 0 && phone && payment.amount) {
+        // Credit wallet (idempotent)
+        const rupees = payment.amount / 100;
+        const user = await db.query('SELECT id FROM users WHERE phone=$1', [phone]);
+        if (user.rows[0]) {
+          const userId = user.rows[0].id;
+          const dup = await db.query("SELECT id FROM razorpay_topups WHERE payment_id=$1", [paymentId]);
+          if (dup.rows.length === 0) {
+            await db.query('INSERT INTO customer_wallet (user_id) VALUES ($1) ON CONFLICT (user_id) DO NOTHING', [userId]);
+            await db.query('UPDATE customer_wallet SET balance=balance+$1, updated_at=NOW() WHERE user_id=$2', [rupees, userId]);
+            await db.query("INSERT INTO transactions (user_id,type,amount,description) VALUES ($1,'credit',$2,$3)", [userId, rupees, `Wallet recharge ₹${rupees} via webhook (${paymentId})`]);
+            await db.query("INSERT INTO razorpay_topups (user_phone,amount,payment_id,status) VALUES ($1,$2,$3,'confirmed')", [phone, rupees, paymentId]);
+            sendFCM(phone, '✅ Wallet Recharge!', `₹${rupees} aapke wallet mein add ho gaya!`, { type: 'wallet_topup', amount: String(rupees) });
+          }
+        }
+      }
+    }
+    res.json({ status: 'ok' });
+  } catch (err) {
+    console.error('Webhook error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
 
 // ══════════════════════════════════════════════════
 //  START SERVER ─────────────────────────────────────
