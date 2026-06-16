@@ -671,6 +671,9 @@ io.on('connection', (socket) => {
   socket.on('joinRide', ({ rideId }) => {
     socket.join('ride_' + rideId);
   });
+  socket.on('joinHourly', ({ bookingId }) => {
+    socket.join('hourly_' + bookingId);
+  });
   // Driver joins their phone room for real-time ride assignments
   socket.on('driverJoin', ({ phone }) => {
     socket.join('driver_' + phone);
@@ -2411,10 +2414,10 @@ app.post('/api/fare-estimate', async (req, res) => {
 // POST /api/rides/extension-request
 app.post('/api/rides/extension-request', async (req, res) => {
   const { customer_phone, new_drop } = req.body;
-  const original_ride_id = parseInt(req.body.original_ride_id);
+  const original_ride_id = req.body.original_ride_id; // keep as-is — rides.id may be UUID or integer
   const new_drop_lat = req.body.new_drop_lat ? parseFloat(req.body.new_drop_lat) : null;
   const new_drop_lng = req.body.new_drop_lng ? parseFloat(req.body.new_drop_lng) : null;
-  if (!original_ride_id || isNaN(original_ride_id) || !customer_phone || !new_drop) return res.status(400).json({ error: 'Fields missing' });
+  if (!original_ride_id || !customer_phone || !new_drop) return res.status(400).json({ error: 'Fields missing' });
   try {
     const rideRes = await db.query(
       `SELECT r.*, u_d.phone AS driver_phone, u_d.name AS driver_name
@@ -3540,6 +3543,7 @@ app.post('/api/hourly/accept-extend', async (req, res) => {
       [newHours, newKm, newFare, extMinutes, parseFloat(b.extend_escrow), booking_id]
     );
     sendFCM(b.customer_phone, '✅ Extension Accept Ho Gaya!', `Trip ab ${newHours >= 24 ? (newHours/24)+'d' : newHours+'h'} ke liye extend ho gaya — ${newKm} km included`);
+    io.to('hourly_' + booking_id).emit('hourlyExtensionResult', { accepted: true, new_hours: newHours, new_km: newKm, new_fare: newFare });
     res.json({ success: true, new_hours: newHours, new_km: newKm, new_fare: newFare });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
@@ -3560,6 +3564,7 @@ app.post('/api/hourly/reject-extend', async (req, res) => {
     }
     await db.query('UPDATE hourly_bookings SET extend_requested_hours=NULL, extend_escrow=0 WHERE id=$1', [booking_id]);
     sendFCM(b.customer_phone, '❌ Extension Reject Ho Gaya', `₹${parseFloat(b.extend_escrow||0).toFixed(0)} wapas aapke wallet mein`);
+    io.to('hourly_' + booking_id).emit('hourlyExtensionResult', { accepted: false, refund: parseFloat(b.extend_escrow || 0) });
     res.json({ success: true });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
@@ -3678,7 +3683,7 @@ db.query('ALTER TABLE rides ADD COLUMN IF NOT EXISTS assignment_expires_at TIMES
 db.query('ALTER TABLE rides ADD COLUMN IF NOT EXISTS assignment_queue JSONB DEFAULT \'[]\'').catch(() => {});
 db.query(`CREATE TABLE IF NOT EXISTS ride_extensions (
   id SERIAL PRIMARY KEY,
-  original_ride_id INTEGER NOT NULL,
+  original_ride_id TEXT NOT NULL,
   customer_phone VARCHAR(20) NOT NULL,
   driver_phone VARCHAR(20) NOT NULL,
   pickup VARCHAR(500), pickup_lat FLOAT, pickup_lng FLOAT,
@@ -3688,8 +3693,10 @@ db.query(`CREATE TABLE IF NOT EXISTS ride_extensions (
   created_at TIMESTAMP DEFAULT NOW(),
   window_expires_at TIMESTAMP NOT NULL,
   response_expires_at TIMESTAMP NOT NULL,
-  new_ride_id INTEGER
+  new_ride_id TEXT
 )`).catch(() => {});
+db.query('ALTER TABLE ride_extensions ALTER COLUMN original_ride_id TYPE TEXT USING original_ride_id::TEXT').catch(() => {});
+db.query('ALTER TABLE ride_extensions ALTER COLUMN new_ride_id TYPE TEXT USING new_ride_id::TEXT').catch(() => {});
 db.query('ALTER TABLE hourly_bookings ADD COLUMN IF NOT EXISTS scheduled_at TIMESTAMP DEFAULT NULL').catch(() => {});
 db.query('ALTER TABLE driver_wallet ADD COLUMN IF NOT EXISTS pending_commission DECIMAL(10,2) DEFAULT 0').catch(() => {});
 db.query(`CREATE TABLE IF NOT EXISTS driver_commission_payments (
