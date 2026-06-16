@@ -442,7 +442,10 @@ app.post('/api/auth/send-otp', async (req, res) => {
     await redis.del('otp:attempts:' + phone);
 
     console.log('📱 OTP for', phone, ':', otp);
-    res.json({ message: 'OTP bheja gaya', success: true });
+
+    // Return OTP in response when ALLOW_TEST_OTP=true (no SMS provider configured)
+    const testMode = process.env.ALLOW_TEST_OTP === 'true';
+    res.json({ message: 'OTP bheja gaya', success: true, ...(testMode ? { otp } : {}) });
   } catch (err) {
     console.error('send-otp error:', err.message);
     res.status(500).json({ error: 'OTP bhejne mein dikkat. Dobara try karo.' });
@@ -460,8 +463,8 @@ app.post('/api/auth/verify-otp', async (req, res) => {
       return res.status(429).json({ error: `Account blocked! ${Math.ceil(ttl/60)} min baad try karo` });
     }
 
-    // Test OTP bypass — only in non-production environments
-    const isTestOtp = otp === '000000' && process.env.NODE_ENV !== 'production';
+    // Test OTP bypass — enabled via ALLOW_TEST_OTP=true env var
+    const isTestOtp = otp === '000000' && process.env.ALLOW_TEST_OTP === 'true';
 
     const savedOtp = await redis.get('otp:' + phone);
     if (!savedOtp && !isTestOtp) return res.status(400).json({ error: 'OTP expire ho gaya! Dobara bhejwao' });
