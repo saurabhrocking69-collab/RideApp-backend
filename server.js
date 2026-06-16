@@ -3421,6 +3421,36 @@ app.post('/api/hourly/early-end-confirm', async (req, res) => {
   finally { client.release(); }
 });
 
+// Customer directly ends trip — full package payment to driver, no driver confirmation needed
+app.post('/api/hourly/customer-early-complete', async (req, res) => {
+  const { booking_id } = req.body;
+  const client = await db.connect();
+  try {
+    await client.query('BEGIN');
+    const r = await client.query("SELECT * FROM hourly_bookings WHERE id=$1 AND status='active'", [booking_id]);
+    if (!r.rows[0]) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'Active booking nahi mila' }); }
+    const b = r.rows[0];
+    const actualHours = b.started_at ? (Date.now() - new Date(b.started_at).getTime()) / 3600000 : 0;
+    const driverAmount = parseFloat(b.base_fare); // full fare — customer is satisfied
+    const commission   = Math.round(driverAmount * 0.12);
+    const driverEarning = driverAmount - commission;
+    const driverUser = await client.query('SELECT id FROM users WHERE phone=$1', [b.driver_phone]);
+    if (driverUser.rows[0]) {
+      await client.query('UPDATE driver_wallet SET balance=balance+$1, total_earned=total_earned+$1 WHERE driver_id=$2', [driverEarning, driverUser.rows[0].id]);
+      await client.query("INSERT INTO transactions (user_id,type,amount,description) VALUES ($1,'credit',$2,'Hourly - customer early complete full payment')", [driverUser.rows[0].id, driverEarning]);
+    }
+    await client.query(
+      `UPDATE hourly_bookings SET status='completed', ended_at=NOW(), actual_hours=$1, driver_earning=$2, platform_fee=$3, refund_amount=0, payment_status='released', early_end_confirmed=true, early_end_requested_by='customer' WHERE id=$4`,
+      [actualHours, driverEarning, commission, booking_id]
+    );
+    await client.query('COMMIT');
+    io.to('hourly_' + booking_id).emit('hourlyTripCompleted', { driver_earning: driverEarning });
+    sendFCM(b.driver_phone, '✅ Customer ne Trip Complete Kiya!', `Full payment ₹${driverEarning.toFixed(0)} aapki kamai — wallet mein add ho gaya!`);
+    res.json({ success: true, driver_earning: driverEarning, actual_hours: actualHours.toFixed(1) });
+  } catch (err) { await client.query('ROLLBACK'); res.status(500).json({ error: err.message }); }
+  finally { client.release(); }
+});
+
 app.post('/api/hourly/early-end-reject', async (req, res) => {
   const { booking_id } = req.body;
   try {
