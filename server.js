@@ -1168,20 +1168,25 @@ app.get('/api/rides/driver-location-OLD/:rideId', async (req, res) => {
 // ── Admin: Dashboard Stats ──────────────────────────
 app.get('/api/admin/stats', async (req, res) => {
   try {
-    const users    = await db.query("SELECT COUNT(*) FROM users WHERE role = 'passenger'");
-    const drivers  = await db.query("SELECT COUNT(*) FROM drivers");
-    const rides    = await db.query("SELECT COUNT(*) FROM rides");
-    const completed= await db.query("SELECT COUNT(*) FROM rides WHERE status = 'completed'");
-    const revenue  = await db.query("SELECT COALESCE(SUM(fare),0) AS total FROM rides WHERE status = 'completed'");
-    const todayRides = await db.query("SELECT COUNT(*) FROM rides WHERE created_at >= CURRENT_DATE");
-
+    const [users, drivers, rides, completed, revenue, todayRides, todayRevenue, hourlyCount] = await Promise.all([
+      db.query("SELECT COUNT(*) FROM users u WHERE NOT EXISTS (SELECT 1 FROM drivers d WHERE d.id = u.id)"),
+      db.query("SELECT COUNT(*) FROM drivers"),
+      db.query("SELECT COUNT(*) FROM rides"),
+      db.query("SELECT COUNT(*) FROM rides WHERE status = 'completed'"),
+      db.query("SELECT COALESCE(SUM(fare),0) AS total FROM rides WHERE status = 'completed'"),
+      db.query("SELECT COUNT(*) FROM rides WHERE created_at >= CURRENT_DATE"),
+      db.query("SELECT COALESCE(SUM(fare),0) AS total FROM rides WHERE status='completed' AND created_at >= CURRENT_DATE"),
+      db.query("SELECT COUNT(*) FROM hourly_bookings WHERE status='completed'").catch(() => ({ rows: [{ count: 0 }] })),
+    ]);
     res.json({
       total_customers: parseInt(users.rows[0].count),
       total_drivers:   parseInt(drivers.rows[0].count),
       total_rides:     parseInt(rides.rows[0].count),
       completed_rides: parseInt(completed.rows[0].count),
       total_revenue:   parseFloat(revenue.rows[0].total),
-      today_rides:     parseInt(todayRides.rows[0].count)
+      today_rides:     parseInt(todayRides.rows[0].count),
+      today_revenue:   parseFloat(todayRevenue.rows[0].total),
+      total_hourly:    parseInt(hourlyCount.rows[0].count),
     });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -1237,7 +1242,7 @@ app.get('/api/admin/customers', async (req, res) => {
        FROM users u
        LEFT JOIN rides r ON r.passenger_id = u.id
        LEFT JOIN customer_wallet w ON w.user_id = u.id
-       WHERE u.role = 'passenger'
+       WHERE NOT EXISTS (SELECT 1 FROM drivers d WHERE d.id = u.id)
        GROUP BY u.id, u.name, u.phone, u.created_at, w.balance
        ORDER BY u.created_at DESC`
     );
@@ -2339,7 +2344,8 @@ app.get('/api/driver/pending-ride', async (req, res) => {
     if (assigned.rows[0]) {
       const r = assigned.rows[0];
       const secLeft = Math.max(0, Math.ceil((new Date(r.assignment_expires_at).getTime() - Date.now()) / 1000));
-      return res.json({ ride: { ...r, seconds_to_accept: secLeft } });
+      const tripKm = (r.pickup_lat && r.drop_lat) ? haversineKm(parseFloat(r.pickup_lat), parseFloat(r.pickup_lng), parseFloat(r.drop_lat), parseFloat(r.drop_lng)) : null;
+      return res.json({ ride: { ...r, seconds_to_accept: secLeft, distance: tripKm ? tripKm.toFixed(1) : null }, pending_commission: pendingComm });
     }
 
     // FALLBACK: ride has been waiting > 2 min with no active assignment (GPS-less drivers, exhausted queues)
@@ -2352,7 +2358,11 @@ app.get('/api/driver/pending-ride', async (req, res) => {
          AND r.created_at < NOW() - INTERVAL '2 minutes'
        ORDER BY r.created_at ASC LIMIT 1`, [vehicleType]
     );
-    if (fallback.rows[0]) return res.json({ ride: fallback.rows[0] });
+    if (fallback.rows[0]) {
+      const fb = fallback.rows[0];
+      const fbKm = (fb.pickup_lat && fb.drop_lat) ? haversineKm(parseFloat(fb.pickup_lat), parseFloat(fb.pickup_lng), parseFloat(fb.drop_lat), parseFloat(fb.drop_lng)) : null;
+      return res.json({ ride: { ...fb, distance: fbKm ? fbKm.toFixed(1) : null }, pending_commission: pendingComm });
+    }
 
     return res.json({ ride: null });
   } catch (err) {
@@ -2899,11 +2909,13 @@ app.get('/api/rides/payment-status/:rideId', async (req, res) => {
 // ── Admin: Commission stats ────────────────────────
 app.get('/api/admin/commissions', async (req, res) => {
   try {
-    const total = await db.query(`SELECT SUM(commission) as total, COUNT(*) as count FROM driver_commissions WHERE status = 'collected'`);
-    const pending = await db.query(`SELECT SUM(commission) as total, COUNT(*) as count FROM driver_commissions WHERE status = 'pending'`);
-    const byMethod = await db.query(`SELECT payment_method, SUM(commission) as total, COUNT(*) as count FROM driver_commissions GROUP BY payment_method`);
-    const recent = await db.query(`SELECT * FROM driver_commissions ORDER BY created_at DESC LIMIT 10`);
-    res.json({ collected: total.rows[0], pending: pending.rows[0], by_method: byMethod.rows, recent: recent.rows });
+    const [collected, pending, wallets, recent] = await Promise.all([
+      db.query(`SELECT COALESCE(SUM(amount),0) as total, COUNT(*) as count FROM driver_commission_payments WHERE status='paid'`),
+      db.query(`SELECT COALESCE(SUM(pending_commission),0) as total, COUNT(*) as count FROM driver_wallet WHERE pending_commission > 0`),
+      db.query(`SELECT u.name, u.phone, w.pending_commission, w.total_earned FROM driver_wallet w JOIN users u ON w.driver_id = u.id WHERE w.pending_commission > 0 ORDER BY w.pending_commission DESC LIMIT 20`),
+      db.query(`SELECT dcp.*, u.name, u.phone FROM driver_commission_payments dcp JOIN users u ON dcp.driver_phone = u.phone ORDER BY dcp.created_at DESC LIMIT 20`).catch(() => ({ rows: [] })),
+    ]);
+    res.json({ collected: collected.rows[0], pending: pending.rows[0], pending_drivers: wallets.rows, recent: recent.rows });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -2928,7 +2940,7 @@ app.get('/api/admin/users', async (req, res) => {
         GROUP BY passenger_id
       ) r ON u.id = r.passenger_id
       LEFT JOIN customer_metrics cm ON u.phone = cm.phone
-      WHERE u.role = 'passenger'
+      WHERE NOT EXISTS (SELECT 1 FROM drivers d WHERE d.id = u.id)
       ORDER BY u.created_at DESC
     `);
     res.json({ users: users.rows });
@@ -3377,7 +3389,10 @@ app.post('/api/hourly/early-end-confirm', async (req, res) => {
     if (!r.rows[0]) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'Nahi mila' }); }
     const b = r.rows[0];
     const actualHours = b.started_at ? (Date.now() - new Date(b.started_at).getTime()) / 3600000 : 0;
-    const proportion = Math.max(0.70, actualHours / b.package_hours);
+    // Customer-initiated early end → driver gets FULL fare (they blocked their time)
+    // Driver-initiated early end → proportional (minimum 70%)
+    const isCustomerEnd = b.early_end_requested_by === 'customer';
+    const proportion = isCustomerEnd ? 1.0 : Math.max(0.70, actualHours / b.package_hours);
     const driverAmount = Math.round(parseFloat(b.base_fare) * proportion);
     const refund = Math.round(parseFloat(b.base_fare) - driverAmount);
     const commission = Math.round(driverAmount * 0.12);
@@ -3396,8 +3411,8 @@ app.post('/api/hourly/early-end-confirm', async (req, res) => {
       [actualHours, driverEarning, commission, refund, booking_id]
     );
     await client.query('COMMIT');
-    sendFCM(b.customer_phone, '✅ Trip End Confirm', `₹${refund} wallet mein wapas aa gaye!`);
-    sendFCM(b.driver_phone, '✅ Trip Complete', `₹${driverEarning} aapki kamai!`);
+    sendFCM(b.customer_phone, '✅ Trip Complete', isCustomerEnd ? 'Trip complete! Driver ko full payment gayi.' : `₹${refund} wallet mein wapas aa gaye!`);
+    sendFCM(b.driver_phone, '✅ Trip Complete!', `₹${driverEarning} aapki kamai — wallet mein add ho gaya!`);
     res.json({ success: true, driver_earning: driverEarning, refund, actual_hours: actualHours.toFixed(1) });
   } catch (err) { await client.query('ROLLBACK'); res.status(500).json({ error: err.message }); }
   finally { client.release(); }
