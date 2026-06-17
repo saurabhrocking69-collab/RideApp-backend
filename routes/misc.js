@@ -1,0 +1,217 @@
+const express = require('express');
+const router = express.Router();
+const db = require('../config/db');
+
+// GET /api/fare-settings
+router.get('/fare-settings', async (req, res) => {
+  try {
+    const result = await db.query('SELECT * FROM fare_settings ORDER BY vehicle_type');
+    res.json({ fares: result.rows });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// GET /api/fare-estimate (fare estimate without booking)
+router.post('/fare-estimate', async (req, res) => {
+  const { pickup_lat, pickup_lng, drop_lat, drop_lng, ride_type } = req.body;
+  try {
+    const fares = await db.query('SELECT * FROM fare_settings WHERE vehicle_type = $1', [ride_type]);
+    if (!fares.rows[0]) return res.json({ error: 'Ride type nahi mila' });
+    const f = fares.rows[0];
+    const R = 6371;
+    const dLat = (parseFloat(drop_lat) - parseFloat(pickup_lat)) * Math.PI / 180;
+    const dLon = (parseFloat(drop_lng) - parseFloat(pickup_lng)) * Math.PI / 180;
+    const a = Math.sin(dLat/2)**2 + Math.cos(parseFloat(pickup_lat)*Math.PI/180)*Math.cos(parseFloat(drop_lat)*Math.PI/180)*Math.sin(dLon/2)**2;
+    const distKm = R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+    const hour = new Date().getHours();
+    const isNight = hour >= parseInt(f.night_start || 22) || hour < parseInt(f.night_end || 6);
+    const nightMult = isNight ? parseFloat(f.night_multiplier || 1.2) : 1;
+    const fare = Math.round((parseFloat(f.base_fare) + distKm * parseFloat(f.per_km_rate)) * nightMult);
+    res.json({ fare, distance_km: Math.round(distKm * 10) / 10, is_night: isNight });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// POST /api/sos
+router.post('/sos', async (req, res) => {
+  const { phone, ride_id, lat, lng, type } = req.body;
+  try {
+    const user = await db.query('SELECT id FROM users WHERE phone = $1', [phone]);
+    await db.query(
+      'INSERT INTO sos_alerts (user_id, ride_id, lat, lng, type) VALUES ($1,$2,$3,$4,$5)',
+      [user.rows[0]?.id || null, ride_id || null, lat || null, lng || null, type || 'emergency']
+    );
+    console.log('🆘 SOS ALERT:', phone, lat, lng);
+    res.json({ success: true, message: 'Emergency alert bheja gaya', helplines: { police: '100', ambulance: '108', women: '1091' } });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// GET /api/places/saved
+router.get('/places/saved', async (req, res) => {
+  const { phone } = req.query;
+  try {
+    const user = await db.query('SELECT id FROM users WHERE phone = $1', [phone]);
+    if (user.rows.length === 0) return res.json({ places: [] });
+    const r = await db.query('SELECT id, label, address, lat, lng FROM saved_places WHERE user_id = $1', [user.rows[0].id]);
+    res.json({ places: r.rows });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// POST /api/places/save
+router.post('/places/save', async (req, res) => {
+  const { phone, label, address, lat, lng } = req.body;
+  try {
+    const user = await db.query('SELECT id FROM users WHERE phone = $1', [phone]);
+    if (user.rows.length === 0) return res.json({ success: false });
+    await db.query('INSERT INTO saved_places (user_id, label, address, lat, lng) VALUES ($1,$2,$3,$4,$5)',
+      [user.rows[0].id, label, address, lat || null, lng || null]);
+    res.json({ success: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// POST /api/places/delete
+router.post('/places/delete', async (req, res) => {
+  const { id } = req.body;
+  try {
+    await db.query('DELETE FROM saved_places WHERE id = $1', [id]);
+    res.json({ success: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// POST /api/scratch-card/create
+router.post('/scratch-card/create', async (req, res) => {
+  const { phone, ride_id } = req.body;
+  try {
+    const user = await db.query('SELECT id FROM users WHERE phone = $1', [phone]);
+    if (user.rows.length === 0) return res.json({ success: false });
+    const rand = Math.random();
+    let reward;
+    if (rand < 0.50) reward = Math.floor(Math.random() * 5) + 1;
+    else if (rand < 0.80) reward = Math.floor(Math.random() * 10) + 5;
+    else if (rand < 0.95) reward = Math.floor(Math.random() * 20) + 15;
+    else reward = Math.floor(Math.random() * 50) + 50;
+    const card = await db.query(
+      `INSERT INTO scratch_cards (user_id, ride_id, reward_amount) VALUES ($1, $2, $3) RETURNING id, reward_amount`,
+      [user.rows[0].id, ride_id || null, reward]
+    );
+    res.json({ success: true, card_id: card.rows[0].id, reward: parseFloat(card.rows[0].reward_amount) });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// POST /api/scratch-card/scratch
+router.post('/scratch-card/scratch', async (req, res) => {
+  const { card_id, phone } = req.body;
+  try {
+    const card = await db.query('SELECT * FROM scratch_cards WHERE id = $1', [card_id]);
+    if (card.rows.length === 0) return res.json({ success: false, message: 'Card nahi mila' });
+    if (card.rows[0].is_scratched) return res.json({ success: false, message: 'Pehle hi scratch ho chuka' });
+    const reward = parseFloat(card.rows[0].reward_amount);
+    const userId = card.rows[0].user_id;
+    await db.query('UPDATE scratch_cards SET is_scratched = true WHERE id = $1', [card_id]);
+    await db.query('INSERT INTO customer_wallet (user_id) VALUES ($1) ON CONFLICT (user_id) DO NOTHING', [userId]);
+    const wallet = await db.query('UPDATE customer_wallet SET balance = balance + $1 WHERE user_id = $2 RETURNING balance', [reward, userId]);
+    await db.query("INSERT INTO transactions (user_id, type, amount, description) VALUES ($1, 'credit', $2, 'Scratch card reward')", [userId, reward]);
+    res.json({ success: true, reward, balance: parseFloat(wallet.rows[0].balance) });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// GET /api/loyalty/my-points
+router.get('/loyalty/my-points', async (req, res) => {
+  const { phone } = req.query;
+  try {
+    const user = await db.query('SELECT id FROM users WHERE phone = $1', [phone]);
+    if (!user.rows[0]) return res.json({ points: 0, redeemed: 0, rides: 0 });
+    const userId = user.rows[0].id;
+    await db.query('INSERT INTO customer_loyalty (user_id) VALUES ($1) ON CONFLICT (user_id) DO NOTHING', [userId]);
+    const loyalty = await db.query('SELECT total_points, total_redeemed FROM customer_loyalty WHERE user_id=$1', [userId]);
+    const rides = await db.query(`SELECT COUNT(*) as cnt FROM rides WHERE passenger_id=$1 AND status='completed'`, [userId]);
+    const pts = loyalty.rows[0] || { total_points: 0, total_redeemed: 0 };
+    res.json({ points: parseInt(pts.total_points), redeemed: parseInt(pts.total_redeemed), rides: parseInt(rides.rows[0].cnt), cashback_available: Math.floor(parseInt(pts.total_points) / 100) * 10 });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// POST /api/loyalty/redeem
+router.post('/loyalty/redeem', async (req, res) => {
+  const { phone, points } = req.body;
+  if (!phone || !points || points < 100) return res.status(400).json({ error: 'Minimum 100 points chahiye' });
+  if (points % 100 !== 0) return res.status(400).json({ error: 'Points 100 ke multiple mein hone chahiye' });
+  try {
+    const user = await db.query('SELECT id FROM users WHERE phone=$1', [phone]);
+    if (!user.rows[0]) return res.status(404).json({ error: 'User nahi mila' });
+    const userId = user.rows[0].id;
+    const loyalty = await db.query('SELECT total_points FROM customer_loyalty WHERE user_id=$1', [userId]);
+    const available = parseInt(loyalty.rows[0]?.total_points || 0);
+    if (available < points) return res.json({ success: false, message: `Sirf ${available} points hain` });
+    const cashback = Math.floor(points / 100) * 10;
+    const client = await db.connect();
+    try {
+      await client.query('BEGIN');
+      await client.query('UPDATE customer_loyalty SET total_points=total_points-$1, total_redeemed=total_redeemed+$1 WHERE user_id=$2', [points, userId]);
+      await client.query('INSERT INTO customer_wallet (user_id) VALUES ($1) ON CONFLICT (user_id) DO NOTHING', [userId]);
+      const w = await client.query('UPDATE customer_wallet SET balance=balance+$1, updated_at=NOW() WHERE user_id=$2 RETURNING balance', [cashback, userId]);
+      await client.query("INSERT INTO transactions (user_id,type,amount,description) VALUES ($1,'credit',$2,'Loyalty points redeem')", [userId, cashback]);
+      await client.query('COMMIT');
+      res.json({ success: true, points_used: points, cashback_credited: cashback, new_balance: parseFloat(w.rows[0].balance) });
+    } catch (err) { await client.query('ROLLBACK'); throw err; }
+    finally { client.release(); }
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// GET /api/notifications (in-app notifications)
+router.get('/notifications', async (req, res) => {
+  const { target } = req.query;
+  try {
+    const r = await db.query(
+      `SELECT title, message, created_at FROM notifications WHERE target = 'all' OR target = $1 ORDER BY created_at DESC LIMIT 10`,
+      [target || 'all']
+    );
+    res.json({ notifications: r.rows });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// GET /api/notifications/latest
+router.get('/notifications/latest', async (req, res) => {
+  const { phone } = req.query;
+  try {
+    const result = await db.query(
+      `SELECT * FROM notifications WHERE user_phone = $1 ORDER BY created_at DESC LIMIT 1`,
+      [phone]
+    );
+    res.json({ notification: result.rows[0] || null });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// GET /api/offers/active
+router.get('/offers/active', async (req, res) => {
+  const { role } = req.query;
+  try {
+    const r = await db.query(
+      `SELECT * FROM marketing_campaigns WHERE active=true AND (expires_at IS NULL OR expires_at > NOW()) AND (target='all' OR target=$1) ORDER BY created_at DESC LIMIT 5`,
+      [role || 'customer']
+    );
+    res.json({ offers: r.rows });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// POST /api/rides/check-range
+function distanceMeters(lat1, lon1, lat2, lon2) {
+  const R = 6371000;
+  const dLat = (lat2 - lat1) * Math.PI / 180;
+  const dLon = (lon2 - lon1) * Math.PI / 180;
+  const a = Math.sin(dLat/2)**2 + Math.cos(lat1*Math.PI/180)*Math.cos(lat2*Math.PI/180)*Math.sin(dLon/2)**2;
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+}
+router.post('/rides/check-range', async (req, res) => {
+  const { ride_id, driver_lat, driver_lng, type } = req.body;
+  try {
+    const ride = await db.query('SELECT pickup_lat, pickup_lng, drop_lat, drop_lng FROM rides WHERE id = $1', [ride_id]);
+    if (ride.rows.length === 0) return res.json({ in_range: false });
+    const r = ride.rows[0];
+    let targetLat, targetLng, maxDist;
+    if (type === 'pickup') { targetLat = r.pickup_lat; targetLng = r.pickup_lng; maxDist = 15; }
+    else { targetLat = r.drop_lat; targetLng = r.drop_lng; maxDist = 10; }
+    if (!targetLat || !targetLng) return res.json({ in_range: true, distance: 0, note: 'No coords - allowed' });
+    const dist = distanceMeters(driver_lat, driver_lng, parseFloat(targetLat), parseFloat(targetLng));
+    res.json({ in_range: dist <= maxDist, distance: Math.round(dist), max: maxDist });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+module.exports = router;
