@@ -116,7 +116,16 @@ router.post('/accept', async (req, res) => {
     if (rideData.rows[0]?.passenger_phone)
       sendFCM(rideData.rows[0].passenger_phone, '🚗 Driver Mil Gaya!', 'Aapka driver aa raha hai — OTP ready karo!', { type: 'ride_matched', ride_id: String(ride_id) });
 
-    emitRideUpdate(ride_id, { status: 'matched' });
+    const dInfo = await db.query(
+      `SELECT u.name, d.vehicle_no, d.vehicle_brand, d.vehicle_model, d.rating, d.verification_status
+       FROM users u JOIN drivers d ON u.id=d.id WHERE u.id=$1`, [driver.rows[0].id]
+    );
+    const di = dInfo.rows[0];
+    emitRideUpdate(ride_id, {
+      status: 'matched',
+      start_otp: otp,
+      driver: di ? { name: di.name, vehicle_no: di.vehicle_no, vehicle_brand: di.vehicle_brand, vehicle_model: di.vehicle_model, rating: di.rating, verified: di.verification_status === 'approved' } : null,
+    });
     res.json({ success: true, message: 'Ride accepted!', otp });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
@@ -240,7 +249,7 @@ router.post('/cancel-smart', async (req, res) => {
         [cancelsToday + 1, today, newTrust, newTrust < 50, phone]
       );
       if (ride.driver_phone)
-        sendFCM(ride.driver_phone, '🚫 Ride Cancel Ho Gayi', `Customer ne cancel kar di. Reason: ${reason || 'N/A'}`, { type: 'ride_cancelled' });
+        sendFCM(ride.driver_phone, '🚫 Ride Cancel Ho Gayi', `Customer ne cancel kar di. Reason: ${reason || 'N/A'}`, { type: 'ride_cancelled' }, { channelId: 'ride_requests' });
     }
 
     if (cancelled_by === 'driver') {
@@ -311,7 +320,7 @@ router.post('/complete', async (req, res) => {
       );
       if (compData.rows[0]) {
         sendFCM(compData.rows[0].passenger_phone, '🏁 Trip Complete!', 'Payment karo aur driver ko rate karo!', { type: 'trip_completed', ride_id: String(ride_id) });
-        sendFCM(compData.rows[0].driver_phone, '✅ Trip Complete!', 'Payment aa rahi hai — wait karo.', { type: 'payment_pending' });
+        sendFCM(compData.rows[0].driver_phone, '✅ Trip Complete!', 'Payment aa rahi hai — wait karo.', { type: 'payment_pending' }, { channelId: 'ride_requests' });
       }
     } catch (_e) {}
   } catch (err) { res.status(500).json({ error: err.message }); }
@@ -471,6 +480,43 @@ router.get('/driver-location/:rideId', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+// POST /api/rides/switch-vehicle — customer switches vehicle type while searching
+router.post('/switch-vehicle', async (req, res) => {
+  const { ride_id, new_vehicle_type } = req.body;
+  if (!['auto', 'bike', 'car', 'eriksha', 'luxury'].includes(new_vehicle_type))
+    return res.status(400).json({ error: 'Invalid vehicle type' });
+  try {
+    const r = await db.query(
+      `SELECT pickup_lat, pickup_lng, distance FROM rides WHERE id=$1 AND status='requested' AND driver_id IS NULL`,
+      [ride_id]
+    );
+    if (!r.rows[0]) return res.json({ success: false, message: 'Ride nahi mili ya already assigned hai' });
+    const { pickup_lat, pickup_lng, distance } = r.rows[0];
+
+    // Recalculate fare for new vehicle type
+    const fareRes = await db.query('SELECT * FROM fare_settings WHERE vehicle_type=$1', [new_vehicle_type]);
+    const defaultFares = { luxury: { base_fare: 80, per_km_rate: 25 }, car: { base_fare: 40, per_km_rate: 15 }, auto: { base_fare: 25, per_km_rate: 12 }, eriksha: { base_fare: 20, per_km_rate: 10 }, bike: { base_fare: 15, per_km_rate: 8 } };
+    const f = fareRes.rows[0] || defaultFares[new_vehicle_type] || defaultFares.auto;
+    const hour = new Date().getHours();
+    const isNight = hour >= parseInt(String(f.night_start || '22').split(':')[0]) || hour < parseInt(String(f.night_end || '6').split(':')[0]);
+    const dist = parseFloat(distance || '5');
+    let newFare = Math.round(parseFloat(f.base_fare) + dist * parseFloat(f.per_km_rate));
+    if (isNight) newFare = Math.round(newFare * parseFloat(f.night_multiplier || '1.3'));
+
+    // Update ride_type + clear queue (old BullMQ jobs will see mismatched ride_type and bail)
+    await db.query(
+      `UPDATE rides SET ride_type=$1, fare=$2, assigned_to_phone=NULL, assignment_expires_at=NULL, assignment_queue='[]' WHERE id=$3`,
+      [new_vehicle_type, newFare, ride_id]
+    );
+
+    emitRideUpdate(ride_id, { status: 'searching', new_vehicle_type, new_fare: '₹' + newFare });
+
+    assignRideToNextDriver(ride_id, pickup_lat, pickup_lng, new_vehicle_type).catch(() => {});
+
+    res.json({ success: true, new_vehicle_type, new_fare: '₹' + newFare, message: `${new_vehicle_type} driver dhundh rahe hain...` });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
 // POST /api/rides/extension-request
 router.post('/extension-request', async (req, res) => {
   const { customer_phone, new_drop } = req.body;
@@ -511,7 +557,7 @@ router.post('/extension-request', async (req, res) => {
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11, NOW() + INTERVAL '15 minutes', NOW() + INTERVAL '60 seconds') RETURNING *`,
       [original_ride_id, customer_phone, ride.driver_phone, ride.drop_location, ride.drop_lat || null, ride.drop_lng || null, new_drop, new_drop_lat, new_drop_lng, ride.ride_type, estFare]
     );
-    sendFCM(ride.driver_phone, '🔄 Ride Extension!', `${ride.drop_location} → ${new_drop} — ₹${estFare} | Accept karo 60 sec mein`);
+    sendFCM(ride.driver_phone, '🔄 Ride Extension!', `${ride.drop_location} → ${new_drop} — ₹${estFare} | Accept karo 60 sec mein`, { type: 'ride_extension' }, { channelId: 'ride_requests' });
 
     const extId = extR.rows[0].id;
     setTimeout(async () => {

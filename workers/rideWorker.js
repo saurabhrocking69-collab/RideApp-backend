@@ -7,6 +7,30 @@ const { haversineKm, scoreDriver } = require('../services/matching');
 
 const rideQueue = new Queue('ride-assignment', { connection: makeBmqConn() });
 
+const VEHICLE_ALTERNATIVES = {
+  bike:        ['auto', 'car'],
+  eriksha:     ['auto', 'bike'],
+  auto:        ['car'],
+  car:         ['auto'],
+  luxury:      ['car'],
+  ultra_luxury:['car'],
+};
+
+async function getAvailableAlternatives(rideType) {
+  const alts = VEHICLE_ALTERNATIVES[rideType] || [];
+  const available = [];
+  for (const alt of alts) {
+    const r = await db.query(
+      `SELECT COUNT(*) FROM drivers d JOIN users u ON d.id=u.id
+       WHERE d.vehicle_type=$1 AND d.is_online=true AND d.verification_status='approved'
+       AND NOT EXISTS (SELECT 1 FROM rides r2 WHERE r2.driver_id=d.id AND r2.status IN ('matched','arrived','started'))`,
+      [alt]
+    );
+    if (parseInt(r.rows[0].count) > 0) available.push(alt);
+  }
+  return available;
+}
+
 const rideWorker = new Worker('ride-assignment', async (job) => {
   const d = job.data;
   if (d.type === 'assign-next')  await _bmqAssignNext(d);
@@ -19,9 +43,11 @@ rideWorker.on('failed', (job, err) => {
 
 async function _bmqAssignNext({ rideId, pickupLat, pickupLng, rideType, queue, radiusKm = 5 }) {
   const rideCheck = await db.query(
-    `SELECT id FROM rides WHERE id=$1 AND status='requested' AND driver_id IS NULL`, [rideId]
+    `SELECT id, ride_type FROM rides WHERE id=$1 AND status='requested' AND driver_id IS NULL`, [rideId]
   );
   if (!rideCheck.rows[0]) return;
+  // Customer switched vehicle type — this job is stale, bail out
+  if (rideCheck.rows[0].ride_type !== rideType) return;
 
   let remaining = queue;
 
@@ -60,6 +86,17 @@ async function _bmqAssignNext({ rideId, pickupLat, pickupLng, rideType, queue, r
 
   if (!remaining || remaining.length === 0) {
     if (radiusKm < 15) {
+      // Emit alternative vehicle suggestion when initial search radius fails
+      if (radiusKm <= 5) {
+        try {
+          const alts = await getAvailableAlternatives(rideType);
+          if (alts.length > 0) {
+            emitToRoom('ride_' + rideId, 'suggestAlternative', {
+              rideId, current_type: rideType, alternatives: alts,
+            });
+          }
+        } catch (_e) {}
+      }
       await rideQueue.add('ride-assignment',
         { type: 'assign-next', rideId, pickupLat, pickupLng, rideType, queue: null, radiusKm: radiusKm + 5 },
         { delay: 45000 }
@@ -69,7 +106,7 @@ async function _bmqAssignNext({ rideId, pickupLat, pickupLng, rideType, queue, r
       const pRes = await db.query(`SELECT u.phone FROM rides r JOIN users u ON r.passenger_id=u.id WHERE r.id=$1`, [rideId]);
       if (pRes.rows[0]) {
         sendFCM(pRes.rows[0].phone, '😔 Driver Nahi Mila', 'Is area mein abhi koi driver available nahi hai. Thodi der baad try karo.', { type: 'no_driver_found', ride_id: String(rideId) });
-        emitToRoom('ride_' + rideId, 'rideUpdate', { rideId, status: 'no_driver', message: 'Koi driver available nahi hai — baad mein try karo' });
+        emitToRoom('ride_' + rideId, 'rideUpdate', { rideId, status: 'no_driver', message: 'Koi driver available nahi — baad mein try karo' });
       }
     }
     await db.query(
@@ -98,7 +135,7 @@ async function _bmqAssignNext({ rideId, pickupLat, pickupLng, rideType, queue, r
   );
 
   const rideEmoji = { bike: '🏍️', auto: '🛺', car: '🚕', eriksha: '🛵', luxury: '🚙' }[rideType] || '🚗';
-  sendFCM(nextPhone, `${rideEmoji} Naya Ride Request!`, `📍 ${rideType.toUpperCase()} ride nearby — 60 sec mein accept karo!`, { type: 'new_ride', ride_id: String(rideId) });
+  sendFCM(nextPhone, `${rideEmoji} Naya Ride Request!`, `📍 ${rideType.toUpperCase()} ride nearby — 60 sec mein accept karo!`, { type: 'new_ride', ride_id: String(rideId) }, { channelId: 'ride_requests' });
   emitToRoom('driver_' + nextPhone, 'newRideAssigned', { rideId, secondsToAccept: 60 });
 
   await rideQueue.add('ride-assignment',
