@@ -42,35 +42,36 @@ rideWorker.on('failed', (job, err) => {
 });
 
 async function _bmqAssignNext({ rideId, pickupLat, pickupLng, rideType, queue, radiusKm = 5 }) {
-  const rideCheck = await db.query(
-    `SELECT id, ride_type FROM rides WHERE id=$1 AND status='requested' AND driver_id IS NULL`, [rideId]
-  );
-  if (!rideCheck.rows[0]) return;
-  // Customer switched vehicle type — this job is stale, bail out
-  if (rideCheck.rows[0].ride_type !== rideType) return;
-
   let remaining = queue;
 
   if (remaining === null || remaining === undefined) {
-    const drRes = await db.query(
-      `SELECT u.phone,
-              COALESCE(d.rating, 5.0)                                AS rating,
-              COALESCE(dm.acceptance_rate, 100)                      AS acceptance_rate,
-              COALESCE(dm.idle_since, NOW() - INTERVAL '30 minutes') AS idle_since,
-              dl.lat, dl.lng
-       FROM drivers d
-       JOIN users u ON d.id = u.id
-       LEFT JOIN driver_metrics dm ON dm.phone = u.phone
-       LEFT JOIN driver_locations dl ON dl.phone = u.phone
-       WHERE d.verification_status = 'approved'
-         AND d.is_online = true
-         AND (d.vehicle_type = $1 OR (d.vehicle_type = 'ultra_luxury' AND $1 = 'luxury'))
-         AND NOT EXISTS (
-           SELECT 1 FROM rides r2
-           WHERE r2.driver_id = d.id AND r2.status IN ('matched','arrived','started')
-         )`,
-      [rideType]
-    );
+    // Run ride validity check + driver fetch in parallel — saves one full DB round trip
+    const [rideCheck, drRes] = await Promise.all([
+      db.query(
+        `SELECT id, ride_type FROM rides WHERE id=$1 AND status='requested' AND driver_id IS NULL`, [rideId]
+      ),
+      db.query(
+        `SELECT u.phone,
+                COALESCE(d.rating, 5.0)                                AS rating,
+                COALESCE(dm.acceptance_rate, 100)                      AS acceptance_rate,
+                COALESCE(dm.idle_since, NOW() - INTERVAL '30 minutes') AS idle_since,
+                dl.lat, dl.lng
+         FROM drivers d
+         JOIN users u ON d.id = u.id
+         LEFT JOIN driver_metrics dm ON dm.phone = u.phone
+         LEFT JOIN driver_locations dl ON dl.phone = u.phone
+         WHERE d.verification_status = 'approved'
+           AND d.is_online = true
+           AND (d.vehicle_type = $1 OR (d.vehicle_type = 'ultra_luxury' AND $1 = 'luxury'))
+           AND NOT EXISTS (
+             SELECT 1 FROM rides r2
+             WHERE r2.driver_id = d.id AND r2.status IN ('matched','arrived','started')
+           )`,
+        [rideType]
+      ),
+    ]);
+    if (!rideCheck.rows[0]) return;
+    if (rideCheck.rows[0].ride_type !== rideType) return; // customer switched vehicle — stale job
     const now = Date.now();
     const scored = drRes.rows
       .map(dr => {
@@ -82,6 +83,13 @@ async function _bmqAssignNext({ rideId, pickupLat, pickupLng, rideType, queue, r
       .filter(dr => dr.distKm === null || dr.distKm <= radiusKm)
       .sort((a, b) => b.score - a.score);
     remaining = scored.map(dr => dr.phone);
+  } else {
+    // queue already built — just verify ride is still valid
+    const rideCheck = await db.query(
+      `SELECT id, ride_type FROM rides WHERE id=$1 AND status='requested' AND driver_id IS NULL`, [rideId]
+    );
+    if (!rideCheck.rows[0]) return;
+    if (rideCheck.rows[0].ride_type !== rideType) return;
   }
 
   if (!remaining || remaining.length === 0) {
@@ -128,20 +136,21 @@ async function _bmqAssignNext({ rideId, pickupLat, pickupLng, rideType, queue, r
   );
   if (!upd.rows[0]) return;
 
-  await db.query(
-    `INSERT INTO driver_metrics (phone, rides_offered) VALUES ($1, 1)
-     ON CONFLICT (phone) DO UPDATE SET rides_offered = driver_metrics.rides_offered + 1`,
-    [nextPhone]
-  );
-
+  // Notify driver immediately — BEFORE any other awaits
   const rideEmoji = { bike: '🏍️', auto: '🛺', car: '🚕', eriksha: '🛵', luxury: '🚙' }[rideType] || '🚗';
   sendFCM(nextPhone, `${rideEmoji} Naya Ride Request!`, `📍 ${rideType.toUpperCase()} ride nearby — 60 sec mein accept karo!`, { type: 'new_ride', ride_id: String(rideId) }, { channelId: 'ride_requests' });
   emitToRoom('driver_' + nextPhone, 'newRideAssigned', { rideId, secondsToAccept: 60 });
 
-  await rideQueue.add('ride-assignment',
+  // Non-critical ops — fire and forget, don't block notification path
+  db.query(
+    `INSERT INTO driver_metrics (phone, rides_offered) VALUES ($1, 1)
+     ON CONFLICT (phone) DO UPDATE SET rides_offered = driver_metrics.rides_offered + 1`,
+    [nextPhone]
+  ).catch(() => {});
+  rideQueue.add('ride-assignment',
     { type: 'auto-advance', rideId, expectedPhone: nextPhone, pickupLat, pickupLng, rideType, queue: newQueue, radiusKm },
     { delay: 62000 }
-  );
+  ).catch(() => {});
 }
 
 async function _bmqAutoAdvance({ rideId, expectedPhone, pickupLat, pickupLng, rideType, queue, radiusKm = 5 }) {

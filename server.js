@@ -39,7 +39,11 @@ const adminRouter   = require('./routes/admin');
 // ── App + HTTP + Socket.io ───────────────────────
 const app    = express();
 const server = http.createServer(app);
-const io     = new Server(server, { cors: { origin: '*' } });
+const io     = new Server(server, {
+  cors: { origin: '*' },
+  pingInterval: 10000, // ping every 10s (default 25s) — keeps mobile connections alive through NAT
+  pingTimeout:  5000,  // 5s to respond (default 20s) — detect dead connections faster
+});
 
 socketConfig.init(io);
 
