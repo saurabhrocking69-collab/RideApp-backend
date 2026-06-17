@@ -67,7 +67,8 @@ router.get('/status/:rideId', async (req, res) => {
     const result = await db.query(
       `SELECT r.*, u.name as driver_name, u.phone as driver_phone,
               d.vehicle_no, d.vehicle_brand, d.vehicle_model, d.upi_id as driver_upi_id,
-              d.verification_status as driver_verification_status, d.rating as driver_rating
+              d.verification_status as driver_verification_status, d.rating as driver_rating,
+              d.face_photo as driver_photo
        FROM rides r
        LEFT JOIN users u ON r.driver_id = u.id
        LEFT JOIN drivers d ON r.driver_id = d.id
@@ -117,14 +118,14 @@ router.post('/accept', async (req, res) => {
       sendFCM(rideData.rows[0].passenger_phone, '🚗 Driver Mil Gaya!', 'Aapka driver aa raha hai — OTP ready karo!', { type: 'ride_matched', ride_id: String(ride_id) });
 
     const dInfo = await db.query(
-      `SELECT u.name, d.vehicle_no, d.vehicle_brand, d.vehicle_model, d.rating, d.verification_status
+      `SELECT u.name, d.vehicle_no, d.vehicle_brand, d.vehicle_model, d.rating, d.verification_status, d.face_photo
        FROM users u JOIN drivers d ON u.id=d.id WHERE u.id=$1`, [driver.rows[0].id]
     );
     const di = dInfo.rows[0];
     emitRideUpdate(ride_id, {
       status: 'matched',
       start_otp: otp,
-      driver: di ? { name: di.name, vehicle_no: di.vehicle_no, vehicle_brand: di.vehicle_brand, vehicle_model: di.vehicle_model, rating: di.rating, verified: di.verification_status === 'approved' } : null,
+      driver: di ? { name: di.name, vehicle_no: di.vehicle_no, vehicle_brand: di.vehicle_brand, vehicle_model: di.vehicle_model, rating: di.rating, verified: di.verification_status === 'approved', photo: di.face_photo || null } : null,
     });
     res.json({ success: true, message: 'Ride accepted!', otp });
   } catch (err) { res.status(500).json({ error: err.message }); }

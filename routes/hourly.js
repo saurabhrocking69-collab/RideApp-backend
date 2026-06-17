@@ -505,7 +505,9 @@ router.post('/chat/send', async (req, res) => {
   const { booking_id, sender, message } = req.body;
   if (!booking_id || !sender || !message) return res.status(400).json({ error: 'booking_id, sender, message required' });
   try {
+    const created_at = new Date();
     await db.query('INSERT INTO chat_messages (ride_id, sender, message) VALUES ($1,$2,$3)', [`h_${booking_id}`, sender, message]);
+    emitToRoom('hourly_' + booking_id, 'hourlyChatMessage', { sender, message, created_at });
     res.json({ success: true });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });

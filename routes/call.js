@@ -56,8 +56,8 @@ router.post('/initiate', async (req, res) => {
       }
     }
 
-    // Fallback: direct call (remove once Exotel is configured)
-    res.json({ success: true, method: 'direct', call_number: targetPhone });
+    // Exotel not configured — never expose real phone numbers
+    res.json({ success: false, method: 'unavailable', error: 'Call service setup nahi hai — driver se chat karo ya support contact karo' });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
