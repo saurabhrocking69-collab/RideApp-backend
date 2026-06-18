@@ -649,7 +649,7 @@ router.post('/surge-fare', async (req, res) => {
   const { ride_id, customer_phone, surge_amount } = req.body;
   const amt = parseInt(surge_amount);
   if (!ride_id || !customer_phone) return res.status(400).json({ error: 'ride_id aur customer_phone chahiye' });
-  if (![15, 25, 40].includes(amt)) return res.status(400).json({ error: 'Invalid surge amount (15/25/40 allowed)' });
+  if (![15, 25, 40, 65, 100].includes(amt)) return res.status(400).json({ error: 'Invalid surge amount (15/25/40/65/100 allowed)' });
   try {
     // Ensure columns exist (idempotent)
     await db.query('ALTER TABLE rides ADD COLUMN IF NOT EXISTS surge_count INTEGER DEFAULT 0').catch(() => {});
