@@ -2,9 +2,8 @@ const express = require('express');
 const router = express.Router();
 const db = require('../config/db');
 
-// POST /api/call/initiate — Masked calling via Exotel (TRAI-compliant)
-// Real phone numbers are NEVER exposed to either party's app.
-// Exotel calls both parties through a virtual number.
+// POST /api/call/initiate — Call initiation
+// Uses Exotel if configured; otherwise falls back to direct dial.
 router.post('/initiate', async (req, res) => {
   const { ride_id, booking_id, caller_role } = req.body;
   if (!caller_role || !['customer', 'driver'].includes(caller_role))
@@ -56,8 +55,8 @@ router.post('/initiate', async (req, res) => {
       }
     }
 
-    // Exotel not configured — never expose real phone numbers
-    res.json({ success: false, method: 'unavailable', error: 'Call service setup nahi hai — driver se chat karo ya support contact karo' });
+    // Fallback: direct call (opens dialer with target's number)
+    res.json({ success: true, method: 'direct', call_number: targetPhone });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
