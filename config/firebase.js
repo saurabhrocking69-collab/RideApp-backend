@@ -30,13 +30,26 @@ async function sendFCM(phone, title, body, data = {}, options = {}) {
       const expoRes = await fetch('https://exp.host/--/api/v2/push/send', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Accept: 'application/json', 'Accept-Encoding': 'gzip, deflate' },
-        body: JSON.stringify({ to: token, title, body, sound: 'default', priority: 'high', channelId, ttl: 300, data }),
+        body: JSON.stringify({
+          to: token,
+          title,
+          body,
+          sound: 'default',
+          priority: 'high',
+          channelId,
+          ttl: 300,
+          data,
+          // Android-specific: show heads-up alert, max visibility
+          android: { priority: 'max' },
+          _displayInForeground: true,
+        }),
       });
       const expoData = await expoRes.json().catch(() => ({}));
-      if (expoData?.data?.status === 'error') {
-        console.log('❌ Expo push error for', phone, ':', expoData.data.message);
+      const status = expoData?.data?.status || 'ok';
+      if (status === 'error') {
+        console.log('❌ Expo push error for', phone, ':', expoData.data.message, '| details:', expoData.data.details);
       } else {
-        console.log('✅ Expo FCM sent to', phone, 'channel:', channelId, '| status:', expoData?.data?.status || 'ok');
+        console.log('✅ Expo FCM sent to', phone, 'channel:', channelId, '| status:', status);
       }
       return;
     }
@@ -46,7 +59,17 @@ async function sendFCM(phone, title, body, data = {}, options = {}) {
       token,
       notification: { title, body },
       data: Object.fromEntries(Object.entries(data).map(([k, v]) => [k, String(v)])),
-      android: { priority: 'high', notification: { sound: 'default', channelId } },
+      android: {
+        priority: 'high',
+        notification: {
+          sound: 'default',
+          channelId,
+          priority: 'max',
+          visibility: 'public',
+          vibrateTimingsMillis: [0, 500, 150, 500],
+          defaultVibrateTimings: false,
+        },
+      },
     });
     console.log('✅ Firebase FCM sent to', phone, 'channel:', channelId);
   } catch (e) {
