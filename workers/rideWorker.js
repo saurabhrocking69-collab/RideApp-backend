@@ -8,12 +8,14 @@ const { haversineKm, scoreDriver } = require('../services/matching');
 const rideQueue = new Queue('ride-assignment', { connection: makeBmqConn() });
 
 const VEHICLE_ALTERNATIVES = {
-  bike:        ['auto', 'car'],
-  eriksha:     ['auto', 'bike'],
-  auto:        ['car'],
-  car:         ['auto'],
-  luxury:      ['car'],
-  ultra_luxury:['car'],
+  bike:          ['auto', 'car'],
+  eriksha:       ['auto', 'bike'],
+  auto:          ['car'],
+  car:           ['auto'],
+  luxury:        ['car'],
+  ultra_luxury:  ['car'],
+  green_bike:    ['bike', 'auto'],
+  electric_auto: ['auto', 'eriksha'],
 };
 
 async function getAvailableAlternatives(rideType) {

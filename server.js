@@ -34,7 +34,8 @@ const paymentsRouter = require('./routes/payments');
 const ridesRouter   = require('./routes/rides');
 const driversRouter = require('./routes/drivers');
 const hourlyRouter  = require('./routes/hourly');
-const adminRouter   = require('./routes/admin');
+const adminRouter      = require('./routes/admin');
+const favouritesRouter = require('./routes/favourites');
 
 // ── App + HTTP + Socket.io ───────────────────────
 const app    = express();
@@ -102,7 +103,8 @@ app.use('/api/payment',  paymentsRouter);
 app.use('/api/rides',    ridesRouter);
 app.use('/api/driver',   driversRouter);
 app.use('/api/hourly',   hourlyRouter);
-app.use('/api/admin',    adminAuth, adminRouter);
+app.use('/api/admin',      adminAuth, adminRouter);
+app.use('/api/favourites', favouritesRouter);
 
 // Admin portal HTML
 app.get('/admin', (_req, res) =>

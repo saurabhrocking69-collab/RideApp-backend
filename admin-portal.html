@@ -307,7 +307,7 @@ input,select,textarea{outline:none}
         <div class="card-title">📋 Hourly Fare Editor</div>
         <p style="font-size:12px;color:#666;margin-bottom:10px">Vehicle + package ke liye fare update karo (instantly)</p>
         <select id="fare-vehicle" class="input-sm" style="margin-bottom:8px">
-          <option value="auto">Auto</option><option value="bike">Bike</option><option value="car">Car</option><option value="eriksha">E-Riksha</option>
+          <option value="auto">Auto</option><option value="bike">Bike</option><option value="car">Car</option><option value="eriksha">E-Riksha</option><option value="green_bike">⚡ Green Bike</option><option value="electric_auto">⚡ Electric Auto</option>
         </select>
         <select id="fare-hours" class="input-sm" style="margin-bottom:8px">
           <option value="2">2 Hours</option><option value="4">4 Hours</option><option value="6">6 Hours</option><option value="8">Full Day (8h)</option>
@@ -335,6 +335,8 @@ input,select,textarea{outline:none}
           <option value="car">🚕 Car</option>
           <option value="eriksha">🛵 E-Riksha</option>
           <option value="luxury">🚙 Ultra Luxury ★</option>
+          <option value="green_bike">⚡🏍️ Green Bike</option>
+          <option value="electric_auto">⚡🛺 Electric Auto</option>
         </select>
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px">
           <input id="std-base-fare" type="number" placeholder="Base fare (₹)" class="input-sm">
@@ -919,7 +921,7 @@ async function loadStdFares(){
     const d=await fetch(API+'/api/fare-settings').then(r=>r.json());
     stdFaresCache={};
     if(d.fares) d.fares.forEach(f=>{stdFaresCache[f.vehicle_type]=f;});
-    const types=[{id:'bike',icon:'🏍️',label:'Bike'},{id:'auto',icon:'🛺',label:'Auto'},{id:'car',icon:'🚕',label:'Car'},{id:'eriksha',icon:'🛵',label:'E-Riksha'},{id:'luxury',icon:'🚙',label:'Ultra Luxury'}];
+    const types=[{id:'bike',icon:'🏍️',label:'Bike'},{id:'auto',icon:'🛺',label:'Auto'},{id:'car',icon:'🚕',label:'Car'},{id:'eriksha',icon:'🛵',label:'E-Riksha'},{id:'luxury',icon:'🚙',label:'Ultra Luxury'},{id:'green_bike',icon:'⚡🏍️',label:'Green Bike'},{id:'electric_auto',icon:'⚡🛺',label:'Electric Auto'}];
     let html='<div style="overflow-x:auto"><table style="font-size:11px;width:100%"><thead><tr><th>Vehicle</th><th>Base Fare</th><th>Per KM</th><th>Night ×</th><th>Night Hrs</th></tr></thead><tbody>';
     types.forEach(function(t){
       var f=stdFaresCache[t.id];
@@ -942,7 +944,7 @@ async function loadStdFares(){
 function loadStdFare(){
   var v=document.getElementById('std-fare-vehicle').value;
   var f=stdFaresCache[v];
-  var defs={bike:{b:15,k:8,n:1.5},auto:{b:25,k:12,n:1.5},car:{b:40,k:15,n:1.5},eriksha:{b:20,k:10,n:1.5},luxury:{b:80,k:25,n:1.8}};
+  var defs={bike:{b:15,k:8,n:1.5},auto:{b:25,k:12,n:1.5},car:{b:40,k:15,n:1.5},eriksha:{b:20,k:10,n:1.5},luxury:{b:80,k:25,n:1.8},green_bike:{b:12,k:6,n:1.2},electric_auto:{b:20,k:9,n:1.3}};
   var def=defs[v]||{b:25,k:12,n:1.5};
   document.getElementById('std-base-fare').value=f?parseFloat(f.base_fare):def.b;
   document.getElementById('std-per-km').value=f?parseFloat(f.per_km_rate):def.k;

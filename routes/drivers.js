@@ -7,6 +7,7 @@ const { driverLocations, encodeGeohash, haversineKm } = require('../services/mat
 const { maskPhone } = require('../services/phone');
 const { BONUS_TIERS } = require('../services/pricing');
 const { emitToRoom, getIO } = require('../config/socket');
+const { directFavouriteRideIds } = require('./favourites');
 
 // POST /api/upload
 router.post('/upload', async (req, res) => {
@@ -117,7 +118,7 @@ router.get('/pending-ride', async (req, res) => {
       const r = assigned.rows[0];
       const secLeft = Math.max(0, Math.ceil((new Date(r.assignment_expires_at).getTime() - Date.now()) / 1000));
       const tripKm = (r.pickup_lat && r.drop_lat) ? haversineKm(parseFloat(r.pickup_lat), parseFloat(r.pickup_lng), parseFloat(r.drop_lat), parseFloat(r.drop_lng)) : null;
-      return res.json({ ride: { ...r, seconds_to_accept: secLeft, distance: tripKm ? tripKm.toFixed(1) : null }, pending_commission: pendingComm });
+      return res.json({ ride: { ...r, seconds_to_accept: secLeft, distance: tripKm ? tripKm.toFixed(1) : null, is_favourite_request: directFavouriteRideIds.has(String(r.id)) }, pending_commission: pendingComm });
     }
 
     const vehicleType = dr.vehicle_type === 'ultra_luxury' ? 'luxury' : dr.vehicle_type;

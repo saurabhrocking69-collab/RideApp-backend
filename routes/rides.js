@@ -7,6 +7,7 @@ const { assignRideToNextDriver } = require('../workers/rideWorker');
 const { driverLocations } = require('../services/matching');
 const { maskPhone } = require('../services/phone');
 const { haversineKm } = require('../services/matching');
+const { directFavouriteRideIds } = require('./favourites');
 
 function emitRideUpdate(rideId, data) {
   emitToRoom('ride_' + rideId, 'rideUpdate', { rideId, ...data });
@@ -26,7 +27,7 @@ router.post('/book', async (req, res) => {
   const { passenger_phone, pickup, drop_location, ride_type, pickup_lat, pickup_lng, drop_lat, drop_lng, discount, promo_code } = req.body;
   if (!passenger_phone || String(passenger_phone).length !== 10) return res.status(400).json({ error: 'Valid phone do' });
   if (!pickup || !drop_location) return res.status(400).json({ error: 'Pickup aur drop location chahiye' });
-  if (!['auto', 'bike', 'car', 'eriksha', 'luxury'].includes(ride_type)) return res.status(400).json({ error: 'Invalid ride type' });
+  if (!['auto', 'bike', 'car', 'eriksha', 'luxury', 'green_bike', 'electric_auto'].includes(ride_type)) return res.status(400).json({ error: 'Invalid ride type' });
   try {
     const passenger = await db.query('SELECT * FROM users WHERE phone = $1', [passenger_phone]);
     if (passenger.rows.length === 0) return res.status(404).json({ error: 'Passenger nahi mila' });
@@ -34,11 +35,13 @@ router.post('/book', async (req, res) => {
     const distance = req.body.distance || 5;
     const fareRes = await db.query('SELECT * FROM fare_settings WHERE vehicle_type = $1', [ride_type]);
     const defaultFares = {
-      luxury:  { base_fare: 80,  per_km_rate: 25, night_multiplier: 1.8, night_start: '22:00', night_end: '06:00' },
-      car:     { base_fare: 40,  per_km_rate: 15, night_multiplier: 1.5, night_start: '22:00', night_end: '06:00' },
-      auto:    { base_fare: 25,  per_km_rate: 12, night_multiplier: 1.5, night_start: '22:00', night_end: '06:00' },
-      eriksha: { base_fare: 20,  per_km_rate: 10, night_multiplier: 1.3, night_start: '22:00', night_end: '06:00' },
-      bike:    { base_fare: 15,  per_km_rate: 8,  night_multiplier: 1.3, night_start: '22:00', night_end: '06:00' },
+      luxury:        { base_fare: 80,  per_km_rate: 25, night_multiplier: 1.8, night_start: '22:00', night_end: '06:00' },
+      car:           { base_fare: 40,  per_km_rate: 15, night_multiplier: 1.5, night_start: '22:00', night_end: '06:00' },
+      auto:          { base_fare: 25,  per_km_rate: 12, night_multiplier: 1.5, night_start: '22:00', night_end: '06:00' },
+      eriksha:       { base_fare: 20,  per_km_rate: 10, night_multiplier: 1.3, night_start: '22:00', night_end: '06:00' },
+      bike:          { base_fare: 15,  per_km_rate: 8,  night_multiplier: 1.3, night_start: '22:00', night_end: '06:00' },
+      green_bike:    { base_fare: 12,  per_km_rate: 6,  night_multiplier: 1.2, night_start: '22:00', night_end: '06:00' },
+      electric_auto: { base_fare: 20,  per_km_rate: 9,  night_multiplier: 1.3, night_start: '22:00', night_end: '06:00' },
     };
     const f = fareRes.rows[0] || defaultFares[ride_type] || defaultFares.auto;
     const hour = new Date().getHours();
@@ -152,6 +155,11 @@ router.post('/reject-offer', async (req, res) => {
     }
 
     res.json({ success: true });
+    // If this was a direct favourite request, notify customer specifically
+    if (directFavouriteRideIds.has(String(ride_id))) {
+      directFavouriteRideIds.delete(String(ride_id));
+      emitToRoom('ride_' + ride_id, 'rideUpdate', { rideId: ride_id, status: 'buddy_declined' });
+    }
     assignRideToNextDriver(ride_id, pickup_lat, pickup_lng, ride_type, nextQueue).catch(() => {});
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
@@ -448,7 +456,8 @@ router.get('/history', async (req, res) => {
   const { phone } = req.query;
   try {
     const result = await db.query(
-      `SELECT r.id, r.pickup, r.drop_location, r.fare, r.ride_type, r.status, r.created_at, d.name AS driver_name
+      `SELECT r.id, r.pickup, r.drop_location, r.fare, r.ride_type, r.status, r.created_at,
+              d.name AS driver_name, d.phone AS driver_phone, r.driver_id
        FROM rides r JOIN users u ON r.passenger_id = u.id LEFT JOIN users d ON r.driver_id = d.id
        WHERE u.phone = $1 ORDER BY r.created_at DESC LIMIT 50`,
       [phone]
@@ -484,7 +493,7 @@ router.get('/driver-location/:rideId', async (req, res) => {
 // POST /api/rides/switch-vehicle — customer switches vehicle type while searching
 router.post('/switch-vehicle', async (req, res) => {
   const { ride_id, new_vehicle_type } = req.body;
-  if (!['auto', 'bike', 'car', 'eriksha', 'luxury'].includes(new_vehicle_type))
+  if (!['auto', 'bike', 'car', 'eriksha', 'luxury', 'green_bike', 'electric_auto'].includes(new_vehicle_type))
     return res.status(400).json({ error: 'Invalid vehicle type' });
   try {
     const r = await db.query(
