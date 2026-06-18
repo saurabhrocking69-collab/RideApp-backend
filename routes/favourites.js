@@ -165,7 +165,7 @@ router.post('/book', async (req, res) => {
 
     // Assign directly to buddy with 30-second window and empty fallback queue
     await db.query(
-      `UPDATE rides SET assigned_to_phone=$1, assignment_expires_at=NOW()+INTERVAL '30 seconds', assignment_queue='[]', status='requested'
+      `UPDATE rides SET assigned_to_phone=$1, assignment_expires_at=NOW()+INTERVAL '25 seconds', assignment_queue='[]', status='requested'
        WHERE id=$2`,
       [buddy.driver_phone, rideId]
     );
@@ -178,12 +178,12 @@ router.post('/book', async (req, res) => {
     sendFCM(
       buddy.driver_phone,
       `⭐ ${customer.name || 'Customer'} ki Direct Request!`,
-      `Aapke regular customer ne seedha aapko request bheji hai — 30 sec mein decide karo!`,
+      `Aapke regular customer ne seedha aapko request bhehi hai — 25 sec mein decide karo!`,
       { type: 'new_ride', ride_id: String(rideId), is_favourite_request: 'true' },
       { channelId: 'ride_requests' }
     );
     emitToRoom('driver_' + buddy.driver_phone, 'newRideAssigned', {
-      rideId, secondsToAccept: 30, is_favourite_request: true,
+      rideId, secondsToAccept: 25, is_favourite_request: true,
     });
 
     res.json({
