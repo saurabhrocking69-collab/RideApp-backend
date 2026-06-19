@@ -327,24 +327,54 @@ router.post('/bonus-claim', async (req, res) => {
   } finally { client.release(); }
 });
 
-// POST /api/driver/payout
+// POST /api/driver/payout — creates a pending request; admin approves separately
 router.post('/payout', async (req, res) => {
-  const { phone, amount } = req.body;
+  const { phone, amount, method } = req.body;
   try {
-    const driver = await db.query(`SELECT w.driver_id, w.balance, COALESCE(w.pending_commission, 0) as pending_commission FROM driver_wallet w JOIN users u ON w.driver_id = u.id WHERE u.phone = $1`, [phone]);
-    if (!driver.rows[0]) return res.status(404).json({ error: 'Driver nahi mila' });
-    const balance = parseFloat(driver.rows[0].balance);
-    const pendingCommission = parseFloat(driver.rows[0].pending_commission);
-    if (balance < amount) return res.json({ success: false, message: 'Balance kam hai', balance });
-    const commDeduct = Math.min(pendingCommission, amount);
-    const actualPayout = amount - commDeduct;
-    const result = await db.query(
-      `UPDATE driver_wallet SET balance = balance - $1, total_withdrawn = total_withdrawn + $2, pending_commission = GREATEST(0, COALESCE(pending_commission, 0) - $3) WHERE driver_id = $4 RETURNING balance, pending_commission`,
-      [amount, actualPayout, commDeduct, driver.rows[0].driver_id]
+    await db.query(`CREATE TABLE IF NOT EXISTS driver_payouts (
+      id SERIAL PRIMARY KEY,
+      driver_phone VARCHAR(20) NOT NULL,
+      amount DECIMAL(10,2) NOT NULL,
+      bank_account VARCHAR(50),
+      bank_ifsc VARCHAR(20),
+      bank_holder VARCHAR(100),
+      upi_id VARCHAR(100),
+      method VARCHAR(20) DEFAULT 'bank',
+      status VARCHAR(20) DEFAULT 'pending',
+      admin_note TEXT,
+      transaction_ref VARCHAR(100),
+      requested_at TIMESTAMP DEFAULT NOW(),
+      settled_at TIMESTAMP
+    )`);
+    const existing = await db.query(
+      `SELECT id FROM driver_payouts WHERE driver_phone=$1 AND status='pending'`, [phone]
     );
-    if (commDeduct > 0) await db.query(`UPDATE driver_commissions SET status = 'settled' WHERE driver_phone = $1 AND status = 'cash_owed'`, [phone]).catch(() => {});
-    const newPending = parseFloat(result.rows[0].pending_commission);
-    res.json({ success: true, balance: parseFloat(result.rows[0].balance), actual_payout: actualPayout, commission_deducted: commDeduct, pending_commission: newPending, message: commDeduct > 0 ? `Payout bhej di! ₹${commDeduct.toFixed(0)} commission platform ne rakha.` : 'Payout request submitted!' });
+    if (existing.rows[0]) return res.json({ success: false, message: 'Ek payout request pehle se pending hai — admin 24-48 ghante mein process karega' });
+    const drvRes = await db.query(
+      `SELECT w.driver_id, w.balance, COALESCE(w.pending_commission, 0) as pending_commission,
+         d.bank_account, d.bank_ifsc, d.bank_holder, d.upi_id
+       FROM driver_wallet w JOIN users u ON w.driver_id = u.id
+       LEFT JOIN drivers d ON d.id = u.id
+       WHERE u.phone = $1`, [phone]
+    );
+    if (!drvRes.rows[0]) return res.status(404).json({ error: 'Driver nahi mila' });
+    const { balance, pending_commission, bank_account, bank_ifsc, bank_holder, upi_id } = drvRes.rows[0];
+    const amt = parseFloat(amount);
+    if (!amt || amt < 100) return res.json({ success: false, message: 'Minimum ₹100 chahiye' });
+    if (parseFloat(balance) < amt) return res.json({ success: false, message: 'Balance kam hai', balance: parseFloat(balance) });
+    const payMethod = method || (upi_id ? 'upi' : 'bank');
+    if (payMethod === 'bank' && !bank_account) return res.json({ success: false, message: 'Pehle bank account add karo: Profile → Bank Details' });
+    await db.query(
+      `INSERT INTO driver_payouts (driver_phone, amount, bank_account, bank_ifsc, bank_holder, upi_id, method)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+      [phone, amt, bank_account || '', bank_ifsc || '', bank_holder || '', upi_id || '', payMethod]
+    );
+    res.json({
+      success: true,
+      message: `₹${amt.toFixed(0)} payout request submit ho gaya — admin 24-48 ghante mein process karega`,
+      pending_amount: amt,
+      pending_commission: parseFloat(pending_commission),
+    });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 

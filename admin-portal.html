@@ -54,6 +54,8 @@ tr:hover td{background:#fafafa}
 .online{background:#e8f5e9;color:#2e7d32}
 .offline{background:#f5f5f5;color:#999}
 input,select,textarea{outline:none}
+.ptab{padding:7px 16px;border-radius:20px;cursor:pointer;font-size:12px;font-weight:600;border:none;background:#f0f0f0;color:#666;white-space:nowrap}
+.ptab.active{background:#1a1a2e;color:#fff}
 .doc-img{width:70px;height:52px;object-fit:cover;border-radius:6px;cursor:pointer;border:2px solid #f0f0f0}
 .doc-img:hover{border-color:#e94560}
 /* Modal */
@@ -118,6 +120,14 @@ input,select,textarea{outline:none}
   </div>
 </div>
 
+<!-- Payout Approve Modal -->
+<div class="modal-overlay" id="payout-modal">
+  <div class="modal-box" style="min-width:340px;max-width:480px" onclick="event.stopPropagation()">
+    <button class="modal-close" onclick="closePayoutModal()">✕</button>
+    <div id="payout-modal-content"></div>
+  </div>
+</div>
+
 <div class="header">
   <div class="logo">Ride<span>App</span> Admin</div>
   <div style="display:flex;gap:10px;align-items:center">
@@ -139,6 +149,7 @@ input,select,textarea{outline:none}
     <button class="tab" onclick="showSection('topups',this)">💳 Topups</button>
     <button class="tab" onclick="showSection('marketing',this)">📣 Marketing</button>
     <button class="tab" onclick="showSection('settings',this)">⚙️ Settings</button>
+    <button class="tab" onclick="showSection('payouts',this)">💰 Payouts</button>
   </div>
 
   <!-- TRANSACTIONS -->
@@ -356,6 +367,36 @@ input,select,textarea{outline:none}
       </div>
     </div>
   </div>
+
+  <!-- PAYOUTS -->
+  <div id="payouts" class="section">
+    <div style="display:flex;gap:8px;margin-bottom:14px">
+      <button class="ptab active" id="pt-pending" onclick="setPayoutTab('pending',this)">⏳ Pending</button>
+      <button class="ptab" id="pt-financials" onclick="setPayoutTab('financials',this)">💰 Financials</button>
+      <button class="ptab" id="pt-history" onclick="setPayoutTab('history',this)">📋 History</button>
+    </div>
+    <div id="payout-pending-sec">
+      <div class="card">
+        <div class="card-title">⏳ Pending Payout Requests <button class="refresh-btn" onclick="loadPayouts('pending')">Reload</button></div>
+        <div style="overflow-x:auto"><table><thead><tr><th>Date</th><th>Driver</th><th>Phone</th><th>Amount</th><th>Method</th><th>Bank / UPI Details</th><th>Wallet Bal</th><th>Comm Due</th><th>Action</th></tr></thead>
+        <tbody id="payout-pending-body"><tr><td colspan=9 class=loading>Loading...</td></tr></tbody></table></div>
+      </div>
+    </div>
+    <div id="payout-financials-sec" style="display:none">
+      <div class="card">
+        <div class="card-title">💰 All Driver Financials <button class="refresh-btn" onclick="loadDriverFinancials()">Reload</button></div>
+        <div style="overflow-x:auto"><table><thead><tr><th>Driver</th><th>Phone</th><th>Vehicle</th><th>Wallet</th><th>Total Earned</th><th>Withdrawn</th><th>Comm Due</th><th>Bank Account</th><th>IFSC</th><th>UPI ID</th><th>Rides</th></tr></thead>
+        <tbody id="financials-body"><tr><td colspan=11 class=loading>Loading...</td></tr></tbody></table></div>
+      </div>
+    </div>
+    <div id="payout-history-sec" style="display:none">
+      <div class="card">
+        <div class="card-title">📋 Payout History <button class="refresh-btn" onclick="loadPayoutHistory()">Reload</button></div>
+        <div style="overflow-x:auto"><table><thead><tr><th>Date</th><th>Driver</th><th>Amount</th><th>Method</th><th>Status</th><th>Txn Ref</th><th>Note</th><th>Settled At</th></tr></thead>
+        <tbody id="payout-history-body"><tr><td colspan=8 class=loading>Loading...</td></tr></tbody></table></div>
+      </div>
+    </div>
+  </div>
 </div>
 
 <script>
@@ -428,6 +469,7 @@ function showSection(id,btn){
   if(id==='verify') loadVerifications();
   if(id==='settings'){loadFares();loadStdFares();}
   if(id==='marketing'){loadCampaigns();loadPromos();loadReferrals();}
+  if(id==='payouts'){loadPayouts('pending');}
 }
 
 function openImg(src,label){
@@ -437,6 +479,7 @@ function openImg(src,label){
 }
 function closeModal(){document.getElementById('img-modal').classList.remove('open')}
 function closeDrvModal(){document.getElementById('drv-modal').classList.remove('open')}
+function closePayoutModal(){document.getElementById('payout-modal').classList.remove('open')}
 function closeUsrModal(){document.getElementById('usr-modal').classList.remove('open')}
 
 // ── Dashboard ───────────────────────────────────────────
@@ -1062,6 +1105,116 @@ async function loadReferrals(){
       <td class="amount-green">${rupee(r.reward_amount)}</td>
     </tr>`).join('')||'<tr><td colspan=4 class=loading>Koi referral nahi</td></tr>';
   }catch(e){if(e.message!=='Unauthorized')console.error(e);}
+}
+
+// ── Payouts ─────────────────────────────────────────────
+var _payoutTab='pending';
+function setPayoutTab(t,btn){
+  _payoutTab=t;
+  document.querySelectorAll('.ptab').forEach(b=>b.classList.remove('active'));
+  btn.classList.add('active');
+  document.getElementById('payout-pending-sec').style.display=t==='pending'?'block':'none';
+  document.getElementById('payout-financials-sec').style.display=t==='financials'?'block':'none';
+  document.getElementById('payout-history-sec').style.display=t==='history'?'block':'none';
+  if(t==='pending') loadPayouts('pending');
+  else if(t==='financials') loadDriverFinancials();
+  else loadPayoutHistory();
+}
+async function loadPayouts(status){
+  try{
+    const d=await aJson('/api/admin/driver-payouts?status='+(status||'pending'));
+    const payouts=d.payouts||[];
+    document.getElementById('payout-pending-body').innerHTML=payouts.filter(p=>p.status==='pending').map(p=>`<tr>
+      <td>${fmt(p.requested_at)}</td>
+      <td><b>${p.driver_name||'-'}</b></td>
+      <td>${p.driver_phone}</td>
+      <td class="amount-green" style="font-weight:800;font-size:14px">₹${parseFloat(p.amount).toFixed(0)}</td>
+      <td>${p.method==='upi'?'📱 UPI':'🏦 Bank'}</td>
+      <td style="font-size:11px;line-height:1.5">${p.method==='upi'?(p.upi_id||'-'):'<b>'+(p.bank_holder||'')+'</b><br>'+(p.bank_account||'-')+'<br><span style="color:#888">'+(p.bank_ifsc||'')+'</span>'}</td>
+      <td>₹${parseFloat(p.wallet_balance||0).toFixed(0)}</td>
+      <td class="${parseFloat(p.pending_commission||0)>0?'amount-red':''}">₹${parseFloat(p.pending_commission||0).toFixed(0)}</td>
+      <td>
+        <button class="action-btn btn-green" onclick="openApproveModal(${p.id},'${p.driver_phone}',${parseFloat(p.amount)})">✅ Approve</button>
+        <button class="action-btn btn-red" onclick="rejectPayout(${p.id})">❌ Reject</button>
+      </td>
+    </tr>`).join('')||'<tr><td colspan=9 class=loading>✅ Koi pending request nahi</td></tr>';
+  }catch(e){if(e.message!=='Unauthorized')console.error(e);}
+}
+async function loadPayoutHistory(){
+  try{
+    const d=await aJson('/api/admin/driver-payouts?status=all');
+    const payouts=(d.payouts||[]).filter(p=>p.status!=='pending');
+    document.getElementById('payout-history-body').innerHTML=payouts.map(p=>`<tr>
+      <td>${fmt(p.requested_at)}</td>
+      <td>${p.driver_name||'-'} (${p.driver_phone})</td>
+      <td class="${p.status==='completed'?'amount-green':'amount-red'}" style="font-weight:800">₹${parseFloat(p.amount).toFixed(0)}</td>
+      <td>${p.method==='upi'?'📱 UPI':'🏦 Bank'}</td>
+      <td><span class="badge-${p.status==='completed'?'approved':'rejected'}">${p.status==='completed'?'✅ Completed':'❌ Rejected'}</span></td>
+      <td style="font-size:11px;font-family:monospace">${p.transaction_ref||'-'}</td>
+      <td style="font-size:11px;color:#888">${p.admin_note||'-'}</td>
+      <td>${fmt(p.settled_at)}</td>
+    </tr>`).join('')||'<tr><td colspan=8 class=loading>Koi history nahi</td></tr>';
+  }catch(e){if(e.message!=='Unauthorized')console.error(e);}
+}
+async function loadDriverFinancials(){
+  try{
+    const d=await aJson('/api/admin/driver-financials');
+    document.getElementById('financials-body').innerHTML=(d.drivers||[]).map(dr=>`<tr>
+      <td style="font-weight:700">${dr.name||'-'}</td>
+      <td>${dr.phone}</td>
+      <td style="font-size:11px">${dr.vehicle_type||'-'} ${dr.vehicle_no||''}</td>
+      <td class="amount-green" style="font-weight:800">₹${parseFloat(dr.wallet_balance||0).toFixed(0)}</td>
+      <td>₹${parseFloat(dr.total_earned||0).toFixed(0)}</td>
+      <td>₹${parseFloat(dr.total_withdrawn||0).toFixed(0)}</td>
+      <td class="${parseFloat(dr.pending_commission||0)>0?'amount-red':''}">₹${parseFloat(dr.pending_commission||0).toFixed(0)}</td>
+      <td style="font-size:11px;line-height:1.5">${dr.bank_holder?'<b>'+dr.bank_holder+'</b><br>':''}${dr.bank_account||'<span style="color:#bbb">—</span>'}</td>
+      <td style="font-size:11px">${dr.bank_ifsc||'-'}</td>
+      <td style="font-size:11px">${dr.upi_id||'-'}</td>
+      <td>${dr.total_rides||0}</td>
+    </tr>`).join('')||'<tr><td colspan=11 class=loading>Koi driver nahi</td></tr>';
+  }catch(e){if(e.message!=='Unauthorized')console.error(e);}
+}
+function openApproveModal(id,phone,amount){
+  document.getElementById('payout-modal-content').innerHTML=`
+    <h3 style="margin-bottom:12px;font-size:15px">✅ Payout Approve Karo</h3>
+    <div style="background:#e8f5e9;border-radius:10px;padding:12px;margin-bottom:14px">
+      <div style="font-size:13px;color:#555"><b>Driver:</b> ${phone}</div>
+      <div style="font-size:26px;font-weight:900;color:#2e7d32;margin-top:4px">₹${parseFloat(amount).toFixed(0)}</div>
+    </div>
+    <div style="font-size:12px;color:#666;margin-bottom:5px">Transaction Reference (UTR / IMPS / UPI Ref)</div>
+    <input id="payout-txn-ref" placeholder="e.g. UTR123456789" class="input-sm" style="margin-bottom:10px">
+    <div style="font-size:12px;color:#666;margin-bottom:5px">Admin Note (optional)</div>
+    <input id="payout-note" placeholder="Optional..." class="input-sm" style="margin-bottom:16px">
+    <div style="display:flex;gap:8px">
+      <button onclick="approvePayout(${id})" style="flex:1;background:#4CAF50;color:#fff;border:none;border-radius:8px;padding:11px;cursor:pointer;font-weight:700;font-size:13px">✅ Confirm Approve</button>
+      <button onclick="closePayoutModal()" style="flex:1;background:#f0f0f0;color:#333;border:none;border-radius:8px;padding:11px;cursor:pointer;font-weight:700;font-size:13px">Cancel</button>
+    </div>
+    <div id="payout-action-status" style="font-size:12px;margin-top:10px;text-align:center;min-height:18px"></div>
+  `;
+  document.getElementById('payout-modal').classList.add('open');
+}
+async function approvePayout(id){
+  const txnRef=document.getElementById('payout-txn-ref').value.trim();
+  const note=document.getElementById('payout-note').value.trim();
+  const statusEl=document.getElementById('payout-action-status');
+  statusEl.textContent='Processing...';statusEl.style.color='#888';
+  try{
+    const d=await aJson('/api/admin/payout-approve',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({payout_id:id,transaction_ref:txnRef,note})});
+    if(d.success){
+      statusEl.textContent='✅ Approved! ₹'+parseFloat(d.actual_payout).toFixed(0)+' payout'+(d.commission_deducted>0?' (₹'+parseFloat(d.commission_deducted).toFixed(0)+' comm deducted)':'');
+      statusEl.style.color='#2e7d32';
+      setTimeout(()=>{closePayoutModal();loadPayouts('pending');},1800);
+    }else{statusEl.textContent='❌ '+(d.error||'Error');statusEl.style.color='#c62828';}
+  }catch(e){statusEl.textContent='❌ '+e.message;statusEl.style.color='#c62828';}
+}
+async function rejectPayout(id){
+  const note=prompt('Rejection reason (driver ko dikhega):');
+  if(note===null)return;
+  try{
+    const d=await aJson('/api/admin/payout-reject',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({payout_id:id,note:note||'Admin ne reject kiya'})});
+    if(d.success){alert('✅ Payout reject kar diya!');loadPayouts('pending');}
+    else alert('❌ '+(d.error||'Error'));
+  }catch(e){alert('❌ '+e.message);}
 }
 
 // ── Bootstrap ───────────────────────────────────────────

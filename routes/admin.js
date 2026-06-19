@@ -450,4 +450,121 @@ router.get('/', (req, res) => {
   res.sendFile(path.join(__dirname, '..', 'admin-portal.html'));
 });
 
+// GET /api/admin/driver-financials
+router.get('/driver-financials', async (req, res) => {
+  try {
+    await db.query(`CREATE TABLE IF NOT EXISTS driver_payouts (
+      id SERIAL PRIMARY KEY, driver_phone VARCHAR(20), amount DECIMAL(10,2),
+      bank_account VARCHAR(50), bank_ifsc VARCHAR(20), bank_holder VARCHAR(100),
+      upi_id VARCHAR(100), method VARCHAR(20) DEFAULT 'bank',
+      status VARCHAR(20) DEFAULT 'pending', admin_note TEXT,
+      transaction_ref VARCHAR(100), requested_at TIMESTAMP DEFAULT NOW(), settled_at TIMESTAMP
+    )`);
+    await db.query(`ALTER TABLE drivers ADD COLUMN IF NOT EXISTS bank_account VARCHAR(50)`).catch(() => {});
+    await db.query(`ALTER TABLE drivers ADD COLUMN IF NOT EXISTS bank_ifsc VARCHAR(20)`).catch(() => {});
+    await db.query(`ALTER TABLE drivers ADD COLUMN IF NOT EXISTS bank_holder VARCHAR(100)`).catch(() => {});
+    await db.query(`ALTER TABLE drivers ADD COLUMN IF NOT EXISTS upi_id VARCHAR(100)`).catch(() => {});
+    const rows = await db.query(`
+      SELECT u.name, u.phone,
+        d.vehicle_type, d.vehicle_no, d.rating, d.verification_status,
+        d.bank_account, d.bank_ifsc, d.bank_holder, d.upi_id,
+        COALESCE(w.balance, 0) AS wallet_balance,
+        COALESCE(w.total_earned, 0) AS total_earned,
+        COALESCE(w.total_withdrawn, 0) AS total_withdrawn,
+        COALESCE(w.pending_commission, 0) AS pending_commission,
+        (SELECT COUNT(*) FROM rides r2 JOIN users u2 ON r2.driver_id=u2.id WHERE u2.phone=u.phone AND r2.status='completed') AS total_rides,
+        (SELECT COUNT(*) FROM driver_payouts dp WHERE dp.driver_phone=u.phone AND dp.status='pending') AS pending_payouts
+      FROM users u JOIN drivers d ON u.id=d.id
+      LEFT JOIN driver_wallet w ON w.driver_id=u.id
+      ORDER BY COALESCE(w.balance,0) DESC
+    `);
+    res.json({ drivers: rows.rows });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// GET /api/admin/driver-payouts?status=pending|completed|rejected|all
+router.get('/driver-payouts', async (req, res) => {
+  try {
+    await db.query(`CREATE TABLE IF NOT EXISTS driver_payouts (
+      id SERIAL PRIMARY KEY, driver_phone VARCHAR(20), amount DECIMAL(10,2),
+      bank_account VARCHAR(50), bank_ifsc VARCHAR(20), bank_holder VARCHAR(100),
+      upi_id VARCHAR(100), method VARCHAR(20) DEFAULT 'bank',
+      status VARCHAR(20) DEFAULT 'pending', admin_note TEXT,
+      transaction_ref VARCHAR(100), requested_at TIMESTAMP DEFAULT NOW(), settled_at TIMESTAMP
+    )`);
+    const { status } = req.query;
+    const where = (status && status !== 'all') ? 'WHERE dp.status=$1' : '';
+    const params = (status && status !== 'all') ? [status] : [];
+    const rows = await db.query(`
+      SELECT dp.*, u.name AS driver_name, d.vehicle_type, d.vehicle_no,
+        COALESCE(w.balance, 0) AS wallet_balance,
+        COALESCE(w.pending_commission, 0) AS pending_commission
+      FROM driver_payouts dp
+      JOIN users u ON u.phone = dp.driver_phone
+      LEFT JOIN drivers d ON d.id = u.id
+      LEFT JOIN driver_wallet w ON w.driver_id = u.id
+      ${where}
+      ORDER BY dp.requested_at DESC LIMIT 200
+    `, params);
+    res.json({ payouts: rows.rows });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// POST /api/admin/payout-approve
+router.post('/payout-approve', async (req, res) => {
+  const { payout_id, transaction_ref, note } = req.body;
+  try {
+    const p = await db.query(`SELECT * FROM driver_payouts WHERE id=$1 AND status='pending'`, [payout_id]);
+    if (!p.rows[0]) return res.status(400).json({ error: 'Payout nahi mila ya pehle se process ho chuka' });
+    const payout = p.rows[0];
+    const drvRes = await db.query(
+      `SELECT w.driver_id, w.balance, COALESCE(w.pending_commission, 0) AS pending_commission
+       FROM driver_wallet w JOIN users u ON w.driver_id=u.id WHERE u.phone=$1`,
+      [payout.driver_phone]
+    );
+    if (!drvRes.rows[0]) return res.status(404).json({ error: 'Driver wallet nahi mili' });
+    const { driver_id, balance, pending_commission } = drvRes.rows[0];
+    const amt = parseFloat(payout.amount);
+    if (parseFloat(balance) < amt) return res.status(400).json({ error: `Wallet balance (₹${parseFloat(balance).toFixed(0)}) payout amount (₹${amt.toFixed(0)}) se kam hai` });
+    const commDeduct = Math.min(parseFloat(pending_commission), amt);
+    const actualPayout = amt - commDeduct;
+    await db.query(
+      `UPDATE driver_wallet SET balance=balance-$1, total_withdrawn=total_withdrawn+$2,
+       pending_commission=GREATEST(0, COALESCE(pending_commission,0)-$3) WHERE driver_id=$4`,
+      [amt, actualPayout, commDeduct, driver_id]
+    );
+    if (commDeduct > 0) await db.query(
+      `UPDATE driver_commissions SET status='settled' WHERE driver_phone=$1 AND status='cash_owed'`,
+      [payout.driver_phone]
+    ).catch(() => {});
+    await db.query(
+      `UPDATE driver_payouts SET status='completed', transaction_ref=$1, admin_note=$2, settled_at=NOW() WHERE id=$3`,
+      [transaction_ref || '', note || '', payout_id]
+    );
+    sendFCM(payout.driver_phone, '✅ Payout Approved!',
+      `₹${actualPayout.toFixed(0)} aapke ${payout.method === 'upi' ? 'UPI' : 'bank account'} mein transfer kar diya gaya!`,
+      { type: 'payout_approved' }
+    ).catch(() => {});
+    res.json({ success: true, actual_payout: actualPayout, commission_deducted: commDeduct });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// POST /api/admin/payout-reject
+router.post('/payout-reject', async (req, res) => {
+  const { payout_id, note } = req.body;
+  try {
+    const r = await db.query(
+      `UPDATE driver_payouts SET status='rejected', admin_note=$1, settled_at=NOW()
+       WHERE id=$2 AND status='pending' RETURNING driver_phone, amount`,
+      [note || 'Admin ne reject kiya', payout_id]
+    );
+    if (!r.rows[0]) return res.status(400).json({ error: 'Payout nahi mila ya pehle se process ho chuka' });
+    sendFCM(r.rows[0].driver_phone, '❌ Payout Rejected',
+      note || 'Payout reject ho gaya — support se contact karo',
+      { type: 'payout_rejected' }
+    ).catch(() => {});
+    res.json({ success: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
 module.exports = router;
