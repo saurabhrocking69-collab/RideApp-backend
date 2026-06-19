@@ -196,6 +196,40 @@ router.post('/upi', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+// GET /api/driver/bank
+router.get('/bank', async (req, res) => {
+  const { phone } = req.query;
+  if (!phone) return res.status(400).json({ error: 'phone chahiye' });
+  try {
+    await db.query('ALTER TABLE drivers ADD COLUMN IF NOT EXISTS bank_account VARCHAR(50)').catch(() => {});
+    await db.query('ALTER TABLE drivers ADD COLUMN IF NOT EXISTS bank_ifsc VARCHAR(20)').catch(() => {});
+    await db.query('ALTER TABLE drivers ADD COLUMN IF NOT EXISTS bank_holder VARCHAR(100)').catch(() => {});
+    const r = await db.query(
+      `SELECT d.bank_account, d.bank_ifsc, d.bank_holder FROM drivers d JOIN users u ON d.id=u.id WHERE u.phone=$1`,
+      [phone]
+    );
+    res.json(r.rows[0] || {});
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// POST /api/driver/bank
+router.post('/bank', async (req, res) => {
+  const { phone, bank_account, bank_ifsc, bank_holder } = req.body;
+  if (!phone || !bank_account || !bank_ifsc) return res.status(400).json({ error: 'Account number aur IFSC chahiye' });
+  try {
+    await db.query('ALTER TABLE drivers ADD COLUMN IF NOT EXISTS bank_account VARCHAR(50)').catch(() => {});
+    await db.query('ALTER TABLE drivers ADD COLUMN IF NOT EXISTS bank_ifsc VARCHAR(20)').catch(() => {});
+    await db.query('ALTER TABLE drivers ADD COLUMN IF NOT EXISTS bank_holder VARCHAR(100)').catch(() => {});
+    const r = await db.query(
+      `UPDATE drivers SET bank_account=$1, bank_ifsc=$2, bank_holder=$3
+       WHERE id=(SELECT id FROM users WHERE phone=$4) RETURNING bank_account`,
+      [bank_account.trim(), bank_ifsc.trim().toUpperCase(), (bank_holder || '').trim(), phone]
+    );
+    if (!r.rows[0]) return res.status(404).json({ error: 'Driver nahi mila' });
+    res.json({ success: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
 // GET /api/driver/target
 router.get('/target', async (req, res) => {
   const { phone } = req.query;

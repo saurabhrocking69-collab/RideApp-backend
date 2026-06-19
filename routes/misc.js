@@ -214,4 +214,23 @@ router.post('/rides/check-range', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+// GET /api/customer/rating?phone=X
+router.get('/customer/rating', async (req, res) => {
+  const { phone } = req.query;
+  if (!phone) return res.status(400).json({ error: 'phone chahiye' });
+  try {
+    await db.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS customer_rating NUMERIC(3,1)').catch(() => {});
+    const r = await db.query(
+      `SELECT u.customer_rating,
+         (SELECT COUNT(*) FROM rides WHERE passenger_id=u.id AND customer_rating IS NOT NULL) AS rating_count
+       FROM users u WHERE u.phone=$1`,
+      [phone]
+    );
+    res.json({
+      rating: r.rows[0]?.customer_rating ? parseFloat(r.rows[0].customer_rating) : null,
+      count:  parseInt(r.rows[0]?.rating_count || '0'),
+    });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
 module.exports = router;

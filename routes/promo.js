@@ -28,6 +28,19 @@ router.post('/validate', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+// GET /api/promo/list
+router.get('/list', async (req, res) => {
+  try {
+    const promos = await db.query(
+      `SELECT code, description, discount_type, discount_value, max_discount, min_fare, expires_at
+       FROM promo_codes WHERE active=true AND (expires_at IS NULL OR expires_at > NOW())
+         AND (usage_limit IS NULL OR used_count < usage_limit)
+       ORDER BY max_discount DESC LIMIT 20`
+    );
+    res.json({ promos: promos.rows });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
 // POST /api/promo/apply
 router.post('/apply', async (req, res) => {
   const { code, phone, ride_id, discount } = req.body;

@@ -643,6 +643,40 @@ router.post('/extension-reject', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+// POST /api/rides/rate-customer
+router.post('/rate-customer', async (req, res) => {
+  const { ride_id, driver_phone, rating } = req.body;
+  const r = parseInt(rating);
+  if (!ride_id || !driver_phone) return res.status(400).json({ error: 'ride_id aur driver_phone chahiye' });
+  if (![1, 2, 3, 4, 5].includes(r)) return res.status(400).json({ error: 'Rating 1-5 ke beech honi chahiye' });
+  try {
+    await db.query('ALTER TABLE rides ADD COLUMN IF NOT EXISTS customer_rating INT').catch(() => {});
+    await db.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS customer_rating NUMERIC(3,1)').catch(() => {});
+
+    const check = await db.query(
+      `SELECT r.id, r.passenger_id FROM rides r
+       JOIN users d ON r.driver_id = d.id
+       WHERE r.id=$1 AND d.phone=$2 AND r.status IN ('completed','cash_confirmed')`,
+      [ride_id, driver_phone]
+    );
+    if (!check.rows[0]) return res.status(400).json({ error: 'Ride nahi mili ya aapki nahi thi' });
+
+    await db.query('UPDATE rides SET customer_rating=$1 WHERE id=$2', [r, ride_id]);
+
+    // Recalculate customer average rating
+    const pid = check.rows[0].passenger_id;
+    await db.query(
+      `UPDATE users SET customer_rating = (
+         SELECT ROUND(AVG(customer_rating)::numeric, 1) FROM rides
+         WHERE passenger_id=$1 AND customer_rating IS NOT NULL
+       ) WHERE id=$1`,
+      [pid]
+    ).catch(() => {});
+
+    res.json({ success: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
 // POST /api/rides/surge-fare
 // Customer manually bumps fare after 100s without a driver
 router.post('/surge-fare', async (req, res) => {
