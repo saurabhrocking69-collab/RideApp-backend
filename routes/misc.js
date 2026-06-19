@@ -10,18 +10,21 @@ router.get('/fare-settings', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// GET /api/fare-estimate (fare estimate without booking)
+// POST /api/fare-estimate — accepts either pre-calculated `distance` km OR lat/lng coords
 router.post('/fare-estimate', async (req, res) => {
-  const { pickup_lat, pickup_lng, drop_lat, drop_lng, ride_type } = req.body;
+  const { pickup_lat, pickup_lng, drop_lat, drop_lng, ride_type, distance } = req.body;
   try {
     const fares = await db.query('SELECT * FROM fare_settings WHERE vehicle_type = $1', [ride_type]);
     if (!fares.rows[0]) return res.json({ error: 'Ride type nahi mila' });
     const f = fares.rows[0];
-    const R = 6371;
-    const dLat = (parseFloat(drop_lat) - parseFloat(pickup_lat)) * Math.PI / 180;
-    const dLon = (parseFloat(drop_lng) - parseFloat(pickup_lng)) * Math.PI / 180;
-    const a = Math.sin(dLat/2)**2 + Math.cos(parseFloat(pickup_lat)*Math.PI/180)*Math.cos(parseFloat(drop_lat)*Math.PI/180)*Math.sin(dLon/2)**2;
-    const distKm = R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+    let distKm = distance != null ? parseFloat(distance) : NaN;
+    if (isNaN(distKm)) {
+      const R = 6371;
+      const dLat = (parseFloat(drop_lat) - parseFloat(pickup_lat)) * Math.PI / 180;
+      const dLon = (parseFloat(drop_lng) - parseFloat(pickup_lng)) * Math.PI / 180;
+      const a = Math.sin(dLat/2)**2 + Math.cos(parseFloat(pickup_lat)*Math.PI/180)*Math.cos(parseFloat(drop_lat)*Math.PI/180)*Math.sin(dLon/2)**2;
+      distKm = R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+    }
     const hour = new Date().getHours();
     const isNight = hour >= parseInt(f.night_start || 22) || hour < parseInt(f.night_end || 6);
     const nightMult = isNight ? parseFloat(f.night_multiplier || 1.2) : 1;
