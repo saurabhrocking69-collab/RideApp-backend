@@ -43,21 +43,23 @@ rideWorker.on('failed', (job, err) => {
   console.error('❌ BullMQ job failed:', job?.id, err.message);
 });
 
-async function _bmqAssignNext({ rideId, pickupLat, pickupLng, rideType, queue, radiusKm = 5 }) {
+async function _bmqAssignNext({ rideId, pickupLat, pickupLng, rideType, queue, radiusKm = 5, offeredPhones = [] }) {
   let remaining = queue;
 
   if (remaining === null || remaining === undefined) {
     // Run ride validity check + driver fetch in parallel — saves one full DB round trip
     const [rideCheck, drRes] = await Promise.all([
       db.query(
-        `SELECT id, ride_type FROM rides WHERE id=$1 AND status='requested' AND driver_id IS NULL`, [rideId]
+        `SELECT id, ride_type, COALESCE(offered_phones, '{}') AS offered_phones
+         FROM rides WHERE id=$1 AND status='requested' AND driver_id IS NULL`, [rideId]
       ),
       db.query(
         `SELECT u.phone,
                 COALESCE(d.rating, 5.0)                                AS rating,
                 COALESCE(dm.acceptance_rate, 100)                      AS acceptance_rate,
                 COALESCE(dm.idle_since, NOW() - INTERVAL '30 minutes') AS idle_since,
-                dl.lat, dl.lng
+                dl.lat, dl.lng,
+                dl.updated_at AS loc_updated_at
          FROM drivers d
          JOIN users u ON d.id = u.id
          LEFT JOIN driver_metrics dm ON dm.phone = u.phone
@@ -74,11 +76,22 @@ async function _bmqAssignNext({ rideId, pickupLat, pickupLng, rideType, queue, r
     ]);
     if (!rideCheck.rows[0]) return;
     if (rideCheck.rows[0].ride_type !== rideType) return; // customer switched vehicle — stale job
+
+    // Drivers already offered this ride (timed out / rejected) — skip them on fresh rebuilds
+    const alreadyOffered = new Set([
+      ...((rideCheck.rows[0].offered_phones) || []),
+      ...offeredPhones,
+    ]);
+
     const now = Date.now();
+    const STALE_MS = 10 * 60 * 1000; // location older than 10 min = unreliable
     const scored = drRes.rows
+      .filter(dr => !alreadyOffered.has(dr.phone)) // skip already-offered drivers
       .map(dr => {
         let distKm = null;
-        if (pickupLat && pickupLng && dr.lat && dr.lng)
+        const locAge = dr.loc_updated_at ? (now - new Date(dr.loc_updated_at).getTime()) : Infinity;
+        const locFresh = locAge < STALE_MS;
+        if (pickupLat && pickupLng && dr.lat && dr.lng && locFresh)
           distKm = haversineKm(parseFloat(pickupLat), parseFloat(pickupLng), parseFloat(dr.lat), parseFloat(dr.lng));
         return { phone: dr.phone, distKm, score: scoreDriver(dr, distKm, now) };
       })
@@ -131,7 +144,10 @@ async function _bmqAssignNext({ rideId, pickupLat, pickupLng, rideType, queue, r
 
   const upd = await db.query(
     `UPDATE rides
-     SET assigned_to_phone=$1, assignment_expires_at=NOW()+INTERVAL '60 seconds', assignment_queue=$2
+     SET assigned_to_phone=$1,
+         assignment_expires_at=NOW()+INTERVAL '60 seconds',
+         assignment_queue=$2,
+         offered_phones = array_append(COALESCE(offered_phones,'{}'), $1::text)
      WHERE id=$3 AND status='requested' AND driver_id IS NULL
      RETURNING id`,
     [nextPhone, JSON.stringify(newQueue), rideId]

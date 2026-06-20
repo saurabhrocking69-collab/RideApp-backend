@@ -145,6 +145,8 @@ setTimeout(async () => {
     `CREATE INDEX IF NOT EXISTS idx_hourly_driver_phone     ON hourly_bookings(driver_phone, status)`,
   ];
   for (const sql of indexes) await db.query(sql).catch(() => {});
+  // offered_phones tracks which drivers were already sent this ride request — skip on surge rebuild
+  await db.query(`ALTER TABLE rides ADD COLUMN IF NOT EXISTS offered_phones TEXT[] DEFAULT '{}'`).catch(() => {});
   console.log('✅ DB indexes ready');
 
   // ── Complaint system tables ───────────────────────
