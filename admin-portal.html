@@ -120,6 +120,14 @@ input,select,textarea{outline:none}
   </div>
 </div>
 
+<!-- Complaint Detail Modal -->
+<div class="modal-overlay" id="cmp-modal">
+  <div class="modal-box" style="min-width:min(700px,96vw);max-width:760px" onclick="event.stopPropagation()">
+    <button class="modal-close" onclick="closeCmpModal()">✕</button>
+    <div id="cmp-modal-content"></div>
+  </div>
+</div>
+
 <!-- Payout Approve Modal -->
 <div class="modal-overlay" id="payout-modal">
   <div class="modal-box" style="min-width:340px;max-width:480px" onclick="event.stopPropagation()">
@@ -150,6 +158,7 @@ input,select,textarea{outline:none}
     <button class="tab" onclick="showSection('marketing',this)">📣 Marketing</button>
     <button class="tab" onclick="showSection('settings',this)">⚙️ Settings</button>
     <button class="tab" onclick="showSection('payouts',this)">💰 Payouts</button>
+    <button class="tab" onclick="showSection('complaints',this);loadComplaints()">⚠️ Complaints</button>
   </div>
 
   <!-- TRANSACTIONS -->
@@ -397,6 +406,49 @@ input,select,textarea{outline:none}
       </div>
     </div>
   </div>
+
+  <!-- COMPLAINTS -->
+  <div id="complaints" class="section">
+    <!-- Stats row -->
+    <div class="stats" id="cmp-stats-row" style="margin-bottom:18px"></div>
+    <!-- Filters -->
+    <div class="card" style="padding:14px">
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+        <select id="cmp-filter-status" class="input-sm" style="width:140px" onchange="loadComplaints()">
+          <option value="">All Status</option>
+          <option value="open">Open</option>
+          <option value="under_review">Under Review</option>
+          <option value="awaiting_response">Awaiting Response</option>
+          <option value="evidence_requested">Evidence Requested</option>
+          <option value="escalated">Escalated</option>
+          <option value="resolved">Resolved</option>
+          <option value="closed">Closed</option>
+          <option value="appealed">Appealed</option>
+        </select>
+        <select id="cmp-filter-priority" class="input-sm" style="width:120px" onchange="loadComplaints()">
+          <option value="">All Priority</option>
+          <option value="urgent">Urgent</option>
+          <option value="high">High</option>
+          <option value="normal">Normal</option>
+          <option value="low">Low</option>
+        </select>
+        <select id="cmp-filter-role" class="input-sm" style="width:140px" onchange="loadComplaints()">
+          <option value="">All Filers</option>
+          <option value="customer">Customer</option>
+          <option value="driver">Driver</option>
+        </select>
+        <input id="cmp-filter-search" class="input-sm" style="width:200px" placeholder="Search name / phone..." oninput="loadComplaints()">
+        <button class="refresh-btn" onclick="loadComplaints()">⟳ Reload</button>
+      </div>
+    </div>
+    <div class="card">
+      <div style="overflow-x:auto"><table>
+        <thead><tr><th>Date</th><th>Priority</th><th>Type</th><th>Title</th><th>Filer</th><th>Against</th><th>Ride</th><th>Status</th><th>Assigned</th><th>Action</th></tr></thead>
+        <tbody id="cmp-body"><tr><td colspan=10 class=loading>Loading...</td></tr></tbody>
+      </table></div>
+    </div>
+  </div>
+
 </div>
 
 <script>
@@ -1215,6 +1267,218 @@ async function rejectPayout(id){
     if(d.success){alert('✅ Payout reject kar diya!');loadPayouts('pending');}
     else alert('❌ '+(d.error||'Error'));
   }catch(e){alert('❌ '+e.message);}
+}
+
+// ── Complaints ──────────────────────────────────────────
+const CMP_STATUS_COLOR={open:'#ff9800',under_review:'#2196F3',awaiting_response:'#9c27b0',evidence_requested:'#ff5722',escalated:'#f44336',resolved:'#4CAF50',closed:'#9e9e9e',appealed:'#e91e63'};
+const CMP_PRI_COLOR={urgent:'#f44336',high:'#ff9800',normal:'#2196F3',low:'#9e9e9e'};
+
+async function loadComplaints(){
+  const status=document.getElementById('cmp-filter-status').value;
+  const priority=document.getElementById('cmp-filter-priority').value;
+  const role=document.getElementById('cmp-filter-role').value;
+  const search=document.getElementById('cmp-filter-search').value;
+  const body=document.getElementById('cmp-body');
+  body.innerHTML='<tr><td colspan=10 class=loading>Loading...</td></tr>';
+  try{
+    // load stats
+    const st=await aJson('/api/admin/complaints/stats');
+    document.getElementById('cmp-stats-row').innerHTML=`
+      <div class="stat-card"><div class="stat-icon">📋</div><div class="stat-value">${st.total||0}</div><div class="stat-label">Total Complaints</div></div>
+      <div class="stat-card red"><div class="stat-icon">🔴</div><div class="stat-value">${st.open||0}</div><div class="stat-label">Open</div></div>
+      <div class="stat-card blue"><div class="stat-icon">🔍</div><div class="stat-value">${st.under_review||0}</div><div class="stat-label">Under Review</div></div>
+      <div class="stat-card green"><div class="stat-icon">✅</div><div class="stat-value">${st.resolved||0}</div><div class="stat-label">Resolved</div></div>
+      <div class="stat-card red"><div class="stat-icon">🚨</div><div class="stat-value">${st.urgent||0}</div><div class="stat-label">Urgent</div></div>
+      <div class="stat-card"><div class="stat-icon">📅</div><div class="stat-value">${st.today||0}</div><div class="stat-label">Today</div></div>
+    `;
+    // load list
+    let url='/api/admin/complaints?limit=60';
+    if(status) url+='&status='+status;
+    if(priority) url+='&priority='+priority;
+    if(role) url+='&filer_role='+role;
+    if(search) url+='&search='+encodeURIComponent(search);
+    const d=await aJson(url);
+    const rows=d.complaints||[];
+    if(!rows.length){body.innerHTML='<tr><td colspan=10 style="text-align:center;color:#aaa;padding:20px">Koi complaint nahi</td></tr>';return;}
+    body.innerHTML=rows.map(c=>`
+      <tr>
+        <td style="white-space:nowrap">${new Date(c.created_at).toLocaleDateString('en-IN')}</td>
+        <td><span class="chip" style="background:${CMP_PRI_COLOR[c.priority]||'#999'};color:#fff">${(c.priority||'').toUpperCase()}</span></td>
+        <td style="white-space:nowrap">${(c.complaint_type||'').replace(/_/g,' ')}</td>
+        <td style="max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${c.title}">${c.title}</td>
+        <td>${c.filed_by_name||'-'}<br><span style="font-size:10px;color:#888">${c.filer_role}</span></td>
+        <td>${c.filed_against_name||'-'}</td>
+        <td>${c.ride_id?'#'+c.ride_id:'-'}</td>
+        <td><span class="chip" style="background:${CMP_STATUS_COLOR[c.status]||'#999'};color:#fff">${(c.status||'').replace(/_/g,' ').toUpperCase()}</span></td>
+        <td style="font-size:11px;color:#888">${c.assigned_admin||'—'}</td>
+        <td><button class="action-btn btn-blue" onclick="openCmpDetail('${c.id}')">🔍 View</button></td>
+      </tr>
+    `).join('');
+  }catch(e){body.innerHTML='<tr><td colspan=10 style="color:#c62828;text-align:center">Error: '+e.message+'</td></tr>';}
+}
+
+async function openCmpDetail(id){
+  document.getElementById('cmp-modal-content').innerHTML='<div class=loading>Loading...</div>';
+  document.getElementById('cmp-modal').classList.add('open');
+  try{
+    const d=await aJson('/api/admin/complaints/'+id);
+    const c=d.complaint;
+    const msgs=d.messages||[];
+    const evidence=d.evidence||[];
+    const tl=d.timeline||[];
+    document.getElementById('cmp-modal-content').innerHTML=`
+      <h3 style="margin-bottom:12px;font-size:16px">${c.title}</h3>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px">
+        <span class="chip" style="background:${CMP_STATUS_COLOR[c.status]};color:#fff">${(c.status||'').replace(/_/g,' ').toUpperCase()}</span>
+        <span class="chip" style="background:${CMP_PRI_COLOR[c.priority]};color:#fff">${(c.priority||'').toUpperCase()}</span>
+        <span style="font-size:12px;color:#888">${(c.complaint_type||'').replace(/_/g,' ')} · ${new Date(c.created_at).toLocaleString('en-IN')}</span>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:14px;font-size:13px">
+        <div><b>Filed By:</b> ${c.filed_by_name||'?'} (${c.filer_role}) — ${c.filed_by_phone||''}</div>
+        <div><b>Against:</b> ${c.filed_against_name||'?'} — ${c.filed_against_phone||''}</div>
+        ${c.ride_id?`<div><b>Ride:</b> #${c.ride_id} · ₹${c.fare||0}</div>`:''}
+        ${c.assigned_admin?`<div><b>Assigned:</b> ${c.assigned_admin}</div>`:''}
+      </div>
+      <div style="background:#f8f8f8;border-radius:10px;padding:12px;margin-bottom:14px;font-size:13px;line-height:1.7">${c.description}</div>
+
+      ${c.resolution?`<div style="background:#e8f5e9;border-radius:10px;padding:12px;margin-bottom:14px;font-size:13px"><b>Resolution:</b> ${c.resolution.replace(/_/g,' ')} — ${c.resolution_note||''}</div>`:''}
+
+      <!-- Admin Controls -->
+      <div style="background:#fff3e0;border-radius:10px;padding:14px;margin-bottom:14px">
+        <div style="font-size:13px;font-weight:700;margin-bottom:10px">Admin Controls</div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px">
+          <input id="cmp-assign-input" class="input-sm" style="width:160px" placeholder="Assign to admin..." value="${c.assigned_admin||''}">
+          <button class="action-btn btn-dark" onclick="cmpAssign('${c.id}')">Assign</button>
+        </div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px">
+          <select id="cmp-status-sel" class="input-sm" style="width:180px">
+            ${['open','under_review','awaiting_response','evidence_requested','escalated','resolved','closed','appealed'].map(s=>`<option value="${s}"${s===c.status?' selected':''}>${s.replace(/_/g,' ')}</option>`).join('')}
+          </select>
+          <button class="action-btn btn-blue" onclick="cmpSetStatus('${c.id}')">Set Status</button>
+        </div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-start;margin-bottom:10px">
+          <div style="flex:1;min-width:180px">
+            <select id="cmp-res-sel" class="input-sm" style="margin-bottom:6px">
+              <option value="">-- Resolution --</option>
+              ${['favor_complainant','favor_respondent','partial','inconclusive'].map(r=>`<option value="${r}"${r===c.resolution?' selected':''}>${r.replace(/_/g,' ')}</option>`).join('')}
+            </select>
+            <textarea id="cmp-res-note" class="input-sm" rows=2 placeholder="Resolution note...">${c.resolution_note||''}</textarea>
+          </div>
+          <button class="action-btn btn-green" style="white-space:nowrap;padding:8px 14px" onclick="cmpResolve('${c.id}')">✅ Resolve</button>
+        </div>
+        <div style="display:flex;gap:6px;flex-wrap:wrap">
+          <button class="action-btn btn-orange" onclick="cmpAction('${c.id}','warn','${c.filed_against}')">⚠️ Warn</button>
+          <button class="action-btn btn-orange" onclick="cmpAction('${c.id}','suspend','${c.filed_against}')">🚫 Suspend</button>
+          <button class="action-btn btn-red" onclick="cmpAction('${c.id}','ban','${c.filed_against}')">🔨 Ban</button>
+          <button class="action-btn btn-green" onclick="cmpAction('${c.id}','refund','${c.filed_by}')">💸 Refund</button>
+          ${c.filer_role==='customer'?`<button class="action-btn btn-blue" onclick="cmpAction('${c.id}','strike','${c.filed_against}')">📌 Strike</button>`:''}
+        </div>
+        <div style="margin-top:10px">
+          <div style="font-size:12px;font-weight:700;margin-bottom:6px">Admin Message</div>
+          <div class="msg-row">
+            <input id="cmp-adm-msg" class="input-sm" placeholder="Message to parties..." style="flex:1">
+            <label style="font-size:11px;color:#666;white-space:nowrap;display:flex;align-items:center;gap:4px"><input type="checkbox" id="cmp-internal"> Internal</label>
+            <button class="action-btn btn-dark" onclick="cmpSendMsg('${c.id}')">Send</button>
+          </div>
+        </div>
+        <div id="cmp-action-status" style="font-size:12px;margin-top:8px;color:#888"></div>
+      </div>
+
+      <!-- Evidence -->
+      ${evidence.length?`<div style="margin-bottom:14px"><div style="font-size:13px;font-weight:700;margin-bottom:8px">Evidence (${evidence.length})</div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap">${evidence.map(e=>`<a href="${e.file_url}" target="_blank"><img src="${e.file_url}" style="width:90px;height:70px;object-fit:cover;border-radius:8px;border:2px solid #e0e0e0" title="${e.caption||''}"></a>`).join('')}</div></div>`:''}
+
+      <!-- Messages -->
+      <div style="margin-bottom:14px">
+        <div style="font-size:13px;font-weight:700;margin-bottom:8px">Messages (${msgs.length})</div>
+        ${msgs.length===0?'<div style="color:#aaa;font-size:12px">Koi message nahi</div>':msgs.map(m=>`
+          <div style="padding:10px 12px;border-radius:8px;margin-bottom:8px;background:${m.sender_role==='admin'?'#e3f2fd':m.sender_role==='customer'?'#fff8e1':'#f1f8e9'}">
+            <div style="font-size:11px;font-weight:700;color:#1565c0;margin-bottom:4px">${m.sender_name} <span style="font-weight:400;color:#888">[${m.sender_role}]</span> · ${new Date(m.created_at).toLocaleString('en-IN',{day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'})}</div>
+            <div style="font-size:13px">${m.message}</div>
+          </div>
+        `).join('')}
+      </div>
+
+      <!-- Timeline -->
+      ${tl.length?`<div><div style="font-size:13px;font-weight:700;margin-bottom:8px">Timeline</div>
+        ${tl.map(t=>`<div style="display:flex;gap:10px;margin-bottom:8px;font-size:12px">
+          <span style="color:#e94560;margin-top:2px">●</span>
+          <span><b>${t.description}</b> <span style="color:#aaa">· ${new Date(t.created_at).toLocaleString('en-IN',{day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'})}</span></span>
+        </div>`).join('')}
+      </div>`:''}
+    `;
+  }catch(e){document.getElementById('cmp-modal-content').innerHTML='<div style="color:#c62828">Error: '+e.message+'</div>';}
+}
+
+function closeCmpModal(){
+  document.getElementById('cmp-modal').classList.remove('open');
+}
+
+async function cmpAssign(id){
+  const admin=document.getElementById('cmp-assign-input').value.trim();
+  if(!admin) return;
+  const st=document.getElementById('cmp-action-status');
+  try{
+    const d=await aJson('/api/admin/complaints/'+id+'/assign',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({admin_name:admin})});
+    st.textContent='✅ Assigned to '+admin; st.style.color='#2e7d32';
+    setTimeout(()=>{closeCmpModal();loadComplaints();},1200);
+  }catch(e){st.textContent='❌ '+e.message;st.style.color='#c62828';}
+}
+
+async function cmpSetStatus(id){
+  const status=document.getElementById('cmp-status-sel').value;
+  const st=document.getElementById('cmp-action-status');
+  try{
+    const d=await aJson('/api/admin/complaints/'+id+'/status',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({status})});
+    st.textContent='✅ Status: '+status; st.style.color='#2e7d32';
+    setTimeout(()=>{closeCmpModal();loadComplaints();},1200);
+  }catch(e){st.textContent='❌ '+e.message;st.style.color='#c62828';}
+}
+
+async function cmpResolve(id){
+  const resolution=document.getElementById('cmp-res-sel').value;
+  const resolution_note=document.getElementById('cmp-res-note').value.trim();
+  if(!resolution) return alert('Resolution type select karo');
+  if(!resolution_note) return alert('Resolution note daalo');
+  const st=document.getElementById('cmp-action-status');
+  try{
+    const d=await aJson('/api/admin/complaints/'+id+'/resolve',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({resolution,resolution_note})});
+    st.textContent='✅ Resolved!'; st.style.color='#2e7d32';
+    setTimeout(()=>{closeCmpModal();loadComplaints();},1200);
+  }catch(e){st.textContent='❌ '+e.message;st.style.color='#c62828';}
+}
+
+async function cmpAction(id,action,targetId){
+  const st=document.getElementById('cmp-action-status');
+  let extra={};
+  if(action==='suspend'){
+    const h=prompt('Kitne ghante suspend karo? (e.g. 24, 48, 168)');
+    if(!h) return;
+    extra={hours:parseInt(h)||24};
+  }
+  if(action==='refund'){
+    const amt=prompt('Refund amount (₹)?');
+    if(!amt) return;
+    extra={amount:parseFloat(amt)||0};
+  }
+  try{
+    const d=await aJson('/api/admin/complaints/'+id+'/action',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action,target_user_id:targetId,...extra})});
+    st.textContent='✅ Action: '+action; st.style.color='#2e7d32';
+    setTimeout(()=>{closeCmpModal();loadComplaints();},1200);
+  }catch(e){st.textContent='❌ '+e.message;st.style.color='#c62828';}
+}
+
+async function cmpSendMsg(id){
+  const msg=document.getElementById('cmp-adm-msg').value.trim();
+  const internal=document.getElementById('cmp-internal').checked;
+  if(!msg) return;
+  const st=document.getElementById('cmp-action-status');
+  try{
+    const d=await aJson('/api/admin/complaints/'+id+'/message',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({message:msg,is_internal:internal})});
+    st.textContent='✅ Message sent'; st.style.color='#2e7d32';
+    document.getElementById('cmp-adm-msg').value='';
+    setTimeout(()=>openCmpDetail(id),800);
+  }catch(e){st.textContent='❌ '+e.message;st.style.color='#c62828';}
 }
 
 // ── Bootstrap ───────────────────────────────────────────

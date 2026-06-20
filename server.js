@@ -36,6 +36,7 @@ const driversRouter = require('./routes/drivers');
 const hourlyRouter  = require('./routes/hourly');
 const adminRouter      = require('./routes/admin');
 const favouritesRouter = require('./routes/favourites');
+const complaintsRouter = require('./routes/complaints');
 
 // ── App + HTTP + Socket.io ───────────────────────
 const app    = express();
@@ -105,6 +106,7 @@ app.use('/api/driver',   driversRouter);
 app.use('/api/hourly',   hourlyRouter);
 app.use('/api/admin',      adminAuth, adminRouter);
 app.use('/api/favourites', favouritesRouter);
+app.use('/api/complaints', complaintsRouter);
 
 // Admin portal HTML
 app.get('/admin', (_req, res) =>
@@ -144,6 +146,70 @@ setTimeout(async () => {
   ];
   for (const sql of indexes) await db.query(sql).catch(() => {});
   console.log('✅ DB indexes ready');
+
+  // ── Complaint system tables ───────────────────────
+  const complaintTables = [
+    `CREATE TABLE IF NOT EXISTS complaints (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      ride_id INTEGER REFERENCES rides(id) ON DELETE SET NULL,
+      filed_by INTEGER NOT NULL REFERENCES users(id),
+      filed_against INTEGER NOT NULL REFERENCES users(id),
+      filer_role VARCHAR(10) NOT NULL CHECK (filer_role IN ('customer','driver')),
+      complaint_type VARCHAR(50) NOT NULL,
+      title VARCHAR(200) NOT NULL,
+      description TEXT NOT NULL,
+      status VARCHAR(30) NOT NULL DEFAULT 'open'
+        CHECK (status IN ('open','under_review','awaiting_response','evidence_requested','escalated','resolved','closed','appealed')),
+      priority VARCHAR(10) NOT NULL DEFAULT 'normal'
+        CHECK (priority IN ('low','normal','high','urgent')),
+      assigned_admin VARCHAR(100),
+      resolution VARCHAR(30)
+        CHECK (resolution IN ('favor_complainant','favor_respondent','partial','inconclusive','withdrawn')),
+      resolution_note TEXT,
+      action_taken VARCHAR(50),
+      resolved_at TIMESTAMPTZ,
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      updated_at TIMESTAMPTZ DEFAULT NOW()
+    )`,
+    `CREATE TABLE IF NOT EXISTS complaint_evidence (
+      id SERIAL PRIMARY KEY,
+      complaint_id UUID NOT NULL REFERENCES complaints(id) ON DELETE CASCADE,
+      uploaded_by INTEGER NOT NULL REFERENCES users(id),
+      file_url TEXT NOT NULL,
+      file_type VARCHAR(20) DEFAULT 'image',
+      caption TEXT,
+      created_at TIMESTAMPTZ DEFAULT NOW()
+    )`,
+    `CREATE TABLE IF NOT EXISTS complaint_messages (
+      id SERIAL PRIMARY KEY,
+      complaint_id UUID NOT NULL REFERENCES complaints(id) ON DELETE CASCADE,
+      sender_id INTEGER REFERENCES users(id),
+      sender_role VARCHAR(10) NOT NULL,
+      sender_name VARCHAR(100),
+      message TEXT NOT NULL,
+      is_internal BOOLEAN DEFAULT FALSE,
+      created_at TIMESTAMPTZ DEFAULT NOW()
+    )`,
+    `CREATE TABLE IF NOT EXISTS complaint_timeline (
+      id SERIAL PRIMARY KEY,
+      complaint_id UUID NOT NULL REFERENCES complaints(id) ON DELETE CASCADE,
+      event VARCHAR(50) NOT NULL,
+      description TEXT NOT NULL,
+      actor_role VARCHAR(10),
+      actor_name VARCHAR(100),
+      metadata JSONB,
+      created_at TIMESTAMPTZ DEFAULT NOW()
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_complaints_filed_by ON complaints(filed_by)`,
+    `CREATE INDEX IF NOT EXISTS idx_complaints_filed_against ON complaints(filed_against)`,
+    `CREATE INDEX IF NOT EXISTS idx_complaints_status ON complaints(status)`,
+    `CREATE INDEX IF NOT EXISTS idx_complaints_ride_id ON complaints(ride_id)`,
+    `CREATE INDEX IF NOT EXISTS idx_complaint_msgs_cid ON complaint_messages(complaint_id)`,
+    `CREATE INDEX IF NOT EXISTS idx_complaint_tl_cid ON complaint_timeline(complaint_id)`,
+    `CREATE INDEX IF NOT EXISTS idx_complaint_ev_cid ON complaint_evidence(complaint_id)`,
+  ];
+  for (const sql of complaintTables) await db.query(sql).catch((e) => console.error('Complaint table error:', e.message));
+  console.log('✅ Complaint tables ready');
 
   try {
     const stuck = await db.query(
