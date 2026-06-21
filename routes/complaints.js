@@ -3,7 +3,19 @@ const router = express.Router();
 const db = require('../config/db');
 const cloudinary = require('../config/cloudinary');
 const { sendFCM } = require('../config/firebase');
-const auth = require('../middleware/auth');
+
+// ─── Phone-based auth (consistent with rest of app) ──────────────────────────
+// Accepts phone via body (POST) or query (GET). Looks up user ID from DB.
+async function phoneAuth(req, res, next) {
+  const phone = req.body.phone || req.query.phone;
+  if (!phone) return res.status(400).json({ error: 'phone number zaroori hai' });
+  try {
+    const r = await db.query('SELECT id, name FROM users WHERE phone=$1', [phone]);
+    if (!r.rows[0]) return res.status(401).json({ error: 'User nahi mila' });
+    req.user = { id: r.rows[0].id, phone, name: r.rows[0].name };
+    next();
+  } catch (err) { res.status(500).json({ error: err.message }); }
+}
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
 
@@ -27,34 +39,52 @@ async function logTimeline(complaintId, event, description, actorRole, actorName
   );
 }
 
-// auto-priority based on complaint type
 function calcPriority(type) {
-  const urgent = ['harassment', 'physical_abuse', 'property_damage', 'reckless_driving'];
+  const urgent = ['harassment', 'physical_abuse', 'property_damage', 'reckless_driving', 'early_trip_end'];
   const high   = ['overcharging', 'false_accusation', 'abusive_behavior'];
   if (urgent.includes(type)) return 'urgent';
   if (high.includes(type))   return 'high';
   return 'normal';
 }
 
+// Human-readable title auto-generated from complaint type — no manual title needed
+const TYPE_TITLE = {
+  early_trip_end:     'Driver ne drop location se pehle trip complete kiya',
+  reckless_driving:   'Reckless Driving / Dangerous Driving',
+  route_deviation:    'Driver ne galat ya lamba route liya',
+  overcharging:       'Driver ne zyada fare manga',
+  unprofessional:     'Driver ka behavior unprofessional tha',
+  vehicle_condition:  'Vehicle dirty ya unsafe thi',
+  driver_no_show:     'Driver pickup pe nahi aaya',
+  harassment:         'Driver ne harassment ki',
+  physical_abuse:     'Driver ne physical abuse ki',
+  customer_no_show:   'Customer pickup pe nahi aaya',
+  property_damage:    'Customer ne vehicle ko damage kiya',
+  abusive_behavior:   'Customer ne abusive behavior kiya',
+  false_accusation:   'Customer ne galat complaint ki',
+  wrong_location:     'Customer ne galat location diya',
+  payment_issue:      'Customer ne payment nahi ki',
+  other:              'Anya Shikayat',
+};
+
 const COMPLAINT_TYPES_CUSTOMER = [
-  'reckless_driving', 'route_deviation', 'overcharging', 'unprofessional',
-  'vehicle_condition', 'driver_no_show', 'harassment', 'physical_abuse', 'other'
+  'early_trip_end', 'reckless_driving', 'route_deviation', 'overcharging',
+  'unprofessional', 'vehicle_condition', 'driver_no_show', 'harassment', 'physical_abuse', 'other',
 ];
 const COMPLAINT_TYPES_DRIVER = [
   'customer_no_show', 'property_damage', 'abusive_behavior', 'false_accusation',
-  'wrong_location', 'payment_issue', 'other'
+  'wrong_location', 'payment_issue', 'other',
 ];
 
-// ─── POST /api/complaints — file a complaint ──────────────────────────────────
-router.post('/', auth, async (req, res) => {
+// ─── POST /api/complaints ─────────────────────────────────────────────────────
+router.post('/', phoneAuth, async (req, res) => {
   const userId = req.user.id;
-  const { ride_id, complaint_type, title, description, against_id } = req.body;
+  const filerName = req.user.name || 'Unknown';
+  const { ride_id, complaint_type, description, against_id } = req.body;
 
-  if (!complaint_type || !title || !description)
-    return res.status(400).json({ error: 'complaint_type, title aur description zaroori hai' });
-  if (!title.trim() || title.length > 200)
-    return res.status(400).json({ error: 'Title 1-200 characters ka hona chahiye' });
-  if (!description.trim() || description.length < 20)
+  if (!complaint_type || !description)
+    return res.status(400).json({ error: 'complaint_type aur description zaroori hai' });
+  if (!description.trim() || description.trim().length < 20)
     return res.status(400).json({ error: 'Description kam se kam 20 characters ka hona chahiye' });
 
   try {
@@ -65,63 +95,64 @@ router.post('/', auth, async (req, res) => {
     if (!allowedTypes.includes(complaint_type))
       return res.status(400).json({ error: 'Invalid complaint type' });
 
-    let filedAgainstId = against_id;
-    let rideData = null;
+    // Auto-generate title from type
+    const title = TYPE_TITLE[complaint_type] || 'Shikayat';
+
+    let filedAgainstId = against_id ? parseInt(against_id) : null;
 
     if (ride_id) {
       const rideRes = await db.query(
-        'SELECT r.*, u1.name AS pname, u2.name AS dname FROM rides r LEFT JOIN users u1 ON r.passenger_id=u1.id LEFT JOIN users u2 ON r.driver_id=u2.id WHERE r.id=$1',
+        `SELECT r.*, u1.name AS pname, u1.id AS pid, u2.name AS dname, u2.id AS did
+         FROM rides r
+         LEFT JOIN users u1 ON r.passenger_id=u1.id
+         LEFT JOIN users u2 ON r.driver_id=u2.id
+         WHERE r.id=$1`,
         [ride_id]
       );
-      if (rideRes.rows.length === 0)
-        return res.status(404).json({ error: 'Ride nahi mili' });
-      rideData = rideRes.rows[0];
+      if (!rideRes.rows[0]) return res.status(404).json({ error: 'Ride nahi mili' });
+      const ride = rideRes.rows[0];
 
-      // verify this user was part of the ride
-      if (rideData.passenger_id !== userId && rideData.driver_id !== userId)
+      if (ride.passenger_id !== userId && ride.driver_id !== userId)
         return res.status(403).json({ error: 'Aap is ride ke participant nahi hain' });
 
-      // auto-set against_id from ride
-      filedAgainstId = filerRole === 'customer' ? rideData.driver_id : rideData.passenger_id;
+      filedAgainstId = filerRole === 'customer' ? ride.driver_id : ride.passenger_id;
     }
 
     if (!filedAgainstId)
-      return res.status(400).json({ error: 'Against user ID zaroori hai' });
+      return res.status(400).json({ error: 'Ride select karo ya against_id do — kiske khilaf complaint hai?' });
     if (filedAgainstId === userId)
       return res.status(400).json({ error: 'Apne khilaf complaint nahi kar sakte' });
 
-    // prevent duplicate open complaint for same ride+user
+    // Prevent duplicate open complaint for same ride
     if (ride_id) {
       const dup = await db.query(
-        `SELECT id FROM complaints WHERE ride_id=$1 AND filed_by=$2 AND status NOT IN ('resolved','closed','withdrawn')`,
+        `SELECT id FROM complaints WHERE ride_id=$1 AND filed_by=$2 AND status NOT IN ('resolved','closed')`,
         [ride_id, userId]
       );
       if (dup.rows.length > 0)
-        return res.status(409).json({ error: 'Is ride ke liye aapki complaint already open hai', complaint_id: dup.rows[0].id });
+        return res.status(409).json({
+          error: 'Is ride ki complaint already open hai',
+          complaint_id: dup.rows[0].id,
+        });
     }
 
     const priority = calcPriority(complaint_type);
-    const userRes = await db.query('SELECT name FROM users WHERE id=$1', [userId]);
-    const filerName = userRes.rows[0]?.name || 'Unknown';
 
     const result = await db.query(
       `INSERT INTO complaints(ride_id,filed_by,filed_against,filer_role,complaint_type,title,description,priority)
        VALUES($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *`,
-      [ride_id || null, userId, filedAgainstId, filerRole, complaint_type, title.trim(), description.trim(), priority]
+      [ride_id || null, userId, filedAgainstId, filerRole, complaint_type, title, description.trim(), priority]
     );
     const complaint = result.rows[0];
 
     await logTimeline(complaint.id, 'filed', `Complaint filed by ${filerName}`, filerRole, filerName, { complaint_type });
 
-    // notify admin via FCM (if admin FCM token exists — optional)
-    // notify the other party
-    const otherToken = await getUserFcmToken(filedAgainstId);
-    if (otherToken) {
-      sendFCM(otherToken, {
-        title: 'Aapke khilaf complaint aayi hai',
-        body: `"${title}" — Sppero team review karegi`,
-        data: { type: 'complaint_filed', complaint_id: complaint.id },
-      }).catch(() => {});
+    const otherFcm = await getUserFcmToken(filedAgainstId);
+    if (otherFcm) {
+      sendFCM(otherFcm, 'Aapke khilaf complaint aayi hai',
+        `${title} — Sppero team review karegi`,
+        { type: 'complaint_filed', complaint_id: complaint.id }
+      ).catch(() => {});
     }
 
     res.status(201).json({ message: 'Complaint submit ho gayi', complaint });
@@ -132,11 +163,10 @@ router.post('/', auth, async (req, res) => {
 });
 
 // ─── GET /api/complaints — my complaints ─────────────────────────────────────
-router.get('/', auth, async (req, res) => {
+router.get('/', phoneAuth, async (req, res) => {
   const userId = req.user.id;
   const { status, page = 1, limit = 20 } = req.query;
   const offset = (page - 1) * limit;
-
   try {
     let where = 'WHERE (c.filed_by=$1 OR c.filed_against=$1)';
     const params = [userId];
@@ -147,8 +177,7 @@ router.get('/', auth, async (req, res) => {
               ub.name AS filed_by_name,
               ua.name AS filed_against_name,
               r.pickup, r.drop_location, r.fare,
-              (SELECT COUNT(*) FROM complaint_messages cm WHERE cm.complaint_id=c.id AND cm.is_internal=false) AS message_count,
-              (SELECT COUNT(*) FROM complaint_evidence ce WHERE ce.complaint_id=c.id) AS evidence_count
+              (SELECT COUNT(*) FROM complaint_messages cm WHERE cm.complaint_id=c.id AND cm.is_internal=false) AS message_count
        FROM complaints c
        LEFT JOIN users ub ON c.filed_by=ub.id
        LEFT JOIN users ua ON c.filed_against=ua.id
@@ -161,8 +190,8 @@ router.get('/', auth, async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// ─── GET /api/complaints/:id — complaint detail ───────────────────────────────
-router.get('/:id', auth, async (req, res) => {
+// ─── GET /api/complaints/:id ──────────────────────────────────────────────────
+router.get('/:id', phoneAuth, async (req, res) => {
   const userId = req.user.id;
   try {
     const result = await db.query(
@@ -177,112 +206,99 @@ router.get('/:id', auth, async (req, res) => {
        WHERE c.id=$1`,
       [req.params.id]
     );
-    if (result.rows.length === 0) return res.status(404).json({ error: 'Complaint nahi mili' });
-
+    if (!result.rows[0]) return res.status(404).json({ error: 'Complaint nahi mili' });
     const c = result.rows[0];
     if (c.filed_by !== userId && c.filed_against !== userId)
       return res.status(403).json({ error: 'Access denied' });
 
     const [messages, evidence, timeline] = await Promise.all([
       db.query(
-        `SELECT cm.*, u.name AS sender_name FROM complaint_messages cm LEFT JOIN users u ON cm.sender_id=u.id
+        `SELECT cm.*, u.name AS sender_name FROM complaint_messages cm
+         LEFT JOIN users u ON cm.sender_id=u.id
          WHERE cm.complaint_id=$1 AND cm.is_internal=false ORDER BY cm.created_at ASC`,
         [c.id]
       ),
       db.query('SELECT * FROM complaint_evidence WHERE complaint_id=$1 ORDER BY created_at ASC', [c.id]),
       db.query('SELECT * FROM complaint_timeline WHERE complaint_id=$1 ORDER BY created_at ASC', [c.id]),
     ]);
-
     res.json({ complaint: c, messages: messages.rows, evidence: evidence.rows, timeline: timeline.rows });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// ─── POST /api/complaints/:id/messages — add message/response ─────────────────
-router.post('/:id/messages', auth, async (req, res) => {
+// ─── POST /api/complaints/:id/messages ───────────────────────────────────────
+router.post('/:id/messages', phoneAuth, async (req, res) => {
   const userId = req.user.id;
   const { message } = req.body;
-  if (!message || !message.trim())
-    return res.status(400).json({ error: 'Message khali nahi ho sakta' });
-
+  if (!message?.trim()) return res.status(400).json({ error: 'Message khali nahi ho sakta' });
   try {
     const cRes = await db.query('SELECT * FROM complaints WHERE id=$1', [req.params.id]);
-    if (cRes.rows.length === 0) return res.status(404).json({ error: 'Complaint nahi mili' });
+    if (!cRes.rows[0]) return res.status(404).json({ error: 'Complaint nahi mili' });
     const c = cRes.rows[0];
-
     if (c.filed_by !== userId && c.filed_against !== userId)
       return res.status(403).json({ error: 'Access denied' });
     if (['resolved', 'closed'].includes(c.status))
-      return res.status(400).json({ error: 'Closed/resolved complaint mein message nahi bhej sakte' });
+      return res.status(400).json({ error: 'Closed complaint mein message nahi bhej sakte' });
 
-    const userRes = await db.query('SELECT name FROM users WHERE id=$1', [userId]);
-    const driver  = await isDriver(userId);
-    const role    = driver ? 'driver' : 'customer';
-    const name    = userRes.rows[0]?.name || 'Unknown';
+    const driver = await isDriver(userId);
+    const role = driver ? 'driver' : 'customer';
+    const name = req.user.name || 'Unknown';
 
     await db.query(
       'INSERT INTO complaint_messages(complaint_id,sender_id,sender_role,sender_name,message) VALUES($1,$2,$3,$4,$5)',
       [c.id, userId, role, name, message.trim()]
     );
-
-    // update status to awaiting_response if under_review
-    if (c.status === 'awaiting_response') {
+    if (c.status === 'awaiting_response')
       await db.query("UPDATE complaints SET status='under_review',updated_at=NOW() WHERE id=$1", [c.id]);
-    }
 
     await logTimeline(c.id, 'message_added', `${name} ne reply kiya`, role, name, null);
 
-    // notify the other party
     const otherId = userId === c.filed_by ? c.filed_against : c.filed_by;
-    const token = await getUserFcmToken(otherId);
-    if (token) sendFCM(token, { title: 'Complaint mein naya message', body: message.trim().substring(0, 80), data: { type: 'complaint_message', complaint_id: c.id } }).catch(() => {});
+    const fcm = await getUserFcmToken(otherId);
+    if (fcm) sendFCM(fcm, 'Complaint mein naya message', message.trim().slice(0, 80), { type: 'complaint_message', complaint_id: c.id }).catch(() => {});
 
     res.json({ message: 'Message bheja gaya' });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// ─── POST /api/complaints/:id/evidence — upload image evidence ────────────────
-router.post('/:id/evidence', auth, async (req, res) => {
+// ─── POST /api/complaints/:id/evidence ───────────────────────────────────────
+router.post('/:id/evidence', phoneAuth, async (req, res) => {
   const userId = req.user.id;
-  const { image, caption } = req.body; // base64 image
+  const { image, caption } = req.body;
   if (!image) return res.status(400).json({ error: 'Image data zaroori hai' });
-
   try {
     const cRes = await db.query('SELECT * FROM complaints WHERE id=$1', [req.params.id]);
-    if (cRes.rows.length === 0) return res.status(404).json({ error: 'Complaint nahi mili' });
+    if (!cRes.rows[0]) return res.status(404).json({ error: 'Complaint nahi mili' });
     const c = cRes.rows[0];
-
     if (c.filed_by !== userId && c.filed_against !== userId)
       return res.status(403).json({ error: 'Access denied' });
     if (['resolved', 'closed'].includes(c.status))
       return res.status(400).json({ error: 'Closed complaint mein evidence nahi de sakte' });
 
-    // max 5 evidence per person per complaint
-    const countRes = await db.query('SELECT COUNT(*) FROM complaint_evidence WHERE complaint_id=$1 AND uploaded_by=$2', [c.id, userId]);
+    const countRes = await db.query(
+      'SELECT COUNT(*) FROM complaint_evidence WHERE complaint_id=$1 AND uploaded_by=$2', [c.id, userId]
+    );
     if (parseInt(countRes.rows[0].count) >= 5)
       return res.status(400).json({ error: 'Maximum 5 evidence allowed hai' });
 
     const upload = await cloudinary.uploader.upload(image, { folder: 'sppero_complaints', resource_type: 'image' });
-
     await db.query(
       'INSERT INTO complaint_evidence(complaint_id,uploaded_by,file_url,caption) VALUES($1,$2,$3,$4)',
       [c.id, userId, upload.secure_url, caption || null]
     );
     await logTimeline(c.id, 'evidence_uploaded', 'Evidence upload kiya gaya', null, null, null);
-
     res.json({ message: 'Evidence upload ho gaya', url: upload.secure_url });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// ─── POST /api/complaints/:id/withdraw — withdraw complaint ───────────────────
-router.post('/:id/withdraw', auth, async (req, res) => {
+// ─── POST /api/complaints/:id/withdraw ───────────────────────────────────────
+router.post('/:id/withdraw', phoneAuth, async (req, res) => {
   const userId = req.user.id;
   try {
     const cRes = await db.query('SELECT * FROM complaints WHERE id=$1', [req.params.id]);
-    if (cRes.rows.length === 0) return res.status(404).json({ error: 'Complaint nahi mili' });
+    if (!cRes.rows[0]) return res.status(404).json({ error: 'Complaint nahi mili' });
     const c = cRes.rows[0];
-
     if (c.filed_by !== userId) return res.status(403).json({ error: 'Sirf complainant withdraw kar sakta hai' });
-    if (['resolved', 'closed', 'withdrawn'].includes(c.status))
+    if (['resolved', 'closed'].includes(c.status))
       return res.status(400).json({ error: 'Yeh complaint already close ho chuki hai' });
 
     await db.query(
@@ -294,43 +310,37 @@ router.post('/:id/withdraw', auth, async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// ─── POST /api/complaints/:id/appeal — appeal a resolved complaint ────────────
-router.post('/:id/appeal', auth, async (req, res) => {
+// ─── POST /api/complaints/:id/appeal ─────────────────────────────────────────
+router.post('/:id/appeal', phoneAuth, async (req, res) => {
   const userId = req.user.id;
   const { reason } = req.body;
-  if (!reason || reason.length < 20)
+  if (!reason || reason.trim().length < 20)
     return res.status(400).json({ error: 'Appeal reason kam se kam 20 characters ka hona chahiye' });
-
   try {
     const cRes = await db.query('SELECT * FROM complaints WHERE id=$1', [req.params.id]);
-    if (cRes.rows.length === 0) return res.status(404).json({ error: 'Complaint nahi mili' });
+    if (!cRes.rows[0]) return res.status(404).json({ error: 'Complaint nahi mili' });
     const c = cRes.rows[0];
-
     if (c.filed_by !== userId && c.filed_against !== userId)
       return res.status(403).json({ error: 'Access denied' });
     if (c.status !== 'resolved')
       return res.status(400).json({ error: 'Sirf resolved complaints ko appeal kar sakte hain' });
 
-    const userRes = await db.query('SELECT name FROM users WHERE id=$1', [userId]);
-    const name = userRes.rows[0]?.name || 'Unknown';
-
+    const name = req.user.name || 'Unknown';
     await db.query("UPDATE complaints SET status='appealed',updated_at=NOW() WHERE id=$1", [c.id]);
     await db.query(
       'INSERT INTO complaint_messages(complaint_id,sender_id,sender_role,sender_name,message) VALUES($1,$2,$3,$4,$5)',
       [c.id, userId, 'customer', name, `[APPEAL] ${reason.trim()}`]
     );
     await logTimeline(c.id, 'appealed', `${name} ne appeal ki`, null, name, { reason });
-
     res.json({ message: 'Appeal submit ho gayi, team dobara review karegi' });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// ─── GET /api/complaints/types/list — available complaint types ───────────────
-router.get('/types/list', auth, async (req, res) => {
+// ─── GET /api/complaints/types/list ──────────────────────────────────────────
+router.get('/types/list', phoneAuth, async (req, res) => {
   try {
     const driver = await isDriver(req.user.id);
-    const types = driver ? COMPLAINT_TYPES_DRIVER : COMPLAINT_TYPES_CUSTOMER;
-    res.json({ types });
+    res.json({ types: driver ? COMPLAINT_TYPES_DRIVER : COMPLAINT_TYPES_CUSTOMER });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
