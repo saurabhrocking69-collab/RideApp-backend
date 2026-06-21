@@ -245,6 +245,16 @@ setTimeout(async () => {
   for (const sql of complaintTables) await db.query(sql).catch((e) => console.error('Complaint table error:', e.message));
   console.log('✅ Complaint tables ready');
 
+  // Ensure green_bike, electric_auto, luxury have fare_settings rows
+  await db.query(`
+    INSERT INTO fare_settings (vehicle_type, base_fare, per_km_rate, night_multiplier)
+    VALUES
+      ('green_bike',    12,  6, 1.2),
+      ('electric_auto', 20,  9, 1.3),
+      ('luxury',        80, 25, 2.0)
+    ON CONFLICT (vehicle_type) DO NOTHING
+  `).catch(() => {});
+
   try {
     const stuck = await db.query(
       `SELECT id, pickup_lat, pickup_lng, ride_type FROM rides WHERE status='requested' AND driver_id IS NULL`
