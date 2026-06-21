@@ -31,6 +31,8 @@ router.post('/book', async (req, res) => {
   try {
     const passenger = await db.query('SELECT * FROM users WHERE phone = $1', [passenger_phone]);
     if (passenger.rows.length === 0) return res.status(404).json({ error: 'Passenger nahi mila' });
+    if (passenger.rows[0].booking_restricted)
+      return res.status(403).json({ error: '🚫 Aapka account temporarily hold pe hai. Kisi pichli ride ka payment issue hai. Support se contact karo: help@sppero.in', restricted: true });
 
     const distance = req.body.distance || 5;
     const fareRes = await db.query('SELECT * FROM fare_settings WHERE vehicle_type = $1', [ride_type]);
@@ -299,37 +301,123 @@ router.post('/cancel-smart', async (req, res) => {
 });
 
 // POST /api/rides/complete
+// Accepts optional driver_lat/driver_lng for early-completion detection.
+// If driver is >800m from drop point, marks early_completion=true and auto-raises a complaint.
 router.post('/complete', async (req, res) => {
-  const { ride_id, driver_phone } = req.body;
+  const { ride_id, driver_phone, driver_lat, driver_lng } = req.body;
   try {
-    if (driver_phone) {
-      const owner = await db.query(
-        `SELECT 1 FROM rides r JOIN users u ON r.driver_id=u.id WHERE r.id=$1 AND u.phone=$2 AND r.status='started'`, [ride_id, driver_phone]
-      );
-      if (!owner.rows[0]) return res.status(403).json({ error: 'Yeh ride tumhari nahi hai ya abhi started nahi hai' });
-    }
-    const upd = await db.query(
-      `UPDATE rides SET status = 'completed', payment_status = 'pending', completed_at = NOW() WHERE id = $1 RETURNING id, fare, payment_method, driver_id`,
-      [ride_id]
+    const rideRow = await db.query(
+      `SELECT r.*, u.phone AS passenger_phone, d.phone AS dphone
+       FROM rides r
+       JOIN users u ON r.passenger_id = u.id
+       LEFT JOIN users d ON r.driver_id = d.id
+       WHERE r.id=$1 AND r.status='started'`, [ride_id]
     );
-    if (!upd.rows[0]) return res.status(404).json({ error: 'Ride nahi mili' });
-    emitRideUpdate(ride_id, { status: 'completed', fare: upd.rows[0].fare, payment_method: upd.rows[0].payment_method });
-    res.json({ success: true, fare: upd.rows[0].fare, payment_method: upd.rows[0].payment_method, message: 'Trip complete! Payment ka intezaar karo.' });
+    if (!rideRow.rows[0]) return res.status(404).json({ error: 'Ride nahi mili ya started nahi hai' });
+    const ride = rideRow.rows[0];
 
-    if (upd.rows[0].driver_id) {
-      const drvPhone = await db.query('SELECT phone FROM users WHERE id=$1', [upd.rows[0].driver_id]);
-      if (drvPhone.rows[0])
-        await db.query(`INSERT INTO driver_metrics (phone, idle_since) VALUES ($1, NOW()) ON CONFLICT (phone) DO UPDATE SET idle_since=NOW()`, [drvPhone.rows[0].phone]).catch(() => {});
-    }
-    try {
-      const compData = await db.query(
-        `SELECT p.phone as passenger_phone, d.phone as driver_phone
-         FROM rides r JOIN users p ON r.passenger_id::text = p.id::text JOIN users d ON r.driver_id::text = d.id::text
-         WHERE r.id = $1`, [ride_id]
+    if (driver_phone && ride.dphone !== driver_phone)
+      return res.status(403).json({ error: 'Yeh ride tumhari nahi hai' });
+
+    // ── Early completion detection ───────────────────────────
+    let earlyCompletion = false;
+    let distFromDrop = null;
+    const EARLY_THRESHOLD_KM = 0.8; // 800m — flag if driver completes too far from drop
+
+    if (driver_lat && driver_lng && ride.drop_lat && ride.drop_lng) {
+      distFromDrop = haversineKm(
+        parseFloat(driver_lat), parseFloat(driver_lng),
+        parseFloat(ride.drop_lat), parseFloat(ride.drop_lng)
       );
-      if (compData.rows[0]) {
-        sendFCM(compData.rows[0].passenger_phone, '🏁 Trip Complete!', 'Payment karo aur driver ko rate karo!', { type: 'trip_completed', ride_id: String(ride_id) });
-        sendFCM(compData.rows[0].driver_phone, '✅ Trip Complete!', 'Payment aa rahi hai — wait karo.', { type: 'payment_pending' }, { channelId: 'ride_requests' });
+      if (distFromDrop > EARLY_THRESHOLD_KM) earlyCompletion = true;
+    }
+
+    const upd = await db.query(
+      `UPDATE rides SET
+         status = 'completed', payment_status = 'pending', completed_at = NOW(),
+         early_completion = $2,
+         driver_lat_at_complete = $3, driver_lng_at_complete = $4,
+         completion_dist_from_drop = $5
+       WHERE id = $1
+       RETURNING id, fare, payment_method, driver_id`,
+      [ride_id, earlyCompletion, driver_lat || null, driver_lng || null, distFromDrop]
+    );
+    if (!upd.rows[0]) return res.status(404).json({ error: 'Update fail hua' });
+
+    emitRideUpdate(ride_id, {
+      status: 'completed',
+      fare: upd.rows[0].fare,
+      payment_method: upd.rows[0].payment_method,
+      early_completion: earlyCompletion,
+    });
+    res.json({
+      success: true,
+      fare: upd.rows[0].fare,
+      payment_method: upd.rows[0].payment_method,
+      early_completion: earlyCompletion,
+      dist_from_drop: distFromDrop ? distFromDrop.toFixed(2) : null,
+      message: earlyCompletion
+        ? `⚠️ Trip complete kiya — aap drop se ${(distFromDrop||0).toFixed(1)}km door the. Customer ko inform kar diya gaya.`
+        : 'Trip complete! Payment ka intezaar karo.',
+    });
+
+    // post-complete async work
+    try {
+      if (upd.rows[0].driver_id) {
+        const drvPhone = await db.query('SELECT phone FROM users WHERE id=$1', [upd.rows[0].driver_id]);
+        if (drvPhone.rows[0])
+          await db.query(`INSERT INTO driver_metrics (phone, idle_since) VALUES ($1, NOW()) ON CONFLICT (phone) DO UPDATE SET idle_since=NOW()`, [drvPhone.rows[0].phone]).catch(() => {});
+      }
+      sendFCM(ride.passenger_phone, '🏁 Trip Complete!', 'Payment karo aur driver ko rate karo!', { type: 'trip_completed', ride_id: String(ride_id) });
+      sendFCM(ride.dphone, '✅ Trip Complete!', 'Payment aa rahi hai — wait karo.', { type: 'payment_pending' }, { channelId: 'ride_requests' });
+
+      // Log incident + auto-complaint for early completion
+      if (earlyCompletion) {
+        await db.query(
+          `INSERT INTO ride_incidents (ride_id, incident_type, detected_by, driver_id, customer_id, metadata)
+           VALUES ($1,'early_completion','system',$2,$3,$4)`,
+          [ride_id, ride.driver_id, ride.passenger_id,
+           JSON.stringify({ dist_km: distFromDrop, driver_lat, driver_lng, drop_lat: ride.drop_lat, drop_lng: ride.drop_lng })]
+        ).catch(() => {});
+
+        // Auto-create complaint on behalf of customer
+        const cRes = await db.query(
+          `INSERT INTO complaints(ride_id,filed_by,filed_against,filer_role,complaint_type,title,description,priority,source)
+           VALUES($1,$2,$3,'customer','early_trip_end',
+             'Driver ne drop se pehle trip complete kiya',
+             $4,'high','system_auto')
+           RETURNING id`,
+          [ride_id, ride.passenger_id, ride.driver_id,
+           `System detected: driver ne trip complete ki jab woh drop location se ${(distFromDrop||0).toFixed(1)}km door the. Ride #${ride_id}.`]
+        ).catch(() => ({ rows: [] }));
+
+        if (cRes.rows[0]) {
+          await db.query(
+            `INSERT INTO complaint_timeline(complaint_id,event,description,actor_role,actor_name)
+             VALUES($1,'auto_created','System ne early completion detect ki aur complaint auto-raise ki','system','Sppero System')`,
+            [cRes.rows[0].id]
+          ).catch(() => {});
+        }
+
+        // Alert customer about early completion
+        sendFCM(ride.passenger_phone,
+          '⚠️ Driver ne sahi jagah nahi chhoda!',
+          `Aapka driver drop se ${(distFromDrop||0).toFixed(1)}km door tha jab usne trip complete ki. Complaint auto-raise ho gayi.`,
+          { type: 'early_completion_alert', ride_id: String(ride_id), complaint_id: cRes.rows[0]?.id || '' }
+        ).catch(() => {});
+
+        // Warn driver
+        sendFCM(ride.dphone,
+          '⚠️ Early Trip Completion Detected',
+          `Aapne ride #${ride_id} drop location se ${(distFromDrop||0).toFixed(1)}km door complete ki. Yeh platform policy ke against hai.`,
+          { type: 'early_completion_warning', ride_id: String(ride_id) },
+          { channelId: 'ride_requests' }
+        ).catch(() => {});
+
+        // Strike the driver
+        await db.query(
+          `UPDATE driver_metrics SET strike_count = COALESCE(strike_count,0)+1 WHERE phone=$1`, [ride.dphone]
+        ).catch(() => {});
       }
     } catch (_e) {}
   } catch (err) { res.status(500).json({ error: err.message }); }
@@ -429,6 +517,105 @@ router.post('/cash-confirm', async (req, res) => {
     const totalPending = parseFloat(walletRes.rows[0]?.pending_commission || 0);
     sendFCM(phone, '💰 Commission Due', `₹${commission.toFixed(0)} commission baqi hai. Total pending: ₹${totalPending.toFixed(0)}. App mein pay karo.`, { type: 'commission_due', pending_commission: String(totalPending) }).catch(() => {});
     res.json({ success: true, message: 'Payment confirmed!', pending_commission: totalPending });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// POST /api/rides/payment-not-received
+// Driver calls this within 10 min of trip completion when cash customer refuses/runs.
+// Auto-creates incident + complaint, penalizes customer trust_score.
+router.post('/payment-not-received', async (req, res) => {
+  const { ride_id, driver_phone } = req.body;
+  if (!ride_id || !driver_phone) return res.status(400).json({ error: 'ride_id aur driver_phone zaroori hai' });
+  try {
+    const rideRes = await db.query(
+      `SELECT r.*, u.phone AS passenger_phone, u.id AS passenger_id_val,
+              d.phone AS dphone, d.id AS driver_id_val,
+              u.name AS passenger_name, d.name AS driver_name
+       FROM rides r
+       JOIN users u ON r.passenger_id = u.id
+       JOIN users d ON r.driver_id = d.id
+       WHERE r.id=$1 AND d.phone=$2`, [ride_id, driver_phone]
+    );
+    if (!rideRes.rows[0]) return res.status(404).json({ error: 'Ride nahi mili ya tumhari nahi hai' });
+    const ride = rideRes.rows[0];
+
+    if (!['completed', 'cash_pending'].includes(ride.status))
+      return res.status(400).json({ error: 'Ride abhi completed nahi hai' });
+    if (ride.payment_not_received)
+      return res.status(409).json({ error: 'Yeh already report ho chuki hai' });
+
+    // Only allow within 10 minutes of completion
+    const minsSinceComplete = (Date.now() - new Date(ride.completed_at || ride.created_at).getTime()) / 60000;
+    if (minsSinceComplete > 10)
+      return res.status(400).json({ error: 'Payment not received sirf 10 minute ke andar report kar sakte ho' });
+
+    // Mark ride
+    await db.query(
+      `UPDATE rides SET payment_not_received=true, payment_status='disputed' WHERE id=$1`, [ride_id]
+    );
+
+    // Log incident
+    await db.query(
+      `INSERT INTO ride_incidents(ride_id,incident_type,detected_by,driver_id,customer_id,metadata)
+       VALUES($1,'payment_skipped','driver',$2,$3,$4)`,
+      [ride_id, ride.driver_id_val, ride.passenger_id_val,
+       JSON.stringify({ fare: ride.fare, payment_method: ride.payment_method })]
+    ).catch(() => {});
+
+    // Auto-create complaint against customer
+    const cRes = await db.query(
+      `INSERT INTO complaints(ride_id,filed_by,filed_against,filer_role,complaint_type,title,description,priority,source)
+       VALUES($1,$2,$3,'driver','payment_issue',
+         'Customer ne cash payment nahi ki',
+         $4,'high','driver_report')
+       RETURNING id`,
+      [ride_id, ride.driver_id_val, ride.passenger_id_val,
+       `Driver ${ride.driver_name} (${driver_phone}) ne report kiya: Ride #${ride_id} ke baad customer ${ride.passenger_name} ne ₹${ride.fare} cash payment nahi ki aur chale gaye.`]
+    );
+    if (cRes.rows[0]) {
+      await db.query(
+        `INSERT INTO complaint_timeline(complaint_id,event,description,actor_role,actor_name)
+         VALUES($1,'driver_reported','Driver ne payment not received report ki','driver',$2)`,
+        [cRes.rows[0].id, ride.driver_name]
+      ).catch(() => {});
+    }
+
+    // Penalize customer trust score
+    await db.query(
+      `UPDATE users SET trust_score = GREATEST(0, COALESCE(trust_score,100) - 25) WHERE id=$1`, [ride.passenger_id_val]
+    ).catch(() => {});
+
+    // Check if repeat offender (3+ payment skips → restrict booking)
+    const skipCount = await db.query(
+      `SELECT COUNT(*) FROM ride_incidents WHERE customer_id=$1 AND incident_type='payment_skipped'`,
+      [ride.passenger_id_val]
+    );
+    const totalSkips = parseInt(skipCount.rows[0]?.count || 0);
+    if (totalSkips >= 3) {
+      await db.query(
+        `UPDATE users SET booking_restricted=true, booking_restricted_reason='3+ payment skips — admin review required' WHERE id=$1`,
+        [ride.passenger_id_val]
+      ).catch(() => {});
+      sendFCM(ride.passenger_phone, '🚫 Booking Suspended',
+        'Aapka account review ke liye hold pe hai. Support se contact karo.',
+        { type: 'account_restricted' }
+      ).catch(() => {});
+    }
+
+    // FCM to customer — warning
+    sendFCM(ride.passenger_phone,
+      '⚠️ Payment Issue Reported',
+      `Driver ne report kiya ki aapne ride #${ride_id} ka ₹${ride.fare} cash payment nahi kiya. Please support se contact karo.`,
+      { type: 'payment_dispute', ride_id: String(ride_id) }
+    ).catch(() => {});
+
+    res.json({
+      success: true,
+      complaint_id: cRes.rows[0]?.id,
+      message: 'Payment not received report ho gayi. Admin review karega.',
+      customer_trust_score_deducted: 25,
+      customer_skips_total: totalSkips,
+    });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 

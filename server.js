@@ -147,6 +147,38 @@ setTimeout(async () => {
   for (const sql of indexes) await db.query(sql).catch(() => {});
   // offered_phones tracks which drivers were already sent this ride request — skip on surge rebuild
   await db.query(`ALTER TABLE rides ADD COLUMN IF NOT EXISTS offered_phones TEXT[] DEFAULT '{}'`).catch(() => {});
+  // Early completion + payment skip tracking columns
+  await db.query(`ALTER TABLE rides ADD COLUMN IF NOT EXISTS early_completion BOOLEAN DEFAULT FALSE`).catch(() => {});
+  await db.query(`ALTER TABLE rides ADD COLUMN IF NOT EXISTS driver_lat_at_complete FLOAT`).catch(() => {});
+  await db.query(`ALTER TABLE rides ADD COLUMN IF NOT EXISTS driver_lng_at_complete FLOAT`).catch(() => {});
+  await db.query(`ALTER TABLE rides ADD COLUMN IF NOT EXISTS completion_dist_from_drop FLOAT`).catch(() => {});
+  await db.query(`ALTER TABLE rides ADD COLUMN IF NOT EXISTS payment_not_received BOOLEAN DEFAULT FALSE`).catch(() => {});
+  // Customer account control columns
+  await db.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS trust_score INTEGER DEFAULT 100`).catch(() => {});
+  await db.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS booking_restricted BOOLEAN DEFAULT FALSE`).catch(() => {});
+  await db.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS booking_restricted_reason TEXT`).catch(() => {});
+  // Driver metrics strike count
+  await db.query(`ALTER TABLE driver_metrics ADD COLUMN IF NOT EXISTS strike_count INTEGER DEFAULT 0`).catch(() => {});
+  // Source column on complaints (manual vs system_auto vs driver_report)
+  await db.query(`ALTER TABLE complaints ADD COLUMN IF NOT EXISTS source VARCHAR(30) DEFAULT 'manual'`).catch(() => {});
+  // Ride incidents table — all system-detected events
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS ride_incidents (
+      id SERIAL PRIMARY KEY,
+      ride_id INTEGER REFERENCES rides(id) ON DELETE SET NULL,
+      incident_type VARCHAR(50) NOT NULL,
+      detected_by VARCHAR(10) NOT NULL DEFAULT 'system',
+      driver_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+      customer_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+      metadata JSONB,
+      resolved BOOLEAN DEFAULT FALSE,
+      created_at TIMESTAMPTZ DEFAULT NOW()
+    )
+  `).catch(() => {});
+  await db.query(`CREATE INDEX IF NOT EXISTS idx_incidents_ride_id ON ride_incidents(ride_id)`).catch(() => {});
+  await db.query(`CREATE INDEX IF NOT EXISTS idx_incidents_customer ON ride_incidents(customer_id)`).catch(() => {});
+  await db.query(`CREATE INDEX IF NOT EXISTS idx_incidents_driver ON ride_incidents(driver_id)`).catch(() => {});
+  await db.query(`CREATE INDEX IF NOT EXISTS idx_incidents_type ON ride_incidents(incident_type)`).catch(() => {});
   console.log('✅ DB indexes ready');
 
   // ── Complaint system tables ───────────────────────

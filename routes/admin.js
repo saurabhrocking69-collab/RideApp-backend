@@ -835,4 +835,72 @@ router.post('/complaints/:id/action', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+// ── GET /api/admin/incidents — list all system-detected incidents ──────────────
+router.get('/incidents', async (req, res) => {
+  const { type, resolved, limit = 50, offset = 0 } = req.query;
+  try {
+    let where = 'WHERE 1=1';
+    const params = [];
+    if (type) { where += ` AND i.incident_type=$${params.length+1}`; params.push(type); }
+    if (resolved !== undefined && resolved !== '') { where += ` AND i.resolved=$${params.length+1}`; params.push(resolved === 'true'); }
+
+    const result = await db.query(
+      `SELECT i.*,
+              r.pickup, r.drop_location, r.fare,
+              ud.name AS driver_name, ud.phone AS driver_phone,
+              uc.name AS customer_name, uc.phone AS customer_phone
+       FROM ride_incidents i
+       LEFT JOIN rides r ON i.ride_id = r.id
+       LEFT JOIN users ud ON i.driver_id = ud.id
+       LEFT JOIN users uc ON i.customer_id = uc.id
+       ${where}
+       ORDER BY i.created_at DESC LIMIT $${params.length+1} OFFSET $${params.length+2}`,
+      [...params, limit, offset]
+    );
+
+    const stats = await db.query(`
+      SELECT
+        COUNT(*) AS total,
+        COUNT(*) FILTER (WHERE incident_type='early_completion') AS early_completions,
+        COUNT(*) FILTER (WHERE incident_type='payment_skipped') AS payment_skips,
+        COUNT(*) FILTER (WHERE resolved=false) AS unresolved,
+        COUNT(*) FILTER (WHERE created_at > NOW()-INTERVAL '24 hours') AS today
+      FROM ride_incidents
+    `);
+
+    res.json({ incidents: result.rows, stats: stats.rows[0] });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ── PUT /api/admin/incidents/:id/resolve ────────────────────────────────────
+router.put('/incidents/:id/resolve', async (req, res) => {
+  try {
+    await db.query('UPDATE ride_incidents SET resolved=true WHERE id=$1', [req.params.id]);
+    res.json({ success: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ── GET /api/admin/customer-profile/:id — trust score + incidents + restrictions ──
+router.get('/customer-profile/:id', async (req, res) => {
+  try {
+    const [user, incidents, restrictions] = await Promise.all([
+      db.query('SELECT id,name,phone,trust_score,booking_restricted,booking_restricted_reason FROM users WHERE id=$1', [req.params.id]),
+      db.query('SELECT * FROM ride_incidents WHERE customer_id=$1 ORDER BY created_at DESC LIMIT 10', [req.params.id]),
+      db.query("SELECT COUNT(*) FROM ride_incidents WHERE customer_id=$1 AND resolved=false", [req.params.id]),
+    ]);
+    res.json({ user: user.rows[0], incidents: incidents.rows, open_incidents: parseInt(restrictions.rows[0]?.count || 0) });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ── PUT /api/admin/customer-profile/:id/unrestrict ────────────────────────
+router.put('/customer-profile/:id/unrestrict', async (req, res) => {
+  try {
+    await db.query(
+      "UPDATE users SET booking_restricted=false, booking_restricted_reason=NULL, trust_score=LEAST(100,COALESCE(trust_score,0)+20) WHERE id=$1",
+      [req.params.id]
+    );
+    res.json({ success: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
 module.exports = router;

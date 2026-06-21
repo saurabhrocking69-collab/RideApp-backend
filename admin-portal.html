@@ -159,6 +159,7 @@ input,select,textarea{outline:none}
     <button class="tab" onclick="showSection('settings',this)">⚙️ Settings</button>
     <button class="tab" onclick="showSection('payouts',this)">💰 Payouts</button>
     <button class="tab" onclick="showSection('complaints',this);loadComplaints()">⚠️ Complaints</button>
+    <button class="tab" onclick="showSection('incidents',this);loadIncidents()">🚨 Incidents</button>
   </div>
 
   <!-- TRANSACTIONS -->
@@ -445,6 +446,32 @@ input,select,textarea{outline:none}
       <div style="overflow-x:auto"><table>
         <thead><tr><th>Date</th><th>Priority</th><th>Type</th><th>Title</th><th>Filer</th><th>Against</th><th>Ride</th><th>Status</th><th>Assigned</th><th>Action</th></tr></thead>
         <tbody id="cmp-body"><tr><td colspan=10 class=loading>Loading...</td></tr></tbody>
+      </table></div>
+    </div>
+  </div>
+
+  <!-- INCIDENTS -->
+  <div id="incidents" class="section">
+    <div class="stats" id="inc-stats-row" style="margin-bottom:18px"></div>
+    <div class="card" style="padding:14px">
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+        <select id="inc-filter-type" class="input-sm" style="width:180px" onchange="loadIncidents()">
+          <option value="">All Types</option>
+          <option value="early_completion">Early Completion</option>
+          <option value="payment_skipped">Payment Skipped</option>
+        </select>
+        <select id="inc-filter-resolved" class="input-sm" style="width:120px" onchange="loadIncidents()">
+          <option value="">All</option>
+          <option value="false">Unresolved</option>
+          <option value="true">Resolved</option>
+        </select>
+        <button class="refresh-btn" onclick="loadIncidents()">⟳ Reload</button>
+      </div>
+    </div>
+    <div class="card">
+      <div style="overflow-x:auto"><table>
+        <thead><tr><th>Date</th><th>Type</th><th>Ride</th><th>Driver</th><th>Customer</th><th>Details</th><th>Status</th><th>Action</th></tr></thead>
+        <tbody id="inc-body"><tr><td colspan=8 class=loading>Loading...</td></tr></tbody>
       </table></div>
     </div>
   </div>
@@ -1479,6 +1506,94 @@ async function cmpSendMsg(id){
     document.getElementById('cmp-adm-msg').value='';
     setTimeout(()=>openCmpDetail(id),800);
   }catch(e){st.textContent='❌ '+e.message;st.style.color='#c62828';}
+}
+
+// ── Incidents ───────────────────────────────────────────
+const INC_COLOR={early_completion:'#f44336',payment_skipped:'#ff9800'};
+const INC_LABEL={early_completion:'🛑 Early Completion',payment_skipped:'💸 Payment Skipped'};
+
+async function loadIncidents(){
+  const type=document.getElementById('inc-filter-type').value;
+  const resolved=document.getElementById('inc-filter-resolved').value;
+  const body=document.getElementById('inc-body');
+  body.innerHTML='<tr><td colspan=8 class=loading>Loading...</td></tr>';
+  try{
+    let url='/api/admin/incidents?limit=80';
+    if(type) url+='&type='+type;
+    if(resolved!=='') url+='&resolved='+resolved;
+    const d=await aJson(url);
+    const s=d.stats||{};
+    document.getElementById('inc-stats-row').innerHTML=`
+      <div class="stat-card"><div class="stat-icon">📊</div><div class="stat-value">${s.total||0}</div><div class="stat-label">Total Incidents</div></div>
+      <div class="stat-card red"><div class="stat-icon">🛑</div><div class="stat-value">${s.early_completions||0}</div><div class="stat-label">Early Completions</div></div>
+      <div class="stat-card"><div class="stat-icon">💸</div><div class="stat-value">${s.payment_skips||0}</div><div class="stat-label">Payment Skips</div></div>
+      <div class="stat-card red"><div class="stat-icon">🔴</div><div class="stat-value">${s.unresolved||0}</div><div class="stat-label">Unresolved</div></div>
+      <div class="stat-card blue"><div class="stat-icon">📅</div><div class="stat-value">${s.today||0}</div><div class="stat-label">Today</div></div>
+    `;
+    const rows=d.incidents||[];
+    if(!rows.length){body.innerHTML='<tr><td colspan=8 style="text-align:center;color:#aaa;padding:20px">Koi incident nahi</td></tr>';return;}
+    body.innerHTML=rows.map(i=>{
+      const meta=i.metadata||{};
+      let detail='';
+      if(i.incident_type==='early_completion') detail=`Drop se ${parseFloat(meta.dist_km||0).toFixed(1)}km door`;
+      if(i.incident_type==='payment_skipped') detail=`₹${meta.fare||'?'} — ${meta.payment_method||'cash'}`;
+      return `<tr>
+        <td style="white-space:nowrap">${new Date(i.created_at).toLocaleString('en-IN',{day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'})}</td>
+        <td><span class="chip" style="background:${INC_COLOR[i.incident_type]||'#999'};color:#fff">${INC_LABEL[i.incident_type]||i.incident_type}</span></td>
+        <td>${i.ride_id?'#'+i.ride_id:'-'}</td>
+        <td>${i.driver_name||'-'}<br><span style="font-size:10px;color:#888">${i.driver_phone||''}</span></td>
+        <td>${i.customer_name||'-'}<br><span style="font-size:10px;color:#888">${i.customer_phone||''}</span></td>
+        <td style="font-size:12px;color:#555">${detail}</td>
+        <td><span class="chip" style="background:${i.resolved?'#4CAF50':'#f44336'};color:#fff">${i.resolved?'Resolved':'Open'}</span></td>
+        <td>
+          ${!i.resolved?`<button class="action-btn btn-green" onclick="resolveIncident(${i.id})">✅ Resolve</button>`:''}
+          ${i.customer_id?`<button class="action-btn btn-blue" onclick="viewCustomerProfile(${i.customer_id})">👤 Customer</button>`:''}
+        </td>
+      </tr>`;
+    }).join('');
+  }catch(e){body.innerHTML='<tr><td colspan=8 style="color:#c62828;text-align:center">Error: '+e.message+'</td></tr>';}
+}
+
+async function resolveIncident(id){
+  try{
+    await aJson('/api/admin/incidents/'+id+'/resolve',{method:'PUT'});
+    loadIncidents();
+  }catch(e){alert('Error: '+e.message);}
+}
+
+async function viewCustomerProfile(id){
+  try{
+    const d=await aJson('/api/admin/customer-profile/'+id);
+    const u=d.user||{};
+    const trustColor=u.trust_score>=80?'#2e7d32':u.trust_score>=50?'#e65100':'#c62828';
+    document.getElementById('cmp-modal-content').innerHTML=`
+      <h3 style="margin-bottom:12px">👤 Customer Profile</h3>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:16px;font-size:13px">
+        <div><b>Name:</b> ${u.name||'?'}</div>
+        <div><b>Phone:</b> ${u.phone||'?'}</div>
+        <div><b>Trust Score:</b> <span style="color:${trustColor};font-weight:800">${u.trust_score||100}/100</span></div>
+        <div><b>Status:</b> <span style="color:${u.booking_restricted?'#c62828':'#2e7d32'};font-weight:700">${u.booking_restricted?'🚫 RESTRICTED':'✅ Active'}</span></div>
+      </div>
+      ${u.booking_restricted?`<div style="background:#ffebee;border-radius:10px;padding:12px;margin-bottom:14px;font-size:13px"><b>Restriction Reason:</b> ${u.booking_restricted_reason||'—'}<br><br>
+        <button class="action-btn btn-green" onclick="unrestrictCustomer(${id})">✅ Unrestrict Account</button></div>`:''}
+      <div style="font-size:14px;font-weight:800;margin-bottom:8px">Recent Incidents (${d.incidents?.length||0})</div>
+      ${(d.incidents||[]).map(i=>`<div style="background:#f8f8f8;border-radius:8px;padding:10px;margin-bottom:8px;font-size:12px">
+        <span class="chip" style="background:${INC_COLOR[i.incident_type]||'#999'};color:#fff">${INC_LABEL[i.incident_type]||i.incident_type}</span>
+        <span style="color:#888;margin-left:8px">${new Date(i.created_at).toLocaleString('en-IN',{day:'2-digit',month:'short'})}</span>
+        <span style="float:right;color:${i.resolved?'#2e7d32':'#c62828'}">${i.resolved?'Resolved':'Open'}</span>
+      </div>`).join('')||'<div style="color:#aaa;text-align:center">Koi incident nahi</div>'}
+    `;
+    document.getElementById('cmp-modal').classList.add('open');
+  }catch(e){alert('Error: '+e.message);}
+}
+
+async function unrestrictCustomer(id){
+  try{
+    await aJson('/api/admin/customer-profile/'+id+'/unrestrict',{method:'PUT'});
+    closeCmpModal();
+    loadIncidents();
+    alert('✅ Customer unrestrict kar diya gaya');
+  }catch(e){alert('Error: '+e.message);}
 }
 
 // ── Bootstrap ───────────────────────────────────────────
