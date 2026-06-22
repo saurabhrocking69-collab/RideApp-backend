@@ -122,7 +122,7 @@ async function _bmqAssignNext({ rideId, pickupLat, pickupLng, rideType, queue, r
       }
       await rideQueue.add('ride-assignment',
         { type: 'assign-next', rideId, pickupLat, pickupLng, rideType, queue: null, radiusKm: radiusKm + 5 },
-        { delay: 45000 }
+        { delay: 3000 }
       );
     } else {
       await db.query(`UPDATE rides SET status='cancelled', assigned_to_phone=NULL, assignment_expires_at=NULL WHERE id=$1 AND status='requested' AND driver_id IS NULL`, [rideId]);
@@ -145,7 +145,7 @@ async function _bmqAssignNext({ rideId, pickupLat, pickupLng, rideType, queue, r
   const upd = await db.query(
     `UPDATE rides
      SET assigned_to_phone=$1,
-         assignment_expires_at=NOW()+INTERVAL '60 seconds',
+         assignment_expires_at=NOW()+INTERVAL '45 seconds',
          assignment_queue=$2,
          offered_phones = array_append(COALESCE(offered_phones,'{}'), $1::text)
      WHERE id=$3 AND status='requested' AND driver_id IS NULL
@@ -156,8 +156,8 @@ async function _bmqAssignNext({ rideId, pickupLat, pickupLng, rideType, queue, r
 
   // Notify driver immediately — BEFORE any other awaits
   const rideEmoji = { bike: '🏍️', auto: '🛺', car: '🚕', eriksha: '🛵', luxury: '🚙' }[rideType] || '🚗';
-  sendFCM(nextPhone, `${rideEmoji} Naya Ride Request!`, `📍 ${rideType.toUpperCase()} ride nearby — 60 sec mein accept karo!`, { type: 'new_ride', ride_id: String(rideId) }, { channelId: 'ride_requests' });
-  emitToRoom('driver_' + nextPhone, 'newRideAssigned', { rideId, secondsToAccept: 60 });
+  sendFCM(nextPhone, `${rideEmoji} Naya Ride Request!`, `📍 ${rideType.toUpperCase()} ride nearby — 45 sec mein accept karo!`, { type: 'new_ride', ride_id: String(rideId) }, { channelId: 'ride_requests' });
+  emitToRoom('driver_' + nextPhone, 'newRideAssigned', { rideId, secondsToAccept: 45 });
 
   // Non-critical ops — fire and forget, don't block notification path
   db.query(
@@ -167,7 +167,7 @@ async function _bmqAssignNext({ rideId, pickupLat, pickupLng, rideType, queue, r
   ).catch(() => {});
   rideQueue.add('ride-assignment',
     { type: 'auto-advance', rideId, expectedPhone: nextPhone, pickupLat, pickupLng, rideType, queue: newQueue, radiusKm },
-    { delay: 62000 }
+    { delay: 47000 }
   ).catch(() => {});
 }
 
