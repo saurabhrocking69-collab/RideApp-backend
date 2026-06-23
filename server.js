@@ -37,6 +37,7 @@ const hourlyRouter  = require('./routes/hourly');
 const adminRouter      = require('./routes/admin');
 const favouritesRouter = require('./routes/favourites');
 const complaintsRouter = require('./routes/complaints');
+const bonusRouter      = require('./routes/bonus');
 
 // ── App + HTTP + Socket.io ───────────────────────
 const app    = express();
@@ -107,6 +108,7 @@ app.use('/api/hourly',   hourlyRouter);
 app.use('/api/admin',      adminAuth, adminRouter);
 app.use('/api/favourites', favouritesRouter);
 app.use('/api/complaints', complaintsRouter);
+app.use('/api/bonus',      bonusRouter);
 
 // Admin portal HTML
 app.get('/admin', (_req, res) =>
@@ -222,6 +224,8 @@ setTimeout(async () => {
   for (const sql of indexes) await db.query(sql).catch(() => {});
   // offered_phones tracks which drivers were already sent this ride request — skip on surge rebuild
   await db.query(`ALTER TABLE rides ADD COLUMN IF NOT EXISTS offered_phones TEXT[] DEFAULT '{}'`).catch(() => {});
+  await db.query(`ALTER TABLE rides ADD COLUMN IF NOT EXISTS customer_rating INT`).catch(() => {});
+  await db.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS customer_rating NUMERIC(3,1)`).catch(() => {});
   // Early completion + payment skip tracking columns
   await db.query(`ALTER TABLE rides ADD COLUMN IF NOT EXISTS early_completion BOOLEAN DEFAULT FALSE`).catch(() => {});
   await db.query(`ALTER TABLE rides ADD COLUMN IF NOT EXISTS driver_lat_at_complete FLOAT`).catch(() => {});
@@ -329,6 +333,96 @@ setTimeout(async () => {
       ('luxury',        80, 25, 2.0)
     ON CONFLICT (vehicle_type) DO NOTHING
   `).catch(() => {});
+
+  // ── Bonus System Tables ───────────────────────────
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS bonus_rules (
+      id SERIAL PRIMARY KEY,
+      vehicle_type VARCHAR(30) DEFAULT 'all',
+      bonus_type VARCHAR(30) NOT NULL,
+      config JSONB NOT NULL DEFAULT '{}',
+      label VARCHAR(100) NOT NULL DEFAULT '',
+      description TEXT DEFAULT '',
+      is_active BOOLEAN DEFAULT true,
+      updated_at TIMESTAMP DEFAULT NOW()
+    )
+  `).catch(() => {});
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS bonus_wallet (
+      driver_phone VARCHAR(15) PRIMARY KEY,
+      balance NUMERIC(10,2) DEFAULT 0,
+      total_earned NUMERIC(10,2) DEFAULT 0,
+      total_redeemed NUMERIC(10,2) DEFAULT 0,
+      updated_at TIMESTAMP DEFAULT NOW()
+    )
+  `).catch(() => {});
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS bonus_ledger (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      driver_phone VARCHAR(15) NOT NULL,
+      rule_id INT REFERENCES bonus_rules(id) ON DELETE SET NULL,
+      bonus_type VARCHAR(30),
+      amount NUMERIC(10,2) NOT NULL,
+      description VARCHAR(200),
+      ref_date DATE DEFAULT CURRENT_DATE,
+      created_at TIMESTAMP DEFAULT NOW()
+    )
+  `).catch(() => {});
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS bonus_claims_guard (
+      driver_phone VARCHAR(15),
+      rule_id INT,
+      ref_key VARCHAR(100),
+      created_at TIMESTAMP DEFAULT NOW(),
+      PRIMARY KEY (driver_phone, rule_id, ref_key)
+    )
+  `).catch(() => {});
+  await db.query(`CREATE INDEX IF NOT EXISTS idx_bonus_ledger_phone ON bonus_ledger(driver_phone, ref_date)`).catch(() => {});
+
+  // Seed default bonus rules if none exist
+  const ruleCount = await db.query(`SELECT COUNT(*) FROM bonus_rules`).catch(() => ({ rows: [{ count: '1' }] }));
+  if (parseInt(ruleCount.rows[0].count) === 0) {
+    const defaults = [
+      { vehicle_type: 'two_wheeler',   bonus_type: 'daily_rides',   label: 'Daily Ride Challenge — Bike',
+        config: { tiers: [{ rides: 4, amount: 20 }, { rides: 8, amount: 50 }, { rides: 12, amount: 90 }] },
+        description: 'Bike/Green Bike drivers ke liye daily ride targets' },
+      { vehicle_type: 'three_wheeler', bonus_type: 'daily_rides',   label: 'Daily Ride Challenge — Auto',
+        config: { tiers: [{ rides: 4, amount: 25 }, { rides: 8, amount: 60 }, { rides: 12, amount: 110 }] },
+        description: 'Auto/E-Auto drivers ke liye daily ride targets' },
+      { vehicle_type: 'four_wheeler',  bonus_type: 'daily_rides',   label: 'Daily Ride Challenge — Car',
+        config: { tiers: [{ rides: 3, amount: 40 }, { rides: 6, amount: 100 }, { rides: 10, amount: 180 }] },
+        description: 'Car/Taxi/Premium drivers ke liye daily ride targets' },
+      { vehicle_type: 'all',           bonus_type: 'peak_hour',     label: 'Peak Hour Bonus',
+        config: { per_ride: 8, slots: [{ start: 7, end: 9 }, { start: 17, end: 20 }] },
+        description: '7-9 AM aur 5-8 PM mein har completed ride pe automatic bonus' },
+      { vehicle_type: 'all',           bonus_type: 'weekly_streak', label: 'Weekly Warrior',
+        config: { target_days: 5, rides_per_day: 4, amount: 250 },
+        description: 'Hafte mein 5 din, har din 4+ rides — streak bonus claim karo' },
+    ];
+    for (const r of defaults) {
+      await db.query(
+        `INSERT INTO bonus_rules (vehicle_type, bonus_type, config, label, description) VALUES ($1,$2,$3,$4,$5)`,
+        [r.vehicle_type, r.bonus_type, JSON.stringify(r.config), r.label, r.description]
+      ).catch(() => {});
+    }
+    console.log('✅ Default bonus rules seeded');
+  }
+  console.log('✅ Bonus system tables ready');
+
+  // ── Customer Cashback Events Table ──────────────
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS cashback_events (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      user_id UUID REFERENCES users(id) ON DELETE CASCADE,
+      ride_id UUID REFERENCES rides(id) ON DELETE SET NULL,
+      rule_type VARCHAR(30) NOT NULL,
+      amount NUMERIC(8,2) NOT NULL,
+      created_at TIMESTAMP DEFAULT NOW(),
+      UNIQUE(user_id, ride_id, rule_type)
+    )
+  `).catch(() => {});
+  await db.query(`CREATE INDEX IF NOT EXISTS idx_cashback_user ON cashback_events(user_id, created_at)`).catch(() => {});
+  console.log('✅ Cashback events table ready');
 
   try {
     const stuck = await db.query(

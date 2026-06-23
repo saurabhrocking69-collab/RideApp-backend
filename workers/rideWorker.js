@@ -20,17 +20,24 @@ const VEHICLE_ALTERNATIVES = {
 
 async function getAvailableAlternatives(rideType) {
   const alts = VEHICLE_ALTERNATIVES[rideType] || [];
-  const available = [];
-  for (const alt of alts) {
-    const r = await db.query(
-      `SELECT COUNT(*) FROM drivers d JOIN users u ON d.id=u.id
-       WHERE d.vehicle_type=$1 AND d.is_online=true AND d.verification_status='approved'
-       AND NOT EXISTS (SELECT 1 FROM rides r2 WHERE r2.driver_id=d.id AND r2.status IN ('matched','arrived','started'))`,
-      [alt]
-    );
-    if (parseInt(r.rows[0].count) > 0) available.push(alt);
-  }
-  return available;
+  if (alts.length === 0) return [];
+  // Single query for all alternatives instead of N separate round trips
+  const r = await db.query(
+    `SELECT d.vehicle_type, COUNT(*) AS cnt
+     FROM drivers d
+     JOIN users u ON d.id = u.id
+     WHERE d.vehicle_type = ANY($1)
+       AND d.is_online = true
+       AND d.verification_status = 'approved'
+       AND NOT EXISTS (
+         SELECT 1 FROM rides r2
+         WHERE r2.driver_id = d.id AND r2.status IN ('matched','arrived','started')
+       )
+     GROUP BY d.vehicle_type`,
+    [alts]
+  );
+  const available = new Set(r.rows.filter(row => parseInt(row.cnt) > 0).map(row => row.vehicle_type));
+  return alts.filter(a => available.has(a)); // preserve original priority order
 }
 
 const rideWorker = new Worker('ride-assignment', async (job) => {

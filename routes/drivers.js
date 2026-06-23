@@ -5,9 +5,9 @@ const cloudinary = require('../config/cloudinary');
 const { sendFCM } = require('../config/firebase');
 const { driverLocations, encodeGeohash, haversineKm } = require('../services/matching');
 const { maskPhone } = require('../services/phone');
-const { BONUS_TIERS } = require('../services/pricing');
 const { emitToRoom, getIO } = require('../config/socket');
 const { directFavouriteRideIds } = require('./favourites');
+const { setDriverLoc } = require('../services/rideCache');
 
 // POST /api/upload
 router.post('/upload', async (req, res) => {
@@ -69,12 +69,15 @@ router.post('/login', async (req, res) => {
   const { phone } = req.body;
   try {
     const result = await db.query(
-      `SELECT u.id, u.name, u.phone, d.vehicle_type, d.vehicle_no, d.dl_name, d.verification_status, d.admin_message, d.rating
+      `SELECT u.id, u.name, u.phone, d.vehicle_type, d.vehicle_no, d.vehicle_brand, d.vehicle_model,
+              d.dl_name, d.dl_number, d.aadhaar_number, d.face_photo,
+              d.verification_status, d.admin_message, d.rating
        FROM users u JOIN drivers d ON u.id = d.id WHERE u.phone = $1`, [phone]
     );
     if (result.rows.length === 0) return res.json({ success: false, message: 'Yeh number registered nahi hai. Pehle Sppero Buddy banein.' });
     const d = result.rows[0];
-    res.json({ success: true, driver: { name: d.name || d.dl_name, phone: d.phone, vehicle_type: d.vehicle_type, vehicle_no: d.vehicle_no, rating: d.rating || 5.0, status: d.verification_status, admin_message: d.admin_message } });
+    const maskedAadhaar = d.aadhaar_number ? 'XXXX XXXX ' + d.aadhaar_number.replace(/\D/g, '').slice(-4) : null;
+    res.json({ success: true, driver: { name: d.name || d.dl_name, phone: d.phone, vehicle_type: d.vehicle_type, vehicle_no: d.vehicle_no, vehicle_brand: d.vehicle_brand, vehicle_model: d.vehicle_model, dl_number: d.dl_number, aadhaar_masked: maskedAadhaar, face_photo: d.face_photo, rating: d.rating || 5.0, status: d.verification_status, admin_message: d.admin_message } });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
@@ -169,8 +172,11 @@ router.post('/update-location', async (req, res) => {
     );
     const activeRide = await db.query(`SELECT r.id FROM rides r JOIN users u ON r.driver_id=u.id WHERE u.phone=$1 AND r.status IN ('matched','arrived','started') LIMIT 1`, [phone]);
     if (activeRide.rows[0]) {
+      const rideId = activeRide.rows[0].id;
       const io = getIO();
-      if (io) io.to('ride_' + activeRide.rows[0].id).emit('driverMoved', { lat: parseFloat(lat), lng: parseFloat(lng) });
+      if (io) io.to('ride_' + rideId).emit('driverMoved', { lat: parseFloat(lat), lng: parseFloat(lng) });
+      // Redis: fast path for /api/rides/driver-location polling fallback
+      setDriverLoc(rideId, parseFloat(lat), parseFloat(lng)).catch(() => {});
     }
     res.json({ success: true });
   } catch (err) { res.status(500).json({ error: err.message }); }
@@ -288,44 +294,6 @@ router.post('/track-metric', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// GET /api/driver/bonus-today
-router.get('/bonus-today', async (req, res) => {
-  const { phone } = req.query;
-  try {
-    const rides = await db.query(`SELECT COUNT(*) as cnt FROM rides r JOIN users u ON r.driver_id=u.id WHERE u.phone=$1 AND r.status='completed' AND DATE(r.created_at)=CURRENT_DATE`, [phone]);
-    const ridesCount = parseInt(rides.rows[0].cnt);
-    const claimed = await db.query(`SELECT bonus_tier FROM driver_bonus_claims WHERE driver_phone=$1 AND claim_date=CURRENT_DATE`, [phone]);
-    const claimedTiers = claimed.rows.map(r => r.bonus_tier);
-    const available = BONUS_TIERS.filter(t => ridesCount >= t.rides && !claimedTiers.includes(t.tier));
-    const next = BONUS_TIERS.find(t => ridesCount < t.rides);
-    res.json({ rides_today: ridesCount, available_bonuses: available, claimed_tiers: claimedTiers, next_target: next || null });
-  } catch (err) { res.status(500).json({ error: err.message }); }
-});
-
-// POST /api/driver/bonus-claim
-router.post('/bonus-claim', async (req, res) => {
-  const { phone, tier } = req.body;
-  const tierInfo = BONUS_TIERS.find(t => t.tier === tier);
-  if (!tierInfo) return res.status(400).json({ error: 'Invalid tier' });
-  const client = await db.connect();
-  try {
-    await client.query('BEGIN');
-    const rides = await client.query(`SELECT COUNT(*) as cnt FROM rides r JOIN users u ON r.driver_id=u.id WHERE u.phone=$1 AND r.status='completed' AND DATE(r.created_at)=CURRENT_DATE`, [phone]);
-    if (parseInt(rides.rows[0].cnt) < tierInfo.rides) { await client.query('ROLLBACK'); return res.json({ success: false, error: `${tierInfo.rides} rides chahiye` }); }
-    await client.query(`INSERT INTO driver_bonus_claims (driver_phone, claim_date, rides_at_claim, bonus_tier, bonus_amount) VALUES ($1, CURRENT_DATE, $2, $3, $4)`, [phone, parseInt(rides.rows[0].cnt), tier, tierInfo.bonus]);
-    const u = await client.query('SELECT id FROM users WHERE phone=$1', [phone]);
-    if (u.rows[0]) {
-      await client.query('UPDATE driver_wallet SET balance=balance+$1, total_earned=total_earned+$1 WHERE driver_id=$2', [tierInfo.bonus, u.rows[0].id]);
-      await client.query("INSERT INTO transactions (user_id,type,amount,description) VALUES ($1,'credit',$2,'Daily bonus reward')", [u.rows[0].id, tierInfo.bonus]);
-    }
-    await client.query('COMMIT');
-    res.json({ success: true, bonus_amount: tierInfo.bonus, message: `₹${tierInfo.bonus} bonus wallet mein add ho gaya!` });
-  } catch (err) {
-    await client.query('ROLLBACK');
-    if (err.code === '23505') return res.json({ success: false, error: 'Is tier ka bonus aaj already claim hua' });
-    res.status(500).json({ error: err.message });
-  } finally { client.release(); }
-});
 
 // POST /api/driver/payout — creates a pending request; admin approves separately
 router.post('/payout', async (req, res) => {

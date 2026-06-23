@@ -119,13 +119,71 @@ router.get('/analytics', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// POST /api/admin/set-target
-router.post('/set-target', async (req, res) => {
-  const { rides_target, bonus_amount } = req.body;
+// GET /api/admin/bonus-rules
+router.get('/bonus-rules', async (req, res) => {
   try {
-    await db.query('UPDATE driver_targets SET active = false');
-    await db.query('INSERT INTO driver_targets (rides_target, bonus_amount, active) VALUES ($1,$2,true)', [rides_target, bonus_amount]);
+    const rules = await db.query(`SELECT * FROM bonus_rules ORDER BY vehicle_type, bonus_type, id`);
+    res.json({ rules: rules.rows });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// POST /api/admin/bonus-rules — create new rule
+router.post('/bonus-rules', async (req, res) => {
+  const { vehicle_type, bonus_type, config, label, description } = req.body;
+  if (!bonus_type || !config || !label) return res.status(400).json({ error: 'bonus_type, config, label required' });
+  try {
+    const r = await db.query(
+      `INSERT INTO bonus_rules (vehicle_type, bonus_type, config, label, description, updated_at)
+       VALUES ($1,$2,$3,$4,$5,NOW()) RETURNING *`,
+      [vehicle_type || 'all', bonus_type, JSON.stringify(config), label, description || '']
+    );
+    res.json({ success: true, rule: r.rows[0] });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// PUT /api/admin/bonus-rules/:id — update rule
+router.put('/bonus-rules/:id', async (req, res) => {
+  const { id } = req.params;
+  const { vehicle_type, bonus_type, config, label, description, is_active } = req.body;
+  try {
+    const r = await db.query(
+      `UPDATE bonus_rules SET
+        vehicle_type = COALESCE($1, vehicle_type),
+        bonus_type   = COALESCE($2, bonus_type),
+        config       = COALESCE($3, config),
+        label        = COALESCE($4, label),
+        description  = COALESCE($5, description),
+        is_active    = COALESCE($6, is_active),
+        updated_at   = NOW()
+       WHERE id=$7 RETURNING *`,
+      [vehicle_type, bonus_type, config ? JSON.stringify(config) : null, label, description, is_active, id]
+    );
+    if (!r.rows[0]) return res.status(404).json({ error: 'Rule not found' });
+    res.json({ success: true, rule: r.rows[0] });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// DELETE /api/admin/bonus-rules/:id — soft delete (deactivate)
+router.delete('/bonus-rules/:id', async (req, res) => {
+  try {
+    await db.query(`UPDATE bonus_rules SET is_active=false, updated_at=NOW() WHERE id=$1`, [req.params.id]);
     res.json({ success: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// GET /api/admin/bonus-stats — overview for admin dashboard
+router.get('/bonus-stats', async (req, res) => {
+  try {
+    const [totalPaid, todayPaid, topEarners] = await Promise.all([
+      db.query(`SELECT COALESCE(SUM(amount),0) AS total FROM bonus_ledger WHERE amount > 0`),
+      db.query(`SELECT COALESCE(SUM(amount),0) AS total FROM bonus_ledger WHERE amount > 0 AND ref_date=CURRENT_DATE`),
+      db.query(`SELECT driver_phone, SUM(amount) AS total FROM bonus_ledger WHERE amount > 0 GROUP BY driver_phone ORDER BY total DESC LIMIT 10`),
+    ]);
+    res.json({
+      total_bonus_paid: parseFloat(totalPaid.rows[0].total),
+      today_bonus_paid: parseFloat(todayPaid.rows[0].total),
+      top_earners: topEarners.rows,
+    });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 

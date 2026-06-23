@@ -85,12 +85,7 @@ router.post('/scratch-card/create', async (req, res) => {
   try {
     const user = await db.query('SELECT id FROM users WHERE phone = $1', [phone]);
     if (user.rows.length === 0) return res.json({ success: false });
-    const rand = Math.random();
-    let reward;
-    if (rand < 0.50) reward = Math.floor(Math.random() * 5) + 1;
-    else if (rand < 0.80) reward = Math.floor(Math.random() * 10) + 5;
-    else if (rand < 0.95) reward = Math.floor(Math.random() * 20) + 15;
-    else reward = Math.floor(Math.random() * 50) + 50;
+    const reward = Math.random() < 0.5 ? 1 : 2;
     const card = await db.query(
       `INSERT INTO scratch_cards (user_id, ride_id, reward_amount) VALUES ($1, $2, $3) RETURNING id, reward_amount`,
       [user.rows[0].id, ride_id || null, reward]
@@ -158,6 +153,51 @@ router.post('/loyalty/redeem', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+// GET /api/rewards/dashboard?phone=X
+router.get('/rewards/dashboard', async (req, res) => {
+  const { phone } = req.query;
+  try {
+    const user = await db.query('SELECT id FROM users WHERE phone=$1', [phone]);
+    if (!user.rows[0]) return res.json({ rides_today: 0, total_cashback: 0, cashback_history: [], rules: [] });
+    const userId = user.rows[0].id;
+    const today = new Date().toISOString().slice(0, 10);
+
+    const [todayRides, totalCashback, history, walletRes] = await Promise.all([
+      db.query(
+        `SELECT COUNT(*) FROM rides WHERE passenger_id=$1 AND status='completed' AND DATE(created_at AT TIME ZONE 'Asia/Kolkata')=$2`,
+        [userId, today]
+      ),
+      db.query(
+        `SELECT COALESCE(SUM(amount),0) AS total FROM cashback_events WHERE user_id=$1`,
+        [userId]
+      ),
+      db.query(
+        `SELECT ce.rule_type, ce.amount, ce.created_at, r.fare
+         FROM cashback_events ce LEFT JOIN rides r ON ce.ride_id=r.id
+         WHERE ce.user_id=$1 ORDER BY ce.created_at DESC LIMIT 20`,
+        [userId]
+      ),
+      db.query(`SELECT COALESCE(balance,0) AS balance FROM customer_wallet WHERE user_id=$1`, [userId]),
+    ]);
+
+    const rideCount = parseInt(todayRides.rows[0].count);
+    const rules = [
+      { id: 'fare_over_100',  icon: '💎', label: '₹100+ Ride',       desc: 'Koi bhi ride ₹100 se zyada ki hogi',     cashback: 10,  unlocked: false, claimed_today: false },
+      { id: 'second_ride_day',icon: '✌️',  label: '2nd Ride Today',   desc: 'Aaj 2 rides complete karo',               cashback: 10,  unlocked: rideCount >= 2, claimed_today: rideCount >= 2 },
+      { id: 'third_ride_day', icon: '🔥',  label: '3rd Ride Streak',  desc: 'Aaj 3rd ride complete karo',              cashback: 15,  unlocked: rideCount >= 3, claimed_today: rideCount >= 3 },
+      { id: 'wallet_pay',     icon: '👛',  label: 'Wallet Pay Bonus', desc: 'Wallet se pay karo (₹50+ ride pe)',       cashback: 5,   unlocked: false, claimed_today: false },
+    ];
+
+    res.json({
+      rides_today: rideCount,
+      wallet_balance: parseFloat(walletRes.rows[0]?.balance || 0),
+      total_cashback_earned: parseFloat(totalCashback.rows[0].total),
+      cashback_history: history.rows,
+      rules,
+    });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
 // GET /api/notifications (in-app notifications)
 router.get('/notifications', async (req, res) => {
   const { target } = req.query;
@@ -222,7 +262,6 @@ router.get('/customer/rating', async (req, res) => {
   const { phone } = req.query;
   if (!phone) return res.status(400).json({ error: 'phone chahiye' });
   try {
-    await db.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS customer_rating NUMERIC(3,1)').catch(() => {});
     const r = await db.query(
       `SELECT u.customer_rating,
          (SELECT COUNT(*) FROM rides WHERE passenger_id=u.id AND customer_rating IS NOT NULL) AS rating_count

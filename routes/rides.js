@@ -8,6 +8,9 @@ const { driverLocations } = require('../services/matching');
 const { maskPhone } = require('../services/phone');
 const { haversineKm } = require('../services/matching');
 const { directFavouriteRideIds } = require('./favourites');
+const { transitionRide } = require('../services/rideStateMachine');
+const { getRideStatus, getDriverLoc, setRideStatus, clearRide: clearRideCache } = require('../services/rideCache');
+const { creditPeakBonusIfApplicable } = require('./bonus');
 
 function emitRideUpdate(rideId, data) {
   emitToRoom('ride_' + rideId, 'rideUpdate', { rideId, ...data });
@@ -20,6 +23,44 @@ async function addLoyaltyPoints(userId, points) {
       [userId, points]
     );
   } catch (_e) {}
+}
+
+// Cashback rules engine — runs after every completed payment
+async function processCashback(userId, phone, rideId, fare, paymentMethod) {
+  const earned = [];
+  try {
+    const today = new Date().toISOString().slice(0, 10);
+    const rideCountRes = await db.query(
+      `SELECT COUNT(*) FROM rides WHERE passenger_id=$1 AND status='completed' AND DATE(created_at AT TIME ZONE 'Asia/Kolkata')=$2`,
+      [userId, today]
+    );
+    const rideCount = parseInt(rideCountRes.rows[0].count);
+
+    async function tryCashback(ruleType, amount, desc) {
+      const g = await db.query(
+        `INSERT INTO cashback_events (user_id, ride_id, rule_type, amount) VALUES ($1,$2,$3,$4) ON CONFLICT DO NOTHING RETURNING id`,
+        [userId, rideId, ruleType, amount]
+      );
+      if (!g.rows[0]) return; // duplicate guard
+      await db.query(`INSERT INTO customer_wallet (user_id) VALUES ($1) ON CONFLICT (user_id) DO NOTHING`, [userId]);
+      await db.query(`UPDATE customer_wallet SET balance=balance+$1, updated_at=NOW() WHERE user_id=$2`, [amount, userId]);
+      await db.query(`INSERT INTO transactions (user_id,type,amount,description) VALUES ($1,'credit',$2,$3)`, [userId, amount, `🎁 Cashback: ${desc}`]);
+      earned.push({ rule: ruleType, amount, label: desc });
+    }
+
+    if (fare > 100) await tryCashback('fare_over_100', 10, '₹100+ ride bonus');
+    if (rideCount === 2) await tryCashback('second_ride_day', 10, '2nd ride of the day');
+    if (rideCount === 3) await tryCashback('third_ride_day', 15, '3rd ride streak bonus');
+    if (paymentMethod === 'wallet' && fare >= 50) await tryCashback('wallet_pay', 5, 'Wallet payment bonus');
+
+    await addLoyaltyPoints(userId, 10);
+
+    if (earned.length > 0) {
+      const total = earned.reduce((s, e) => s + e.amount, 0);
+      sendFCM(phone, '🎁 Cashback Mila!', `₹${total} cashback aapke wallet mein add ho gaya!`, { type: 'cashback_earned', amount: String(total) }).catch(() => {});
+    }
+  } catch (_e) {}
+  return earned;
 }
 
 // POST /api/rides/book
@@ -67,8 +108,11 @@ router.post('/book', async (req, res) => {
 });
 
 // GET /api/rides/status/:rideId
+// Reads status from Redis (fast) — falls back to Postgres for full row
 router.get('/status/:rideId', async (req, res) => {
   try {
+    const cachedStatus = await getRideStatus(req.params.rideId).catch(() => null);
+
     const result = await db.query(
       `SELECT r.*, u.name as driver_name, u.phone as driver_phone,
               d.vehicle_no, d.vehicle_brand, d.vehicle_model, d.upi_id as driver_upi_id,
@@ -82,6 +126,8 @@ router.get('/status/:rideId', async (req, res) => {
     );
     if (result.rows.length === 0) return res.status(404).json({ error: 'Ride nahi mili' });
     const ride = { ...result.rows[0] };
+    // Prefer Redis status (fresher), fall back to DB
+    if (cachedStatus) ride.status = cachedStatus;
     if (ride.driver_phone) {
       ride.driver_phone_masked = maskPhone(ride.driver_phone);
       delete ride.driver_phone;
@@ -99,13 +145,29 @@ router.post('/accept', async (req, res) => {
     if (!driver.rows[0]) return res.status(404).json({ success: false, message: 'Driver nahi mila' });
 
     const otp = Math.floor(1000 + Math.random() * 9000).toString();
-    const upd = await db.query(
-      `UPDATE rides SET status='matched', start_otp=$1, driver_id=$2,
-           assigned_to_phone=NULL, assignment_expires_at=NULL, assignment_queue='[]'
-       WHERE id=$3 AND status='requested' AND driver_id IS NULL RETURNING id`,
-      [otp, driver.rows[0].id, ride_id]
+
+    // Atomically claim the ride — fails if another driver already took it
+    const claim = await db.query(
+      `UPDATE rides SET assigned_to_phone=NULL, assignment_expires_at=NULL, assignment_queue='[]'
+       WHERE id=$1 AND status='requested' AND driver_id IS NULL RETURNING id`,
+      [ride_id]
     );
-    if (!upd.rows[0]) return res.json({ success: false, message: 'Ride already kisi aur driver ne le li — agli dekho!' });
+    if (!claim.rows[0]) return res.json({ success: false, message: 'Ride already kisi aur driver ne le li — agli dekho!' });
+
+    const dInfo = await db.query(
+      `SELECT u.name, d.vehicle_no, d.vehicle_brand, d.vehicle_model, d.rating, d.verification_status, d.face_photo
+       FROM users u JOIN drivers d ON u.id=d.id WHERE u.id=$1`, [driver.rows[0].id]
+    );
+    const di = dInfo.rows[0];
+    const driverCard = di
+      ? { name: di.name, vehicle_no: di.vehicle_no, vehicle_brand: di.vehicle_brand, vehicle_model: di.vehicle_model, rating: di.rating, verified: di.verification_status === 'approved', photo: di.face_photo || null }
+      : null;
+
+    // State machine: validated DB update + socket + FCM
+    await transitionRide(ride_id, 'matched', {
+      extraFields: { start_otp: otp, driver_id: driver.rows[0].id },
+      socketData:  { start_otp: otp, driver: driverCard },
+    });
 
     await db.query(
       `INSERT INTO driver_metrics (phone, rides_accepted, idle_since) VALUES ($1, 1, NOW())
@@ -118,20 +180,6 @@ router.post('/accept', async (req, res) => {
       await db.query('UPDATE driver_metrics SET acceptance_rate=$1 WHERE phone=$2', [Math.min(100, rate).toFixed(2), driver_phone]);
     }
 
-    const rideData = await db.query(`SELECT u.phone as passenger_phone FROM rides r JOIN users u ON r.passenger_id=u.id WHERE r.id=$1`, [ride_id]);
-    if (rideData.rows[0]?.passenger_phone)
-      sendFCM(rideData.rows[0].passenger_phone, '🚗 Driver Mil Gaya!', 'Aapka driver aa raha hai — OTP ready karo!', { type: 'ride_matched', ride_id: String(ride_id) });
-
-    const dInfo = await db.query(
-      `SELECT u.name, d.vehicle_no, d.vehicle_brand, d.vehicle_model, d.rating, d.verification_status, d.face_photo
-       FROM users u JOIN drivers d ON u.id=d.id WHERE u.id=$1`, [driver.rows[0].id]
-    );
-    const di = dInfo.rows[0];
-    emitRideUpdate(ride_id, {
-      status: 'matched',
-      start_otp: otp,
-      driver: di ? { name: di.name, vehicle_no: di.vehicle_no, vehicle_brand: di.vehicle_brand, vehicle_model: di.vehicle_model, rating: di.rating, verified: di.verification_status === 'approved', photo: di.face_photo || null } : null,
-    });
     res.json({ success: true, message: 'Ride accepted!', otp });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
@@ -176,11 +224,7 @@ router.post('/arrived', async (req, res) => {
       );
       if (!owner.rows[0]) return res.status(403).json({ error: 'Yeh ride tumhari nahi hai' });
     }
-    await db.query("UPDATE rides SET status = 'arrived' WHERE id = $1", [ride_id]);
-    const arrData = await db.query(`SELECT u.phone as passenger_phone FROM rides r JOIN users u ON r.passenger_id = u.id WHERE r.id = $1`, [ride_id]);
-    if (arrData.rows[0]?.passenger_phone)
-      sendFCM(arrData.rows[0].passenger_phone, '🚗 Driver Aa Gaya!', 'Driver pickup pe hai — OTP batao aur trip shuru karo!', { type: 'driver_arrived', ride_id: String(ride_id) });
-    emitRideUpdate(ride_id, { status: 'arrived' });
+    await transitionRide(ride_id, 'arrived');
     res.json({ success: true, message: 'Pickup pe pahunch gaye!' });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
@@ -195,13 +239,8 @@ router.post('/start', async (req, res) => {
     if (driver_phone && check.rows[0].dr_phone && check.rows[0].dr_phone !== driver_phone)
       return res.status(403).json({ success: false, message: 'Yeh ride tumhari nahi hai' });
 
-    await db.query("UPDATE rides SET status = 'started' WHERE id = $1", [ride_id]);
-    emitRideUpdate(ride_id, { status: 'started' });
+    await transitionRide(ride_id, 'started');
     res.json({ success: true, message: 'Trip shuru!' });
-
-    db.query(`SELECT u.phone FROM rides r JOIN users u ON r.passenger_id=u.id WHERE r.id=$1`, [ride_id])
-      .then(r => { if (r.rows[0]) sendFCM(r.rows[0].phone, '🚀 Trip Shuru Ho Gaya!', 'Aapka ride chal raha hai. Safe journey!', { type: 'trip_started', ride_id: String(ride_id) }); })
-      .catch(() => {});
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
@@ -296,6 +335,9 @@ router.post('/cancel-smart', async (req, res) => {
       `INSERT INTO cancellations (ride_id, cancelled_by, reason, seconds_after_book, penalty_applied) VALUES ($1, $2, $3, $4, $5)`,
       [ride_id, cancelled_by, reason || '', secondsAfterBook, penalty]
     );
+    // Socket: both apps need real-time cancel, FCM alone isn't enough when app is in foreground
+    emitRideUpdate(ride_id, { status: 'cancelled', cancelled_by, penalty });
+    clearRideCache(ride_id).catch(() => {});
     res.json({ success: true, penalty, message });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
@@ -332,28 +374,26 @@ router.post('/complete', async (req, res) => {
       if (distFromDrop > EARLY_THRESHOLD_KM) earlyCompletion = true;
     }
 
-    const upd = await db.query(
-      `UPDATE rides SET
-         status = 'completed', payment_status = 'pending', completed_at = NOW(),
-         early_completion = $2,
-         driver_lat_at_complete = $3, driver_lng_at_complete = $4,
-         completion_dist_from_drop = $5
-       WHERE id = $1
-       RETURNING id, fare, payment_method, driver_id`,
-      [ride_id, earlyCompletion, driver_lat || null, driver_lng || null, distFromDrop]
-    );
-    if (!upd.rows[0]) return res.status(404).json({ error: 'Update fail hua' });
-
-    emitRideUpdate(ride_id, {
-      status: 'completed',
-      fare: upd.rows[0].fare,
-      payment_method: upd.rows[0].payment_method,
-      early_completion: earlyCompletion,
+    // State machine: DB update + socket + FCM for both parties
+    await transitionRide(ride_id, 'completed', {
+      extraFields: {
+        payment_status: 'pending',
+        early_completion: earlyCompletion,
+        driver_lat_at_complete: driver_lat || null,
+        driver_lng_at_complete: driver_lng || null,
+        completion_dist_from_drop: distFromDrop,
+      },
+      socketData: { fare: ride.fare, early_completion: earlyCompletion },
+      custPhone:  ride.passenger_phone,
+      drvPhone:   ride.dphone,
     });
+
+    const fare = ride.fare;
+    const paymentMethod = ride.payment_method;
     res.json({
       success: true,
-      fare: upd.rows[0].fare,
-      payment_method: upd.rows[0].payment_method,
+      fare,
+      payment_method: paymentMethod,
       early_completion: earlyCompletion,
       dist_from_drop: distFromDrop ? distFromDrop.toFixed(2) : null,
       message: earlyCompletion
@@ -363,13 +403,13 @@ router.post('/complete', async (req, res) => {
 
     // post-complete async work
     try {
-      if (upd.rows[0].driver_id) {
-        const drvPhone = await db.query('SELECT phone FROM users WHERE id=$1', [upd.rows[0].driver_id]);
-        if (drvPhone.rows[0])
+      if (ride.driver_id) {
+        const drvPhone = await db.query('SELECT phone FROM users WHERE id=$1', [ride.driver_id]);
+        if (drvPhone.rows[0]) {
           await db.query(`INSERT INTO driver_metrics (phone, idle_since) VALUES ($1, NOW()) ON CONFLICT (phone) DO UPDATE SET idle_since=NOW()`, [drvPhone.rows[0].phone]).catch(() => {});
+          creditPeakBonusIfApplicable(drvPhone.rows[0].phone, ride_id).catch(() => {});
+        }
       }
-      sendFCM(ride.passenger_phone, '🏁 Trip Complete!', 'Payment karo aur driver ko rate karo!', { type: 'trip_completed', ride_id: String(ride_id) });
-      sendFCM(ride.dphone, '✅ Trip Complete!', 'Payment aa rahi hai — wait karo.', { type: 'payment_pending' }, { channelId: 'ride_requests' });
 
       // Log incident + auto-complaint for early completion
       if (earlyCompletion) {
@@ -441,6 +481,8 @@ router.post('/payment-complete', async (req, res) => {
          FROM rides r JOIN users u ON r.driver_id = u.id WHERE r.id = $1`,
         [ride_id, fare, commission]
       );
+      // Customer gets a socket ping to show "give cash to driver" UI
+      emitToRoom('ride_' + ride_id, 'paymentConfirmed', { ride_id, status: 'cash_pending', payment_method: 'cash' });
       return res.json({ success: true, status: 'cash_pending', message: 'Driver ko cash do!' });
     }
 
@@ -488,12 +530,15 @@ router.post('/payment-complete', async (req, res) => {
       }
     } catch (_e) {}
 
+    let cashbacks = [];
     try {
       const u = await db.query('SELECT id FROM users WHERE phone=$1', [phone]);
-      if (u.rows[0]) await addLoyaltyPoints(u.rows[0].id, 10);
+      if (u.rows[0]) cashbacks = await processCashback(u.rows[0].id, phone, ride_id, fare, payment_method);
     } catch (_e) {}
 
-    res.json({ success: true, status: 'completed', message: 'Payment complete!' });
+    // Socket: customer's payment screen listens for this instead of polling
+    emitToRoom('ride_' + ride_id, 'paymentConfirmed', { ride_id, status: 'completed', payment_method, cashbacks });
+    res.json({ success: true, status: 'completed', message: 'Payment complete!', cashbacks });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
@@ -516,7 +561,18 @@ router.post('/cash-confirm', async (req, res) => {
     );
     const totalPending = parseFloat(walletRes.rows[0]?.pending_commission || 0);
     sendFCM(phone, '💰 Commission Due', `₹${commission.toFixed(0)} commission baqi hai. Total pending: ₹${totalPending.toFixed(0)}. App mein pay karo.`, { type: 'commission_due', pending_commission: String(totalPending) }).catch(() => {});
-    res.json({ success: true, message: 'Payment confirmed!', pending_commission: totalPending });
+    // Cashback for customer (cash/upi rides still earn ride-count cashbacks, not wallet bonus)
+    let cashbacks = [];
+    try {
+      const passengerRes = await db.query(`SELECT passenger_id FROM rides WHERE id=$1`, [ride_id]);
+      if (passengerRes.rows[0]) {
+        const custUser = await db.query(`SELECT id, phone FROM users WHERE id=$1`, [passengerRes.rows[0].passenger_id]);
+        if (custUser.rows[0]) cashbacks = await processCashback(custUser.rows[0].id, custUser.rows[0].phone, ride_id, fare, method);
+      }
+    } catch (_e) {}
+    // Notify customer's payment screen via socket so it can advance to post-ride without polling
+    emitToRoom('ride_' + ride_id, 'paymentConfirmed', { ride_id, status: 'completed', payment_method: method, cashbacks });
+    res.json({ success: true, message: 'Payment confirmed!', pending_commission: totalPending, cashbacks });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
@@ -663,17 +719,29 @@ router.get('/payment-status/:rideId', async (req, res) => {
 });
 
 // GET /api/rides/driver-location/:rideId
+// Priority: Redis > in-memory > Postgres
 router.get('/driver-location/:rideId', async (req, res) => {
   try {
-    const result = await db.query(`SELECT u.phone FROM rides r JOIN users u ON r.driver_id = u.id WHERE r.id = $1`, [req.params.rideId]);
+    const rideId = req.params.rideId;
+
+    // 1. Try Redis (fastest, written on every location update)
+    const cached = await getDriverLoc(rideId).catch(() => null);
+    if (cached) return res.json({ location: cached });
+
+    // 2. In-memory map (driver app on same server instance)
+    const result = await db.query(`SELECT u.phone FROM rides r JOIN users u ON r.driver_id = u.id WHERE r.id = $1`, [rideId]);
     if (result.rows.length === 0) return res.json({ location: null });
     const driverPhone = result.rows[0].phone;
-    let loc = driverLocations[driverPhone];
-    if (!loc) {
-      const dbLoc = await db.query('SELECT lat, lng, updated_at FROM driver_locations WHERE phone = $1', [driverPhone]);
-      if (dbLoc.rows[0]) loc = { lat: parseFloat(dbLoc.rows[0].lat), lng: parseFloat(dbLoc.rows[0].lng), updated: new Date(dbLoc.rows[0].updated_at).getTime() };
+    const memLoc = driverLocations[driverPhone];
+    if (memLoc) return res.json({ location: memLoc });
+
+    // 3. Postgres fallback
+    const dbLoc = await db.query('SELECT lat, lng, updated_at FROM driver_locations WHERE phone = $1', [driverPhone]);
+    if (dbLoc.rows[0]) {
+      const loc = { lat: parseFloat(dbLoc.rows[0].lat), lng: parseFloat(dbLoc.rows[0].lng), updated: new Date(dbLoc.rows[0].updated_at).getTime() };
+      return res.json({ location: loc });
     }
-    res.json({ location: loc || null });
+    res.json({ location: null });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
@@ -837,9 +905,6 @@ router.post('/rate-customer', async (req, res) => {
   if (!ride_id || !driver_phone) return res.status(400).json({ error: 'ride_id aur driver_phone chahiye' });
   if (![1, 2, 3, 4, 5].includes(r)) return res.status(400).json({ error: 'Rating 1-5 ke beech honi chahiye' });
   try {
-    await db.query('ALTER TABLE rides ADD COLUMN IF NOT EXISTS customer_rating INT').catch(() => {});
-    await db.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS customer_rating NUMERIC(3,1)').catch(() => {});
-
     const check = await db.query(
       `SELECT r.id, r.passenger_id FROM rides r
        JOIN users d ON r.driver_id = d.id

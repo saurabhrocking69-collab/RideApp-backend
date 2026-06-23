@@ -13,10 +13,4 @@ const HOURLY_FARES = {
 
 let SURGE_MULTIPLIER = 1.0;
 
-const BONUS_TIERS = [
-  { rides: 5,  bonus: 30,  tier: 1 },
-  { rides: 10, bonus: 50,  tier: 2 },
-  { rides: 15, bonus: 100, tier: 3 },
-];
-
-module.exports = { HOURLY_FARES, BONUS_TIERS, getSurge: () => SURGE_MULTIPLIER, setSurge: (v) => { SURGE_MULTIPLIER = v; } };
+module.exports = { HOURLY_FARES, getSurge: () => SURGE_MULTIPLIER, setSurge: (v) => { SURGE_MULTIPLIER = v; } };
