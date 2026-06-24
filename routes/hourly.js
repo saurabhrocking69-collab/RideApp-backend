@@ -132,7 +132,23 @@ router.post('/accept', async (req, res) => {
   try {
     const result = await db.query(`UPDATE hourly_bookings SET driver_phone=$1, status='matched' WHERE id=$2 AND status='pending' AND driver_phone IS NULL RETURNING *`, [driver_phone, booking_id]);
     if (result.rows.length === 0) return res.json({ success: false, message: 'Already taken' });
-    sendFCM(result.rows[0].customer_phone, '⏱️ Driver Mil Gaya!', 'Hourly booking ke liye driver aa raha hai!');
+    const booking = result.rows[0];
+    sendFCM(booking.customer_phone, '⏱️ Driver Mil Gaya!', 'Hourly booking ke liye driver aa raha hai!');
+    emitToRoom('hourly_' + booking_id, 'hourlyMatched', { status: 'matched', driver_phone, booking_id });
+    res.json({ success: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// POST /api/hourly/driver-cancel  — driver backs out after accepting (before OTP)
+router.post('/driver-cancel', async (req, res) => {
+  const { booking_id, driver_phone } = req.body;
+  try {
+    const r = await db.query(`SELECT * FROM hourly_bookings WHERE id=$1 AND driver_phone=$2 AND status='matched'`, [booking_id, driver_phone]);
+    if (!r.rows[0]) return res.status(404).json({ error: 'Booking nahi mili ya already start ho gayi' });
+    const booking = r.rows[0];
+    await db.query(`UPDATE hourly_bookings SET driver_phone=NULL, status='pending' WHERE id=$1`, [booking_id]);
+    sendFCM(booking.customer_phone, '⚠️ Driver Cancel Ho Gaya', 'Driver unavailable ho gaya — naya driver dhundh rahe hain');
+    emitToRoom('hourly_' + booking_id, 'hourlyDriverCancelled', { booking_id });
     res.json({ success: true });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
