@@ -702,7 +702,7 @@ router.get('/complaints/:id', async (req, res) => {
        FROM complaints c
        LEFT JOIN users ub ON c.filed_by=ub.id
        LEFT JOIN users ua ON c.filed_against=ua.id
-       LEFT JOIN rides r  ON c.ride_id=r.id
+       LEFT JOIN rides r  ON c.ride_id = r.id::text
        WHERE c.id=$1`,
       [req.params.id]
     );
@@ -908,7 +908,7 @@ router.get('/incidents', async (req, res) => {
               ud.name AS driver_name, ud.phone AS driver_phone,
               uc.name AS customer_name, uc.phone AS customer_phone
        FROM ride_incidents i
-       LEFT JOIN rides r ON i.ride_id = r.id
+       LEFT JOIN rides r ON i.ride_id = r.id::text
        LEFT JOIN users ud ON i.driver_id = ud.id
        LEFT JOIN users uc ON i.customer_id = uc.id
        ${where}

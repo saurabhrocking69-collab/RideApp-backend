@@ -181,7 +181,7 @@ router.get('/', phoneAuth, async (req, res) => {
        FROM complaints c
        LEFT JOIN users ub ON c.filed_by=ub.id
        LEFT JOIN users ua ON c.filed_against=ua.id
-       LEFT JOIN rides r  ON c.ride_id=r.id
+       LEFT JOIN rides r  ON c.ride_id = r.id::text
        ${where}
        ORDER BY c.created_at DESC LIMIT $${params.length+1} OFFSET $${params.length+2}`,
       [...params, limit, offset]
@@ -202,7 +202,7 @@ router.get('/:id', phoneAuth, async (req, res) => {
        FROM complaints c
        LEFT JOIN users ub ON c.filed_by=ub.id
        LEFT JOIN users ua ON c.filed_against=ua.id
-       LEFT JOIN rides r  ON c.ride_id=r.id
+       LEFT JOIN rides r  ON c.ride_id = r.id::text
        WHERE c.id=$1`,
       [req.params.id]
     );
