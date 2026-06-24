@@ -137,7 +137,7 @@ io.on('connection', (socket) => {
     await db.query(`
       CREATE TABLE IF NOT EXISTS complaints (
         id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-        ride_id INTEGER REFERENCES rides(id) ON DELETE SET NULL,
+        ride_id TEXT,
         filed_by INTEGER NOT NULL REFERENCES users(id),
         filed_against INTEGER NOT NULL REFERENCES users(id),
         filer_role VARCHAR(10) NOT NULL CHECK (filer_role IN ('customer','driver')),
@@ -244,7 +244,7 @@ setTimeout(async () => {
   await db.query(`
     CREATE TABLE IF NOT EXISTS ride_incidents (
       id SERIAL PRIMARY KEY,
-      ride_id INTEGER REFERENCES rides(id) ON DELETE SET NULL,
+      ride_id TEXT,
       incident_type VARCHAR(50) NOT NULL,
       detected_by VARCHAR(10) NOT NULL DEFAULT 'system',
       driver_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
@@ -264,7 +264,7 @@ setTimeout(async () => {
   const complaintTables = [
     `CREATE TABLE IF NOT EXISTS complaints (
       id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-      ride_id INTEGER REFERENCES rides(id) ON DELETE SET NULL,
+      ride_id TEXT,
       filed_by INTEGER NOT NULL REFERENCES users(id),
       filed_against INTEGER NOT NULL REFERENCES users(id),
       filer_role VARCHAR(10) NOT NULL CHECK (filer_role IN ('customer','driver')),
