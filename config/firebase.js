@@ -66,6 +66,8 @@ async function sendFCM(phone, title, body, data = {}, options = {}) {
       console.log('⚠️ Firebase Admin not initialized — native FCM token for', phone, 'dropped. Set FIREBASE_SERVICE_ACCOUNT env var in Railway.');
       return;
     }
+    // Map legacy channel → v2 so any old call sites automatically get the right channel.
+    const resolvedChannel = channelId === 'ride_requests' ? 'ride_requests_v2' : channelId;
     await firebaseMessaging.send({
       token,
       notification: { title, body },
@@ -74,16 +76,16 @@ async function sendFCM(phone, title, body, data = {}, options = {}) {
         priority: 'high',
         notification: {
           sound: 'default',
-          channelId,
+          channelId: resolvedChannel,
           priority: 'max',
           visibility: 'public',
-          vibrateTimingsMillis: [0, 500, 150, 500],
+          vibrateTimingsMillis: [0, 800, 200, 800, 200, 800],  // ~3 seconds
           defaultVibrateTimings: false,
           notificationCount: 1,
         },
       },
     });
-    console.log('✅ Firebase (direct) FCM sent to', phone, 'channel:', channelId);
+    console.log('✅ Firebase (direct) FCM sent to', phone, 'channel:', resolvedChannel);
   } catch (e) {
     console.log('FCM error for', phone, ':', e.message);
     if (e.code === 'messaging/registration-token-not-registered') {
