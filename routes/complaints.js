@@ -24,10 +24,10 @@ async function isDriver(phone) {
   return r.rows.length > 0;
 }
 
-async function getUserFcmToken(userId) {
+async function getUserPhone(userId) {
   try {
-    const r = await db.query('SELECT fcm_token FROM users WHERE id=$1', [userId]);
-    return r.rows[0]?.fcm_token || null;
+    const r = await db.query('SELECT phone FROM users WHERE id=$1', [userId]);
+    return r.rows[0]?.phone || null;
   } catch { return null; }
 }
 
@@ -147,9 +147,9 @@ router.post('/', phoneAuth, async (req, res) => {
 
     await logTimeline(complaint.id, 'filed', `Complaint filed by ${filerName}`, filerRole, filerName, { complaint_type });
 
-    const otherFcm = await getUserFcmToken(filedAgainstId);
-    if (otherFcm) {
-      sendFCM(otherFcm, 'Aapke khilaf complaint aayi hai',
+    const otherPhone = await getUserPhone(filedAgainstId);
+    if (otherPhone) {
+      sendFCM(otherPhone, 'Aapke khilaf complaint aayi hai',
         `${title} — Sppero team review karegi`,
         { type: 'complaint_filed', complaint_id: complaint.id }
       ).catch(() => {});
@@ -253,8 +253,8 @@ router.post('/:id/messages', phoneAuth, async (req, res) => {
     await logTimeline(c.id, 'message_added', `${name} ne reply kiya`, role, name, null);
 
     const otherId = userId === c.filed_by ? c.filed_against : c.filed_by;
-    const fcm = await getUserFcmToken(otherId);
-    if (fcm) sendFCM(fcm, 'Complaint mein naya message', message.trim().slice(0, 80), { type: 'complaint_message', complaint_id: c.id }).catch(() => {});
+    const otherPhone = await getUserPhone(otherId);
+    if (otherPhone) sendFCM(otherPhone, 'Complaint mein naya message', message.trim().slice(0, 80), { type: 'complaint_message', complaint_id: c.id }).catch(() => {});
 
     res.json({ message: 'Message bheja gaya' });
   } catch (err) { res.status(500).json({ error: err.message }); }

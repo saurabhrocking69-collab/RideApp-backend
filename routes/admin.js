@@ -774,9 +774,9 @@ router.post('/complaints/:id/message', async (req, res) => {
 
     // notify both parties if not internal
     if (!is_internal) {
-      const tokens = await db.query('SELECT fcm_token FROM users WHERE id IN ($1,$2) AND fcm_token IS NOT NULL', [c.filed_by, c.filed_against]);
-      for (const row of tokens.rows) {
-        sendFCM(row.fcm_token, { title: 'Complaint Update', body: message.substring(0, 80), data: { type: 'complaint_update', complaint_id: req.params.id } }).catch(() => {});
+      const phones = await db.query('SELECT phone FROM users WHERE id IN ($1,$2)', [c.filed_by, c.filed_against]);
+      for (const row of phones.rows) {
+        sendFCM(row.phone, 'Complaint Update', message.substring(0, 80), { type: 'complaint_update', complaint_id: req.params.id }).catch(() => {});
       }
     }
     res.json({ success: true });
@@ -808,9 +808,9 @@ router.put('/complaints/:id/resolve', async (req, res) => {
     );
 
     // notify both parties
-    const tokens = await db.query('SELECT fcm_token FROM users WHERE id IN ($1,$2) AND fcm_token IS NOT NULL', [c.filed_by, c.filed_against]);
-    for (const row of tokens.rows) {
-      sendFCM(row.fcm_token, { title: 'Complaint Resolved', body: resolution_note.substring(0, 80), data: { type: 'complaint_resolved', complaint_id: req.params.id } }).catch(() => {});
+    const phones = await db.query('SELECT phone FROM users WHERE id IN ($1,$2)', [c.filed_by, c.filed_against]);
+    for (const row of phones.rows) {
+      sendFCM(row.phone, 'Complaint Resolved', resolution_note.substring(0, 80), { type: 'complaint_resolved', complaint_id: req.params.id }).catch(() => {});
     }
     res.json({ success: true });
   } catch (err) { res.status(500).json({ error: err.message }); }
@@ -825,16 +825,15 @@ router.post('/complaints/:id/action', async (req, res) => {
   try {
     let description = '';
 
+    const targetUser = await db.query('SELECT phone FROM users WHERE id=$1', [target_user_id]);
+    const targetPhone = targetUser.rows[0]?.phone;
+
     if (action === 'warn') {
       await db.query(
         "INSERT INTO complaint_messages(complaint_id,sender_role,sender_name,message,is_internal) VALUES($1,'admin',$2,$3,true)",
         [req.params.id, admin_name || 'Admin', `[WARNING ISSUED] User ${target_user_id}: ${reason}`]
       );
-      // FCM warn notification to target user
-      const tok = await db.query('SELECT fcm_token FROM users WHERE id=$1', [target_user_id]);
-      if (tok.rows[0]?.fcm_token) {
-        sendFCM(tok.rows[0].fcm_token, { title: '⚠️ Sppero Warning', body: reason || 'Platform guidelines violation', data: { type: 'warning' } }).catch(() => {});
-      }
+      if (targetPhone) sendFCM(targetPhone, '⚠️ Sppero Warning', reason || 'Platform guidelines violation', { type: 'warning' }).catch(() => {});
       description = `Warning issued to user ${target_user_id}`;
     }
 
@@ -842,19 +841,13 @@ router.post('/complaints/:id/action', async (req, res) => {
       const days = parseInt(suspend_days) || 3;
       const suspendUntil = new Date(Date.now() + days * 86400000).toISOString();
       await db.query('UPDATE users SET suspended_until=$1 WHERE id=$2', [suspendUntil, target_user_id]).catch(() => {});
-      const tok = await db.query('SELECT fcm_token FROM users WHERE id=$1', [target_user_id]);
-      if (tok.rows[0]?.fcm_token) {
-        sendFCM(tok.rows[0].fcm_token, { title: '🚫 Account Suspended', body: `Aapka account ${days} din ke liye suspend hua hai: ${reason}`, data: { type: 'suspended' } }).catch(() => {});
-      }
+      if (targetPhone) sendFCM(targetPhone, '🚫 Account Suspended', `Aapka account ${days} din ke liye suspend hua hai: ${reason}`, { type: 'suspended' }).catch(() => {});
       description = `User ${target_user_id} suspended for ${days} days`;
     }
 
     if (action === 'ban') {
       await db.query('UPDATE users SET is_banned=true WHERE id=$1', [target_user_id]).catch(() => {});
-      const tok = await db.query('SELECT fcm_token FROM users WHERE id=$1', [target_user_id]);
-      if (tok.rows[0]?.fcm_token) {
-        sendFCM(tok.rows[0].fcm_token, { title: '🚫 Account Banned', body: `Aapka account permanently ban ho gaya hai: ${reason}`, data: { type: 'banned' } }).catch(() => {});
-      }
+      if (targetPhone) sendFCM(targetPhone, '🚫 Account Banned', `Aapka account permanently ban ho gaya hai: ${reason}`, { type: 'banned' }).catch(() => {});
       description = `User ${target_user_id} permanently banned`;
     }
 
@@ -870,10 +863,7 @@ router.post('/complaints/:id/action', async (req, res) => {
           [target_user_id, amt]
         ).catch(() => {});
       }
-      const tok = await db.query('SELECT fcm_token FROM users WHERE id=$1', [target_user_id]);
-      if (tok.rows[0]?.fcm_token) {
-        sendFCM(tok.rows[0].fcm_token, { title: '💰 Refund Processed', body: `₹${amt} aapke wallet mein add ho gaya`, data: { type: 'refund', amount: amt } }).catch(() => {});
-      }
+      if (targetPhone) sendFCM(targetPhone, '💰 Refund Processed', `₹${amt} aapke wallet mein add ho gaya`, { type: 'refund', amount: amt }).catch(() => {});
       description = `Refund ₹${amt} issued to user ${target_user_id}`;
     }
 
