@@ -20,7 +20,7 @@ async function phoneAuth(req, res, next) {
 // ─── helpers ─────────────────────────────────────────────────────────────────
 
 async function isDriver(phone) {
-  const r = await db.query('SELECT 1 FROM drivers WHERE phone=$1', [phone]);
+  const r = await db.query('SELECT 1 FROM drivers d JOIN users u ON d.id=u.id WHERE u.phone=$1', [phone]);
   return r.rows.length > 0;
 }
 
