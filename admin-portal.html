@@ -1353,17 +1353,32 @@ async function openCmpDetail(id){
     const msgs=d.messages||[];
     const evidence=d.evidence||[];
     const tl=d.timeline||[];
+    const incidents=d.incidents||[];
     document.getElementById('cmp-modal-content').innerHTML=`
       <h3 style="margin-bottom:12px;font-size:16px">${c.title}</h3>
       <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px">
         <span class="chip" style="background:${CMP_STATUS_COLOR[c.status]};color:#fff">${(c.status||'').replace(/_/g,' ').toUpperCase()}</span>
         <span class="chip" style="background:${CMP_PRI_COLOR[c.priority]};color:#fff">${(c.priority||'').toUpperCase()}</span>
         <span style="font-size:12px;color:#888">${(c.complaint_type||'').replace(/_/g,' ')} · ${new Date(c.created_at).toLocaleString('en-IN')}</span>
+        ${c.source==='system_auto'?'<span class="chip" style="background:#7C3AED;color:#fff;font-size:10px">🤖 Auto-Detected</span>':'<span class="chip" style="background:#455a64;color:#fff;font-size:10px">👤 Manual</span>'}
       </div>
+
+      ${c.early_completion?`<div style="background:#fff3e0;border:2px solid #ff6d00;border-radius:12px;padding:14px;margin-bottom:14px;display:flex;gap:12px;align-items:flex-start">
+        <span style="font-size:28px">🛑</span>
+        <div>
+          <div style="font-weight:900;font-size:14px;color:#bf360c;margin-bottom:4px">EARLY TRIP COMPLETION DETECTED</div>
+          <div style="font-size:13px;color:#6d4c41">Driver ne drop location se <b>${parseFloat(c.completion_dist_from_drop||0).toFixed(2)} km</b> door trip complete ki.</div>
+          ${c.driver_lat_at_complete?`<div style="font-size:12px;color:#8d6e63;margin-top:4px">Driver ka actual location: ${parseFloat(c.driver_lat_at_complete).toFixed(5)}, ${parseFloat(c.driver_lng_at_complete).toFixed(5)}</div>`:''}
+          ${c.drop_lat?`<div style="font-size:12px;color:#8d6e63">Intended drop: ${parseFloat(c.drop_lat).toFixed(5)}, ${parseFloat(c.drop_lng).toFixed(5)}</div>`:''}
+          ${c.driver_lat_at_complete&&c.drop_lat?`<a href="https://www.google.com/maps/dir/${c.driver_lat_at_complete},${c.driver_lng_at_complete}/${c.drop_lat},${c.drop_lng}" target="_blank" style="font-size:12px;color:#1565c0;font-weight:700;margin-top:6px;display:inline-block">🗺️ Google Maps pe dekho →</a>`:''}
+        </div>
+      </div>`:''}
+
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:14px;font-size:13px">
         <div><b>Filed By:</b> ${c.filed_by_name||'?'} (${c.filer_role}) — ${c.filed_by_phone||''}</div>
         <div><b>Against:</b> ${c.filed_against_name||'?'} — ${c.filed_against_phone||''}</div>
-        ${c.ride_id?`<div><b>Ride:</b> #${c.ride_id} · ₹${c.fare||0}</div>`:''}
+        ${c.ride_id?`<div><b>Ride:</b> #${c.ride_id} · ₹${c.fare||0} · ${(c.ride_type||'').toUpperCase()} · ${c.ride_status||''}</div>`:''}
+        ${c.pickup?`<div><b>Route:</b> ${c.pickup} → ${c.drop_location||''}</div>`:''}
         ${c.assigned_admin?`<div><b>Assigned:</b> ${c.assigned_admin}</div>`:''}
       </div>
       <div style="background:#f8f8f8;border-radius:10px;padding:12px;margin-bottom:14px;font-size:13px;line-height:1.7">${c.description}</div>
@@ -1425,6 +1440,15 @@ async function openCmpDetail(id){
           </div>
         `).join('')}
       </div>
+
+      <!-- Ride Incidents -->
+      ${incidents.length?`<div style="margin-bottom:14px"><div style="font-size:13px;font-weight:700;margin-bottom:8px">🚨 System Incidents (${incidents.length})</div>
+        ${incidents.map(i=>{const meta=i.metadata||{};return`<div style="background:#fce4ec;border-radius:10px;padding:12px;margin-bottom:8px;font-size:12px;border:1px solid #f48fb1">
+          <div style="font-weight:800;color:#b71c1c;margin-bottom:4px">${i.incident_type.replace(/_/g,' ').toUpperCase()} · ${i.resolved?'✅ Resolved':'⏳ Open'}</div>
+          ${meta.dist_km?`<div>Drop se <b>${parseFloat(meta.dist_km).toFixed(2)} km</b> door complete kiya</div>`:''}
+          <div style="color:#888;margin-top:4px">${new Date(i.created_at).toLocaleString('en-IN',{day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'})} · Detected by: ${i.detected_by}</div>
+        </div>`;}).join('')}
+      </div>`:''}
 
       <!-- Timeline -->
       ${tl.length?`<div><div style="font-size:13px;font-weight:700;margin-bottom:8px">Timeline</div>

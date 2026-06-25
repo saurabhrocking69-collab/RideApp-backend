@@ -19,8 +19,8 @@ async function phoneAuth(req, res, next) {
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
 
-async function isDriver(userId) {
-  const r = await db.query('SELECT 1 FROM drivers WHERE id=$1', [userId]);
+async function isDriver(phone) {
+  const r = await db.query('SELECT 1 FROM drivers WHERE phone=$1', [phone]);
   return r.rows.length > 0;
 }
 
@@ -88,7 +88,7 @@ router.post('/', phoneAuth, async (req, res) => {
     return res.status(400).json({ error: 'Description kam se kam 20 characters ka hona chahiye' });
 
   try {
-    const driver = await isDriver(userId);
+    const driver = await isDriver(req.user.phone);
     const filerRole = driver ? 'driver' : 'customer';
     const allowedTypes = driver ? COMPLAINT_TYPES_DRIVER : COMPLAINT_TYPES_CUSTOMER;
 
@@ -239,7 +239,7 @@ router.post('/:id/messages', phoneAuth, async (req, res) => {
     if (['resolved', 'closed'].includes(c.status))
       return res.status(400).json({ error: 'Closed complaint mein message nahi bhej sakte' });
 
-    const driver = await isDriver(userId);
+    const driver = await isDriver(req.user.phone);
     const role = driver ? 'driver' : 'customer';
     const name = req.user.name || 'Unknown';
 
@@ -339,7 +339,7 @@ router.post('/:id/appeal', phoneAuth, async (req, res) => {
 // ─── GET /api/complaints/types/list ──────────────────────────────────────────
 router.get('/types/list', phoneAuth, async (req, res) => {
   try {
-    const driver = await isDriver(req.user.id);
+    const driver = await isDriver(req.user.phone);
     res.json({ types: driver ? COMPLAINT_TYPES_DRIVER : COMPLAINT_TYPES_CUSTOMER });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });

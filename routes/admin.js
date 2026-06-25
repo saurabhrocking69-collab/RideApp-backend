@@ -698,7 +698,8 @@ router.get('/complaints/:id', async (req, res) => {
               ub.name AS filed_by_name, ub.phone AS filed_by_phone,
               ua.name AS filed_against_name, ua.phone AS filed_against_phone,
               r.pickup, r.drop_location, r.fare, r.ride_type, r.status AS ride_status, r.created_at AS ride_date,
-              r.pickup_lat, r.pickup_lng, r.drop_lat, r.drop_lng
+              r.pickup_lat, r.pickup_lng, r.drop_lat, r.drop_lng,
+              r.early_completion, r.driver_lat_at_complete, r.driver_lng_at_complete, r.completion_dist_from_drop
        FROM complaints c
        LEFT JOIN users ub ON c.filed_by=ub.id
        LEFT JOIN users ua ON c.filed_against=ua.id
@@ -708,12 +709,16 @@ router.get('/complaints/:id', async (req, res) => {
     );
     if (cRes.rows.length === 0) return res.status(404).json({ error: 'Complaint nahi mili' });
 
-    const [messages, evidence, timeline] = await Promise.all([
+    const comp = cRes.rows[0];
+    const [messages, evidence, timeline, incidents] = await Promise.all([
       db.query('SELECT * FROM complaint_messages WHERE complaint_id=$1 ORDER BY created_at ASC', [req.params.id]),
       db.query('SELECT ce.*, u.name AS uploader_name FROM complaint_evidence ce LEFT JOIN users u ON ce.uploaded_by=u.id WHERE ce.complaint_id=$1 ORDER BY created_at ASC', [req.params.id]),
       db.query('SELECT * FROM complaint_timeline WHERE complaint_id=$1 ORDER BY created_at ASC', [req.params.id]),
+      comp.ride_id
+        ? db.query('SELECT * FROM ride_incidents WHERE ride_id=$1 ORDER BY created_at DESC', [comp.ride_id])
+        : Promise.resolve({ rows: [] }),
     ]);
-    res.json({ complaint: cRes.rows[0], messages: messages.rows, evidence: evidence.rows, timeline: timeline.rows });
+    res.json({ complaint: comp, messages: messages.rows, evidence: evidence.rows, timeline: timeline.rows, incidents: incidents.rows });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
