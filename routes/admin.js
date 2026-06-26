@@ -675,8 +675,8 @@ router.get('/complaints', async (req, res) => {
               ua.name AS filed_against_name, ua.phone AS filed_against_phone,
               (SELECT COUNT(*) FROM complaint_messages cm WHERE cm.complaint_id=c.id AND cm.is_internal=false) AS msg_count
        FROM complaints c
-       LEFT JOIN users ub ON c.filed_by=ub.id
-       LEFT JOIN users ua ON c.filed_against=ua.id
+       LEFT JOIN users ub ON c.filed_by=ub.id::text
+       LEFT JOIN users ua ON c.filed_against=ua.id::text
        ${where}
        ORDER BY
          CASE c.priority WHEN 'urgent' THEN 1 WHEN 'high' THEN 2 WHEN 'normal' THEN 3 ELSE 4 END,
@@ -685,7 +685,7 @@ router.get('/complaints', async (req, res) => {
       [...params, limit, offset]
     );
     const countRes = await db.query(
-      `SELECT COUNT(*) FROM complaints c LEFT JOIN users ub ON c.filed_by=ub.id LEFT JOIN users ua ON c.filed_against=ua.id ${where}`,
+      `SELECT COUNT(*) FROM complaints c LEFT JOIN users ub ON c.filed_by=ub.id::text LEFT JOIN users ua ON c.filed_against=ua.id::text ${where}`,
       params
     );
     res.json({ complaints: result.rows, total: parseInt(countRes.rows[0].count) });
@@ -703,8 +703,8 @@ router.get('/complaints/:id', async (req, res) => {
               r.pickup_lat, r.pickup_lng, r.drop_lat, r.drop_lng,
               r.early_completion, r.driver_lat_at_complete, r.driver_lng_at_complete, r.completion_dist_from_drop
        FROM complaints c
-       LEFT JOIN users ub ON c.filed_by=ub.id
-       LEFT JOIN users ua ON c.filed_against=ua.id
+       LEFT JOIN users ub ON c.filed_by=ub.id::text
+       LEFT JOIN users ua ON c.filed_against=ua.id::text
        LEFT JOIN rides r  ON c.ride_id = r.id::text
        WHERE c.id=$1`,
       [req.params.id]
@@ -714,7 +714,7 @@ router.get('/complaints/:id', async (req, res) => {
     const comp = cRes.rows[0];
     const [messages, evidence, timeline, incidents] = await Promise.all([
       db.query('SELECT * FROM complaint_messages WHERE complaint_id=$1 ORDER BY created_at ASC', [req.params.id]),
-      db.query('SELECT ce.*, u.name AS uploader_name FROM complaint_evidence ce LEFT JOIN users u ON ce.uploaded_by=u.id WHERE ce.complaint_id=$1 ORDER BY created_at ASC', [req.params.id]),
+      db.query('SELECT ce.*, u.name AS uploader_name FROM complaint_evidence ce LEFT JOIN users u ON ce.uploaded_by=u.id::text WHERE ce.complaint_id=$1 ORDER BY created_at ASC', [req.params.id]),
       db.query('SELECT * FROM complaint_timeline WHERE complaint_id=$1 ORDER BY created_at ASC', [req.params.id]),
       comp.ride_id
         ? db.query('SELECT * FROM ride_incidents WHERE ride_id=$1 ORDER BY created_at DESC', [comp.ride_id])
@@ -776,7 +776,7 @@ router.post('/complaints/:id/message', async (req, res) => {
 
     // notify both parties if not internal
     if (!is_internal) {
-      const phones = await db.query('SELECT phone FROM users WHERE id IN ($1,$2)', [c.filed_by, c.filed_against]);
+      const phones = await db.query('SELECT phone FROM users WHERE id::text IN ($1,$2)', [c.filed_by, c.filed_against]);
       for (const row of phones.rows) {
         sendFCM(row.phone, 'Complaint Update', message.substring(0, 80), { type: 'complaint_update', complaint_id: req.params.id }).catch(() => {});
       }
@@ -810,7 +810,7 @@ router.put('/complaints/:id/resolve', async (req, res) => {
     );
 
     // notify both parties
-    const phones = await db.query('SELECT phone, role FROM users WHERE id IN ($1,$2)', [c.filed_by, c.filed_against]);
+    const phones = await db.query('SELECT phone, role FROM users WHERE id::text IN ($1,$2)', [c.filed_by, c.filed_against]);
     for (const row of phones.rows) {
       const fcmRole = row.role === 'driver' ? 'driver' : 'customer';
       sendFCM(row.phone, 'Complaint Resolved', resolution_note.substring(0, 80), { type: 'complaint_resolved', complaint_id: req.params.id }, { role: fcmRole }).catch(() => {});

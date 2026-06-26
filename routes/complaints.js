@@ -11,8 +11,8 @@ const { sendFCM } = require('../config/firebase');
       CREATE TABLE IF NOT EXISTS complaints (
         id               SERIAL PRIMARY KEY,
         ride_id          TEXT,
-        filed_by         INTEGER NOT NULL,
-        filed_against    INTEGER NOT NULL,
+        filed_by         TEXT NOT NULL,
+        filed_against    TEXT NOT NULL,
         filer_role       VARCHAR(20) NOT NULL,
         complaint_type   VARCHAR(60) NOT NULL,
         title            TEXT NOT NULL,
@@ -33,7 +33,7 @@ const { sendFCM } = require('../config/firebase');
       CREATE TABLE IF NOT EXISTS complaint_messages (
         id             SERIAL PRIMARY KEY,
         complaint_id   INTEGER NOT NULL,
-        sender_id      INTEGER,
+        sender_id      TEXT,
         sender_role    VARCHAR(20),
         sender_name    VARCHAR(100),
         message        TEXT NOT NULL,
@@ -45,7 +45,7 @@ const { sendFCM } = require('../config/firebase');
       CREATE TABLE IF NOT EXISTS complaint_evidence (
         id             SERIAL PRIMARY KEY,
         complaint_id   INTEGER NOT NULL,
-        uploaded_by    INTEGER,
+        uploaded_by    TEXT,
         file_url       TEXT NOT NULL,
         caption        TEXT,
         created_at     TIMESTAMP NOT NULL DEFAULT NOW()
@@ -63,6 +63,11 @@ const { sendFCM } = require('../config/firebase');
         created_at     TIMESTAMP NOT NULL DEFAULT NOW()
       )
     `);
+    // Migrate existing tables: user id columns changed from INTEGER to TEXT (users.id is UUID)
+    await db.query(`ALTER TABLE complaints ALTER COLUMN filed_by TYPE TEXT USING filed_by::TEXT`).catch(() => {});
+    await db.query(`ALTER TABLE complaints ALTER COLUMN filed_against TYPE TEXT USING filed_against::TEXT`).catch(() => {});
+    await db.query(`ALTER TABLE complaint_messages ALTER COLUMN sender_id TYPE TEXT USING sender_id::TEXT`).catch(() => {});
+    await db.query(`ALTER TABLE complaint_evidence ALTER COLUMN uploaded_by TYPE TEXT USING uploaded_by::TEXT`).catch(() => {});
     console.log('✅ Complaints tables ready');
   } catch (err) {
     console.error('❌ Complaints migration error:', err.message);
@@ -175,7 +180,7 @@ router.post('/', phoneAuth, async (req, res) => {
     // Auto-generate title from type
     const title = TYPE_TITLE[complaint_type] || 'Shikayat';
 
-    let filedAgainstId = against_id ? parseInt(against_id) : null;
+    let filedAgainstId = against_id || null;
 
     if (ride_id) {
       const rideRes = await db.query(
@@ -257,8 +262,8 @@ router.get('/', phoneAuth, async (req, res) => {
               r.pickup, r.drop_location, r.fare,
               (SELECT COUNT(*) FROM complaint_messages cm WHERE cm.complaint_id=c.id AND cm.is_internal=false) AS message_count
        FROM complaints c
-       LEFT JOIN users ub ON c.filed_by=ub.id
-       LEFT JOIN users ua ON c.filed_against=ua.id
+       LEFT JOIN users ub ON c.filed_by=ub.id::text
+       LEFT JOIN users ua ON c.filed_against=ua.id::text
        LEFT JOIN rides r  ON c.ride_id = r.id::text
        ${where}
        ORDER BY c.created_at DESC LIMIT $${params.length+1} OFFSET $${params.length+2}`,
@@ -278,8 +283,8 @@ router.get('/:id', phoneAuth, async (req, res) => {
               ua.name AS filed_against_name, ua.phone AS filed_against_phone,
               r.pickup, r.drop_location, r.fare, r.ride_type, r.status AS ride_status, r.created_at AS ride_date
        FROM complaints c
-       LEFT JOIN users ub ON c.filed_by=ub.id
-       LEFT JOIN users ua ON c.filed_against=ua.id
+       LEFT JOIN users ub ON c.filed_by=ub.id::text
+       LEFT JOIN users ua ON c.filed_against=ua.id::text
        LEFT JOIN rides r  ON c.ride_id = r.id::text
        WHERE c.id=$1`,
       [req.params.id]
@@ -292,7 +297,7 @@ router.get('/:id', phoneAuth, async (req, res) => {
     const [messages, evidence, timeline] = await Promise.all([
       db.query(
         `SELECT cm.*, u.name AS sender_name FROM complaint_messages cm
-         LEFT JOIN users u ON cm.sender_id=u.id
+         LEFT JOIN users u ON cm.sender_id=u.id::text
          WHERE cm.complaint_id=$1 AND cm.is_internal=false ORDER BY cm.created_at ASC`,
         [c.id]
       ),
