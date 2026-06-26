@@ -810,9 +810,12 @@ router.put('/complaints/:id/resolve', async (req, res) => {
     );
 
     // notify both parties
-    const phones = await db.query('SELECT phone, role FROM users WHERE id::text IN ($1,$2)', [c.filed_by, c.filed_against]);
+    const phones = await db.query(
+      'SELECT u.phone, (d.id IS NOT NULL) AS is_driver FROM users u LEFT JOIN drivers d ON d.id=u.id WHERE u.id::text IN ($1,$2)',
+      [c.filed_by, c.filed_against]
+    );
     for (const row of phones.rows) {
-      const fcmRole = row.role === 'driver' ? 'driver' : 'customer';
+      const fcmRole = row.is_driver ? 'driver' : 'customer';
       sendFCM(row.phone, 'Complaint Resolved', resolution_note.substring(0, 80), { type: 'complaint_resolved', complaint_id: req.params.id }, { role: fcmRole }).catch(() => {});
     }
     res.json({ success: true });
@@ -828,9 +831,12 @@ router.post('/complaints/:id/action', async (req, res) => {
   try {
     let description = '';
 
-    const targetUser = await db.query('SELECT phone, role FROM users WHERE id=$1', [target_user_id]);
+    const targetUser = await db.query(
+      'SELECT u.phone, (d.id IS NOT NULL) AS is_driver FROM users u LEFT JOIN drivers d ON d.id=u.id WHERE u.id=$1',
+      [target_user_id]
+    );
     const targetPhone = targetUser.rows[0]?.phone;
-    const targetFcmRole = targetUser.rows[0]?.role === 'driver' ? 'driver' : 'customer';
+    const targetFcmRole = targetUser.rows[0]?.is_driver ? 'driver' : 'customer';
 
     if (action === 'warn') {
       await db.query(

@@ -103,9 +103,12 @@ async function getUserPhone(userId) {
 
 async function getUserPhoneAndRole(userId) {
   try {
-    const r = await db.query('SELECT phone, role FROM users WHERE id=$1', [userId]);
+    const r = await db.query(
+      'SELECT u.phone, (d.id IS NOT NULL) AS is_driver FROM users u LEFT JOIN drivers d ON d.id=u.id WHERE u.id=$1',
+      [userId]
+    );
     const row = r.rows[0];
-    return { phone: row?.phone || null, fcmRole: row?.role === 'driver' ? 'driver' : 'customer' };
+    return { phone: row?.phone || null, fcmRole: row?.is_driver ? 'driver' : 'customer' };
   } catch { return { phone: null, fcmRole: 'customer' }; }
 }
 
