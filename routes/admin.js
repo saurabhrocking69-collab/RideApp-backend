@@ -668,7 +668,7 @@ router.get('/complaints', async (req, res) => {
   try {
     const result = await db.query(
       `SELECT c.id, c.ride_id, c.filer_role, c.complaint_type, c.title, c.status, c.priority,
-              c.assigned_admin, c.resolution, c.created_at, c.updated_at,
+              c.assigned_admin, c.resolution, c.source, c.created_at, c.updated_at,
               ub.name AS filed_by_name, ub.phone AS filed_by_phone,
               ua.name AS filed_against_name, ua.phone AS filed_against_phone,
               (SELECT COUNT(*) FROM complaint_messages cm WHERE cm.complaint_id=c.id AND cm.is_internal=false) AS msg_count

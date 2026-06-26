@@ -418,7 +418,7 @@ router.post('/complete', async (req, res) => {
            VALUES ($1,'early_completion','system',$2,$3,$4)`,
           [ride_id, ride.driver_id, ride.passenger_id,
            JSON.stringify({ dist_km: distFromDrop, driver_lat, driver_lng, drop_lat: ride.drop_lat, drop_lng: ride.drop_lng })]
-        ).catch(() => {});
+        ).catch((e) => { console.error('ride_incidents insert failed:', e.message); });
 
         // Auto-create complaint on behalf of customer
         const cRes = await db.query(
@@ -429,7 +429,7 @@ router.post('/complete', async (req, res) => {
            RETURNING id`,
           [ride_id, ride.passenger_id, ride.driver_id,
            `System detected: driver ne trip complete ki jab woh drop location se ${(distFromDrop||0).toFixed(1)}km door the. Ride #${ride_id}.`]
-        ).catch(() => ({ rows: [] }));
+        ).catch((e) => { console.error('Auto-complaint insert failed:', e.message); return { rows: [] }; });
 
         if (cRes.rows[0]) {
           await db.query(

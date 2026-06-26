@@ -199,7 +199,7 @@ io.on('connection', (socket) => {
     await db.query(`CREATE INDEX IF NOT EXISTS idx_complaints_status         ON complaints(status)`);
     await db.query(`CREATE INDEX IF NOT EXISTS idx_complaint_msgs_cid        ON complaint_messages(complaint_id)`);
     await db.query(`CREATE INDEX IF NOT EXISTS idx_complaint_tl_cid          ON complaint_timeline(complaint_id)`);
-    await db.query(`ALTER TABLE complaints ADD COLUMN IF NOT EXISTS source VARCHAR(30) DEFAULT 'manual'`);
+    await db.query(`ALTER TABLE complaints ADD COLUMN IF NOT EXISTS source VARCHAR(30) DEFAULT 'manual'`).catch(() => {});
     console.log('✅ Complaint tables ready (immediate)');
   } catch (e) {
     console.error('❌ Complaint table init error:', e.message);

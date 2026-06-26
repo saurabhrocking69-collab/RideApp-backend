@@ -88,12 +88,16 @@ router.post('/', phoneAuth, async (req, res) => {
     return res.status(400).json({ error: 'Description kam se kam 20 characters ka hona chahiye' });
 
   try {
-    const driver = await isDriver(req.user.phone);
-    const filerRole = driver ? 'driver' : 'customer';
-    const allowedTypes = driver ? COMPLAINT_TYPES_DRIVER : COMPLAINT_TYPES_CUSTOMER;
-
-    if (!allowedTypes.includes(complaint_type))
+    // Determine role from complaint_type — more reliable than isDriver() which fails
+    // when the same phone is registered in both apps (driver + customer).
+    let filerRole;
+    if (COMPLAINT_TYPES_CUSTOMER.includes(complaint_type)) {
+      filerRole = 'customer';
+    } else if (COMPLAINT_TYPES_DRIVER.includes(complaint_type)) {
+      filerRole = 'driver';
+    } else {
       return res.status(400).json({ error: 'Invalid complaint type' });
+    }
 
     // Auto-generate title from type
     const title = TYPE_TITLE[complaint_type] || 'Shikayat';
