@@ -1349,6 +1349,7 @@ async function openCmpDetail(id){
   document.getElementById('cmp-modal').classList.add('open');
   try{
     const d=await aJson('/api/admin/complaints/'+id);
+    if(d.error||!d.complaint){document.getElementById('cmp-modal-content').innerHTML=`<div style="color:#c62828;padding:20px">❌ Error: ${d.error||'Complaint data nahi mili'}</div>`;return;}
     const c=d.complaint;
     const msgs=d.messages||[];
     const evidence=d.evidence||[];

@@ -717,7 +717,7 @@ router.get('/complaints/:id', async (req, res) => {
       db.query('SELECT ce.*, u.name AS uploader_name FROM complaint_evidence ce LEFT JOIN users u ON ce.uploaded_by=u.id::text WHERE ce.complaint_id=$1 ORDER BY created_at ASC', [req.params.id]),
       db.query('SELECT * FROM complaint_timeline WHERE complaint_id=$1 ORDER BY created_at ASC', [req.params.id]),
       comp.ride_id
-        ? db.query('SELECT * FROM ride_incidents WHERE ride_id=$1 ORDER BY created_at DESC', [comp.ride_id])
+        ? db.query('SELECT * FROM ride_incidents WHERE ride_id=$1 ORDER BY created_at DESC', [comp.ride_id]).catch(() => ({ rows: [] }))
         : Promise.resolve({ rows: [] }),
     ]);
     res.json({ complaint: comp, messages: messages.rows, evidence: evidence.rows, timeline: timeline.rows, incidents: incidents.rows });
@@ -959,5 +959,23 @@ router.put('/customer-profile/:id/unrestrict', async (req, res) => {
     res.json({ success: true });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
+
+// ── Startup: ensure ride_incidents table exists ────────────────────────────────
+(async () => {
+  try {
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS ride_incidents (
+        id            SERIAL PRIMARY KEY,
+        ride_id       TEXT,
+        incident_type TEXT NOT NULL,
+        driver_id     TEXT,
+        customer_id   TEXT,
+        details       JSONB DEFAULT '{}',
+        resolved      BOOLEAN DEFAULT false,
+        created_at    TIMESTAMPTZ DEFAULT NOW()
+      )
+    `);
+  } catch (_) {}
+})();
 
 module.exports = router;
