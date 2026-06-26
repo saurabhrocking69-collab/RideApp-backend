@@ -1544,7 +1544,7 @@ async function cmpAction(id,action,targetId){
   if(action==='refund'){
     const amt=prompt('Refund amount (₹)?');
     if(!amt) return;
-    extra={amount:parseFloat(amt)||0};
+    extra={refund_amount:parseFloat(amt)||0};
   }
   try{
     const d=await aJson('/api/admin/complaints/'+id+'/action',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action,target_user_id:targetId,...extra})});
