@@ -105,11 +105,11 @@ async function transitionRide(rideId, newStatus, opts = {}) {
     if (fcm) {
       if (fcm.customer && passengerPhone) {
         const [title, body, type] = fcm.customer;
-        sendFCM(passengerPhone, title, body, { type, ride_id: String(rideId) }).catch(() => {});
+        sendFCM(passengerPhone, title, body, { type, ride_id: String(rideId) }, { role: 'customer' }).catch(() => {});
       }
       if (fcm.driver && driverPhone) {
         const [title, body, type, channelId = 'ride_requests'] = fcm.driver;
-        sendFCM(driverPhone, title, body, { type, ride_id: String(rideId) }, { channelId }).catch(() => {});
+        sendFCM(driverPhone, title, body, { type, ride_id: String(rideId) }, { channelId, role: 'driver' }).catch(() => {});
       }
     }
   }

@@ -418,7 +418,7 @@ router.post('/commission-pay-verify', async (req, res) => {
     const remaining = await db.query(`SELECT COALESCE(pending_commission, 0) as pc FROM driver_wallet w JOIN users u ON w.driver_id = u.id WHERE u.phone = $1`, [phone]);
     if (parseFloat(remaining.rows[0]?.pc || 0) <= 0)
       await db.query(`UPDATE driver_commissions SET status = 'settled' WHERE driver_phone = $1 AND status = 'cash_owed'`, [phone]).catch(() => {});
-    sendFCM(phone, '✅ Commission Paid!', `₹${amount.toFixed(0)} commission clear ho gaya. Ab aap nayi rides le sakte hain!`, { type: 'commission_cleared' }).catch(() => {});
+    sendFCM(phone, '✅ Commission Paid!', `₹${amount.toFixed(0)} commission clear ho gaya. Ab aap nayi rides le sakte hain!`, { type: 'commission_cleared' }, { role: 'driver' }).catch(() => {});
     res.json({ success: true, message: 'Commission paid!', pending_commission: parseFloat(remaining.rows[0]?.pc || 0) });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });

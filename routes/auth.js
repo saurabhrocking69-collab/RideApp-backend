@@ -100,9 +100,15 @@ router.post('/update-name', async (req, res) => {
 
 // POST /api/auth/save-fcm-token
 router.post('/save-fcm-token', async (req, res) => {
-  const { phone, token } = req.body;
+  const { phone, token, role } = req.body;
   try {
-    await db.query('UPDATE users SET fcm_token = $1 WHERE phone = $2', [token, phone]);
+    // Ensure driver_fcm_token column exists (idempotent migration)
+    await db.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS driver_fcm_token TEXT').catch(() => {});
+    if (role === 'driver') {
+      await db.query('UPDATE users SET driver_fcm_token = $1 WHERE phone = $2', [token, phone]);
+    } else {
+      await db.query('UPDATE users SET fcm_token = $1 WHERE phone = $2', [token, phone]);
+    }
     res.json({ success: true });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });

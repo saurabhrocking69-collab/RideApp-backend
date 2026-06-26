@@ -31,6 +31,14 @@ async function getUserPhone(userId) {
   } catch { return null; }
 }
 
+async function getUserPhoneAndRole(userId) {
+  try {
+    const r = await db.query('SELECT phone, role FROM users WHERE id=$1', [userId]);
+    const row = r.rows[0];
+    return { phone: row?.phone || null, fcmRole: row?.role === 'driver' ? 'driver' : 'customer' };
+  } catch { return { phone: null, fcmRole: 'customer' }; }
+}
+
 async function logTimeline(complaintId, event, description, actorRole, actorName, meta) {
   await db.query(
     `INSERT INTO complaint_timeline(complaint_id,event,description,actor_role,actor_name,metadata)
@@ -151,11 +159,12 @@ router.post('/', phoneAuth, async (req, res) => {
 
     await logTimeline(complaint.id, 'filed', `Complaint filed by ${filerName}`, filerRole, filerName, { complaint_type });
 
-    const otherPhone = await getUserPhone(filedAgainstId);
+    const { phone: otherPhone, fcmRole: otherFcmRole } = await getUserPhoneAndRole(filedAgainstId);
     if (otherPhone) {
       sendFCM(otherPhone, 'Aapke khilaf complaint aayi hai',
         `${title} — Sppero team review karegi`,
-        { type: 'complaint_filed', complaint_id: complaint.id }
+        { type: 'complaint_filed', complaint_id: complaint.id },
+        { role: otherFcmRole }
       ).catch(() => {});
     }
 
@@ -257,8 +266,8 @@ router.post('/:id/messages', phoneAuth, async (req, res) => {
     await logTimeline(c.id, 'message_added', `${name} ne reply kiya`, role, name, null);
 
     const otherId = userId === c.filed_by ? c.filed_against : c.filed_by;
-    const otherPhone = await getUserPhone(otherId);
-    if (otherPhone) sendFCM(otherPhone, 'Complaint mein naya message', message.trim().slice(0, 80), { type: 'complaint_message', complaint_id: c.id }).catch(() => {});
+    const { phone: otherPhone, fcmRole: otherFcmRole } = await getUserPhoneAndRole(otherId);
+    if (otherPhone) sendFCM(otherPhone, 'Complaint mein naya message', message.trim().slice(0, 80), { type: 'complaint_message', complaint_id: c.id }, { role: otherFcmRole }).catch(() => {});
 
     res.json({ message: 'Message bheja gaya' });
   } catch (err) { res.status(500).json({ error: err.message }); }

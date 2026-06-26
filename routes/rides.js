@@ -57,7 +57,7 @@ async function processCashback(userId, phone, rideId, fare, paymentMethod) {
 
     if (earned.length > 0) {
       const total = earned.reduce((s, e) => s + e.amount, 0);
-      sendFCM(phone, '🎁 Cashback Mila!', `₹${total} cashback aapke wallet mein add ho gaya!`, { type: 'cashback_earned', amount: String(total) }).catch(() => {});
+      sendFCM(phone, '🎁 Cashback Mila!', `₹${total} cashback aapke wallet mein add ho gaya!`, { type: 'cashback_earned', amount: String(total) }, { role: 'customer' }).catch(() => {});
     }
   } catch (_e) {}
   return earned;
@@ -299,7 +299,7 @@ router.post('/cancel-smart', async (req, res) => {
         [cancelsToday + 1, today, newTrust, newTrust < 50, phone]
       );
       if (ride.driver_phone)
-        sendFCM(ride.driver_phone, '🚫 Ride Cancel Ho Gayi', `Customer ne cancel kar di. Reason: ${reason || 'N/A'}`, { type: 'ride_cancelled' }, { channelId: 'ride_requests' });
+        sendFCM(ride.driver_phone, '🚫 Ride Cancel Ho Gayi', `Customer ne cancel kar di. Reason: ${reason || 'N/A'}`, { type: 'ride_cancelled' }, { channelId: 'ride_requests', role: 'driver' });
     }
 
     if (cancelled_by === 'driver') {
@@ -327,7 +327,7 @@ router.post('/cancel-smart', async (req, res) => {
         [totalCancelled, cancelsToday, today, cancelRate.toFixed(2), suspendedUntil, phone]
       );
       if (ride.passenger_phone)
-        sendFCM(ride.passenger_phone, '🚫 Driver ne Cancel Kiya', `Reason: ${reason || 'N/A'}. Naya driver dhundh rahe hain...`, { type: 'ride_cancelled' });
+        sendFCM(ride.passenger_phone, '🚫 Driver ne Cancel Kiya', `Reason: ${reason || 'N/A'}. Naya driver dhundh rahe hain...`, { type: 'ride_cancelled' }, { role: 'customer' });
     }
 
     await db.query(`UPDATE rides SET status = 'cancelled' WHERE id = $1`, [ride_id]);
@@ -443,7 +443,8 @@ router.post('/complete', async (req, res) => {
         sendFCM(ride.passenger_phone,
           '⚠️ Driver ne sahi jagah nahi chhoda!',
           `Aapka driver drop se ${(distFromDrop||0).toFixed(1)}km door tha jab usne trip complete ki. Complaint auto-raise ho gayi.`,
-          { type: 'early_completion_alert', ride_id: String(ride_id), complaint_id: cRes.rows[0]?.id || '' }
+          { type: 'early_completion_alert', ride_id: String(ride_id), complaint_id: cRes.rows[0]?.id || '' },
+          { role: 'customer' }
         ).catch(() => {});
 
         // Warn driver
@@ -451,7 +452,7 @@ router.post('/complete', async (req, res) => {
           '⚠️ Early Trip Completion Detected',
           `Aapne ride #${ride_id} drop location se ${(distFromDrop||0).toFixed(1)}km door complete ki. Yeh platform policy ke against hai.`,
           { type: 'early_completion_warning', ride_id: String(ride_id) },
-          { channelId: 'ride_requests' }
+          { channelId: 'ride_requests', role: 'driver' }
         ).catch(() => {});
 
         // Strike the driver
@@ -522,9 +523,9 @@ router.post('/payment-complete', async (req, res) => {
 
           if (autoDeduct > 0) {
             await db.query(`UPDATE driver_commissions SET status = 'auto_settled' WHERE driver_phone = $1 AND status = 'cash_owed'`, [drPhone]).catch(() => {});
-            sendFCM(drPhone, '💰 Earning Credited', `₹${actualCredit.toFixed(0)} wallet mein add hua! (₹${autoDeduct.toFixed(0)} pending commission deduct hua)`, { type: 'earning_credited', amount: String(actualCredit), commission_deducted: String(autoDeduct) }).catch(() => {});
+            sendFCM(drPhone, '💰 Earning Credited', `₹${actualCredit.toFixed(0)} wallet mein add hua! (₹${autoDeduct.toFixed(0)} pending commission deduct hua)`, { type: 'earning_credited', amount: String(actualCredit), commission_deducted: String(autoDeduct) }, { role: 'driver' }).catch(() => {});
           } else {
-            sendFCM(drPhone, '💰 Earning Credited', `₹${driverEarning.toFixed(0)} wallet mein add ho gaya!`, { type: 'earning_credited', amount: String(driverEarning) }).catch(() => {});
+            sendFCM(drPhone, '💰 Earning Credited', `₹${driverEarning.toFixed(0)} wallet mein add ho gaya!`, { type: 'earning_credited', amount: String(driverEarning) }, { role: 'driver' }).catch(() => {});
           }
         }
       }
@@ -560,7 +561,7 @@ router.post('/cash-confirm', async (req, res) => {
       [commission, phone]
     );
     const totalPending = parseFloat(walletRes.rows[0]?.pending_commission || 0);
-    sendFCM(phone, '💰 Commission Due', `₹${commission.toFixed(0)} commission baqi hai. Total pending: ₹${totalPending.toFixed(0)}. App mein pay karo.`, { type: 'commission_due', pending_commission: String(totalPending) }).catch(() => {});
+    sendFCM(phone, '💰 Commission Due', `₹${commission.toFixed(0)} commission baqi hai. Total pending: ₹${totalPending.toFixed(0)}. App mein pay karo.`, { type: 'commission_due', pending_commission: String(totalPending) }, { role: 'driver' }).catch(() => {});
     // Cashback for customer (cash/upi rides still earn ride-count cashbacks, not wallet bonus)
     let cashbacks = [];
     try {
@@ -654,7 +655,8 @@ router.post('/payment-not-received', async (req, res) => {
       ).catch(() => {});
       sendFCM(ride.passenger_phone, '🚫 Booking Suspended',
         'Aapka account review ke liye hold pe hai. Support se contact karo.',
-        { type: 'account_restricted' }
+        { type: 'account_restricted' },
+        { role: 'customer' }
       ).catch(() => {});
     }
 
@@ -662,7 +664,8 @@ router.post('/payment-not-received', async (req, res) => {
     sendFCM(ride.passenger_phone,
       '⚠️ Payment Issue Reported',
       `Driver ne report kiya ki aapne ride #${ride_id} ka ₹${ride.fare} cash payment nahi kiya. Please support se contact karo.`,
-      { type: 'payment_dispute', ride_id: String(ride_id) }
+      { type: 'payment_dispute', ride_id: String(ride_id) },
+      { role: 'customer' }
     ).catch(() => {});
 
     res.json({
@@ -822,7 +825,7 @@ router.post('/extension-request', async (req, res) => {
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11, NOW() + INTERVAL '15 minutes', NOW() + INTERVAL '60 seconds') RETURNING *`,
       [original_ride_id, customer_phone, ride.driver_phone, ride.drop_location, ride.drop_lat || null, ride.drop_lng || null, new_drop, new_drop_lat, new_drop_lng, ride.ride_type, estFare]
     );
-    sendFCM(ride.driver_phone, '🔄 Ride Extension!', `${ride.drop_location} → ${new_drop} — ₹${estFare} | Accept karo 60 sec mein`, { type: 'ride_extension' }, { channelId: 'ride_requests' });
+    sendFCM(ride.driver_phone, '🔄 Ride Extension!', `${ride.drop_location} → ${new_drop} — ₹${estFare} | Accept karo 60 sec mein`, { type: 'ride_extension' }, { channelId: 'ride_requests', role: 'driver' });
 
     const extId = extR.rows[0].id;
     setTimeout(async () => {
@@ -880,7 +883,7 @@ router.post('/extension-accept', async (req, res) => {
     await client.query("UPDATE ride_extensions SET status='accepted', new_ride_id=$1 WHERE id=$2", [newRide.rows[0].id, extension_id]);
     await client.query('COMMIT');
     client.release();
-    sendFCM(ext.customer_phone, '✅ Extension Accepted!', `Driver aa raha hai — ${ext.new_drop}`);
+    sendFCM(ext.customer_phone, '✅ Extension Accepted!', `Driver aa raha hai — ${ext.new_drop}`, {}, { role: 'customer' });
     res.json({ success: true, new_ride_id: newRide.rows[0].id, fare: ext.estimated_fare });
   } catch (err) {
     await client.query('ROLLBACK').catch(() => {}); client.release();
@@ -893,7 +896,7 @@ router.post('/extension-reject', async (req, res) => {
   const { extension_id } = req.body;
   try {
     const r = await db.query("UPDATE ride_extensions SET status='rejected' WHERE id=$1 RETURNING customer_phone, new_drop", [extension_id]);
-    if (r.rows[0]) sendFCM(r.rows[0].customer_phone, '❌ Extension Reject', 'Driver ne reject kiya — naya ride book karo');
+    if (r.rows[0]) sendFCM(r.rows[0].customer_phone, '❌ Extension Reject', 'Driver ne reject kiya — naya ride book karo', {}, { role: 'customer' });
     res.json({ success: true });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });

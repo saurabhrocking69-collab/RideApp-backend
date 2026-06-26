@@ -18,13 +18,20 @@ try {
   console.log('⚠️ Firebase Admin error:', e.message);
 }
 
-// options.channelId: 'ride_requests' for drivers, 'default' for customers
+// options.channelId : 'ride_requests' for drivers, 'default' for customers
+// options.role      : 'driver' | 'customer' (default 'customer')
+//   driver  → reads driver_fcm_token, falls back to fcm_token for drivers who haven't re-logged
+//   customer→ reads fcm_token only
 async function sendFCM(phone, title, body, data = {}, options = {}) {
   const channelId = options.channelId || 'default';
+  const role      = options.role || 'customer';
   try {
-    const user = await db.query('SELECT fcm_token FROM users WHERE phone = $1', [phone]);
+    const col  = role === 'driver'
+      ? 'COALESCE(driver_fcm_token, fcm_token)'
+      : 'fcm_token';
+    const user = await db.query(`SELECT ${col} AS fcm_token FROM users WHERE phone = $1`, [phone]);
     const token = user.rows[0]?.fcm_token;
-    if (!token) { console.log('⚠️ No FCM token for', phone); return; }
+    if (!token) { console.log('⚠️ No FCM token for', phone, `(role: ${role})`); return; }
 
     // ── Expo relay path (ExponentPushToken[xxx]) ────────────────────────────
     // Note: Expo relay requires FCM V1 credentials uploaded to expo.dev/accounts/
@@ -89,9 +96,10 @@ async function sendFCM(phone, title, body, data = {}, options = {}) {
   } catch (e) {
     console.log('FCM error for', phone, ':', e.message);
     if (e.code === 'messaging/registration-token-not-registered') {
-      console.log('   → Token expired/invalid for', phone, '— driver needs to re-login');
+      console.log('   → Token expired/invalid for', phone, `(role: ${role}) — user needs to re-login`);
       // Clear the stale token so future attempts don't waste time
-      db.query('UPDATE users SET fcm_token = NULL WHERE phone = $1', [phone]).catch(() => {});
+      const clearCol = role === 'driver' ? 'driver_fcm_token' : 'fcm_token';
+      db.query(`UPDATE users SET ${clearCol} = NULL WHERE phone = $1`, [phone]).catch(() => {});
     }
   }
 }

@@ -33,8 +33,8 @@ async function doCompleteHourly(booking_id, actual_km) {
       [actual_km || 0, extraKm, extraCharge, totalFare, actualHours, driverEarning, commission, booking_id]
     );
     await client.query('COMMIT');
-    sendFCM(b.customer_phone, '⏱️ Hourly Trip Complete!', `Trip khatam! Total: ₹${totalFare.toFixed(0)}`);
-    sendFCM(b.driver_phone, '✅ Trip Complete', `₹${driverEarning.toFixed(0)} aapki kamai!`);
+    sendFCM(b.customer_phone, '⏱️ Hourly Trip Complete!', `Trip khatam! Total: ₹${totalFare.toFixed(0)}`, {}, { role: 'customer' });
+    sendFCM(b.driver_phone, '✅ Trip Complete', `₹${driverEarning.toFixed(0)} aapki kamai!`, {}, { role: 'driver' });
     client.release();
     return { total_fare: totalFare, driver_earning: driverEarning, extra_km: extraKm, extra_km_charge: extraCharge };
   } catch (err) {
@@ -133,7 +133,7 @@ router.post('/accept', async (req, res) => {
     const result = await db.query(`UPDATE hourly_bookings SET driver_phone=$1, status='matched' WHERE id=$2 AND status='pending' AND driver_phone IS NULL RETURNING *`, [driver_phone, booking_id]);
     if (result.rows.length === 0) return res.json({ success: false, message: 'Already taken' });
     const booking = result.rows[0];
-    sendFCM(booking.customer_phone, '⏱️ Driver Mil Gaya!', 'Hourly booking ke liye driver aa raha hai!');
+    sendFCM(booking.customer_phone, '⏱️ Driver Mil Gaya!', 'Hourly booking ke liye driver aa raha hai!', {}, { role: 'customer' });
     emitToRoom('hourly_' + booking_id, 'hourlyMatched', { status: 'matched', driver_phone, booking_id });
     res.json({ success: true });
   } catch (err) { res.status(500).json({ error: err.message }); }
@@ -147,7 +147,7 @@ router.post('/driver-cancel', async (req, res) => {
     if (!r.rows[0]) return res.status(404).json({ error: 'Booking nahi mili ya already start ho gayi' });
     const booking = r.rows[0];
     await db.query(`UPDATE hourly_bookings SET driver_phone=NULL, status='pending' WHERE id=$1`, [booking_id]);
-    sendFCM(booking.customer_phone, '⚠️ Driver Cancel Ho Gaya', 'Driver unavailable ho gaya — naya driver dhundh rahe hain');
+    sendFCM(booking.customer_phone, '⚠️ Driver Cancel Ho Gaya', 'Driver unavailable ho gaya — naya driver dhundh rahe hain', {}, { role: 'customer' });
     emitToRoom('hourly_' + booking_id, 'hourlyDriverCancelled', { booking_id });
     res.json({ success: true });
   } catch (err) { res.status(500).json({ error: err.message }); }
@@ -231,8 +231,8 @@ router.post('/early-end-request', async (req, res) => {
       }
     }
     await db.query('UPDATE hourly_bookings SET early_end_requested_by=$1 WHERE id=$2', [requested_by, booking_id]);
-    if (requested_by === 'driver') sendFCM(b.customer_phone, '⚠️ Driver Trip End Karna Chahta Hai', 'App mein confirm ya reject karo.');
-    else sendFCM(b.driver_phone, '⚠️ Customer Trip End Karna Chahta Hai', 'App mein confirm ya reject karo.');
+    if (requested_by === 'driver') sendFCM(b.customer_phone, '⚠️ Driver Trip End Karna Chahta Hai', 'App mein confirm ya reject karo.', {}, { role: 'customer' });
+    else sendFCM(b.driver_phone, '⚠️ Customer Trip End Karna Chahta Hai', 'App mein confirm ya reject karo.', {}, { role: 'driver' });
     res.json({ success: true });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
@@ -264,8 +264,8 @@ router.post('/early-end-confirm', async (req, res) => {
     }
     await client.query(`UPDATE hourly_bookings SET status='completed', ended_at=NOW(), actual_hours=$1, driver_earning=$2, platform_fee=$3, refund_amount=$4, payment_status='released', early_end_confirmed=true WHERE id=$5`, [actualHours, driverEarning, commission, refund, booking_id]);
     await client.query('COMMIT');
-    sendFCM(b.customer_phone, '✅ Trip Complete', isCustomerEnd ? 'Trip complete! Driver ko full payment gayi.' : `₹${refund} wallet mein wapas aa gaye!`);
-    sendFCM(b.driver_phone, '✅ Trip Complete!', `₹${driverEarning} aapki kamai — wallet mein add ho gaya!`);
+    sendFCM(b.customer_phone, '✅ Trip Complete', isCustomerEnd ? 'Trip complete! Driver ko full payment gayi.' : `₹${refund} wallet mein wapas aa gaye!`, {}, { role: 'customer' });
+    sendFCM(b.driver_phone, '✅ Trip Complete!', `₹${driverEarning} aapki kamai — wallet mein add ho gaya!`, {}, { role: 'driver' });
     res.json({ success: true, driver_earning: driverEarning, refund, actual_hours: actualHours.toFixed(1) });
   } catch (err) { await client.query('ROLLBACK'); res.status(500).json({ error: err.message }); }
   finally { client.release(); }
@@ -293,7 +293,7 @@ router.post('/customer-early-complete', async (req, res) => {
     await client.query('COMMIT');
     const io = getIO();
     if (io) io.to('hourly_' + booking_id).emit('hourlyTripCompleted', { driver_earning: driverEarning });
-    sendFCM(b.driver_phone, '✅ Customer ne Trip Complete Kiya!', `Full payment ₹${driverEarning.toFixed(0)} aapki kamai — wallet mein add ho gaya!`);
+    sendFCM(b.driver_phone, '✅ Customer ne Trip Complete Kiya!', `Full payment ₹${driverEarning.toFixed(0)} aapki kamai — wallet mein add ho gaya!`, {}, { role: 'driver' });
     res.json({ success: true, driver_earning: driverEarning, actual_hours: actualHours.toFixed(1) });
   } catch (err) { await client.query('ROLLBACK'); res.status(500).json({ error: err.message }); }
   finally { client.release(); }
@@ -347,7 +347,7 @@ router.post('/customer-dispute-complete', async (req, res) => {
   try {
     const r = await db.query("UPDATE hourly_bookings SET pending_customer_confirm=false, dispute_raised=true WHERE id=$1 AND pending_customer_confirm=true RETURNING driver_phone", [booking_id]);
     if (!r.rows[0]) return res.json({ success: false, message: 'Koi pending confirmation nahi' });
-    sendFCM(r.rows[0].driver_phone, '⚠️ Customer ne Dispute Raise Kiya', 'Admin review karega — paise escrow mein hain');
+    sendFCM(r.rows[0].driver_phone, '⚠️ Customer ne Dispute Raise Kiya', 'Admin review karega — paise escrow mein hain', {}, { role: 'driver' });
     res.json({ success: true, message: 'Dispute raise ho gaya — admin 24h mein resolve karega' });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
@@ -373,7 +373,7 @@ router.post('/request-extend', async (req, res) => {
     await db.query('UPDATE customer_wallet SET balance=balance-$1 WHERE user_id=$2', [extraFare, cu.rows[0].id]);
     await db.query("INSERT INTO transactions (user_id,type,amount,description) VALUES ($1,'debit',$2,'Hourly extend request - escrow')", [cu.rows[0].id, extraFare]);
     await db.query('UPDATE hourly_bookings SET extend_requested_hours=$1, extend_escrow=$2 WHERE id=$3', [extra_hours, extraFare, booking_id]);
-    sendFCM(b.driver_phone, `📅 Customer +${extra_hours}h Extend Chahta Hai`, `₹${extraFare} escrow mein — accept ya reject karo app mein`);
+    sendFCM(b.driver_phone, `📅 Customer +${extra_hours}h Extend Chahta Hai`, `₹${extraFare} escrow mein — accept ya reject karo app mein`, {}, { role: 'driver' });
     res.json({ success: true, extra_fare: extraFare, message: `₹${extraFare} hold ho gaye — driver ka intezaar karo` });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
@@ -396,7 +396,7 @@ router.post('/accept-extend', async (req, res) => {
        extend_total_minutes=COALESCE(extend_total_minutes,0)+$4, extend_total_fare=COALESCE(extend_total_fare,0)+$5 WHERE id=$6`,
       [newHours, newKm, newFare, extMinutes, parseFloat(b.extend_escrow), booking_id]
     );
-    sendFCM(b.customer_phone, '✅ Extension Accept Ho Gaya!', `Trip ab ${newHours >= 24 ? (newHours/24)+'d' : newHours+'h'} ke liye extend ho gaya — ${newKm} km included`);
+    sendFCM(b.customer_phone, '✅ Extension Accept Ho Gaya!', `Trip ab ${newHours >= 24 ? (newHours/24)+'d' : newHours+'h'} ke liye extend ho gaya — ${newKm} km included`, {}, { role: 'customer' });
     const io = getIO();
     if (io) io.to('hourly_' + booking_id).emit('hourlyExtensionResult', { accepted: true, new_hours: newHours, new_km: newKm, new_fare: newFare });
     res.json({ success: true, new_hours: newHours, new_km: newKm, new_fare: newFare });
@@ -418,7 +418,7 @@ router.post('/reject-extend', async (req, res) => {
       }
     }
     await db.query('UPDATE hourly_bookings SET extend_requested_hours=NULL, extend_escrow=0 WHERE id=$1', [booking_id]);
-    sendFCM(b.customer_phone, '❌ Extension Reject Ho Gaya', `₹${parseFloat(b.extend_escrow || 0).toFixed(0)} wapas aapke wallet mein`);
+    sendFCM(b.customer_phone, '❌ Extension Reject Ho Gaya', `₹${parseFloat(b.extend_escrow || 0).toFixed(0)} wapas aapke wallet mein`, {}, { role: 'customer' });
     const io = getIO();
     if (io) io.to('hourly_' + booking_id).emit('hourlyExtensionResult', { accepted: false, refund: parseFloat(b.extend_escrow || 0) });
     res.json({ success: true });
@@ -440,15 +440,15 @@ router.post('/update-km', async (req, res) => {
     const alerts = [];
     if (kmPct >= 0.80 && !b.km_alert_sent) {
       await db.query('UPDATE hourly_bookings SET km_alert_sent=TRUE WHERE id=$1', [booking_id]);
-      sendFCM(b.customer_phone, '📍 Package KM Khatam Hua', `${actual_km} km travel ho gaye — package mein ${b.km_included} km tha. Ab ₹${HOURLY_FARES[b.vehicle_type]?.extra || 8}/km extra charge hoga.`);
-      sendFCM(b.driver_phone, '📍 Customer Package KM Exceed Hua', `${actual_km}/${b.km_included} km. Ab extra charges customer se honge.`);
+      sendFCM(b.customer_phone, '📍 Package KM Khatam Hua', `${actual_km} km travel ho gaye — package mein ${b.km_included} km tha. Ab ₹${HOURLY_FARES[b.vehicle_type]?.extra || 8}/km extra charge hoga.`, {}, { role: 'customer' });
+      sendFCM(b.driver_phone, '📍 Customer Package KM Exceed Hua', `${actual_km}/${b.km_included} km. Ab extra charges customer se honge.`, {}, { role: 'driver' });
       alerts.push('km_alert');
     }
     if (timePct >= 0.80 && !b.time_alert_sent) {
       await db.query('UPDATE hourly_bookings SET time_alert_sent=TRUE WHERE id=$1', [booking_id]);
       const minLeft = Math.max(0, Math.round(totalMin - elapsedMin));
-      sendFCM(b.customer_phone, '⏰ Time Khatam Hone Wala Hai!', `Sirf ~${minLeft} minute bacha hai. Extension chahiye? App mein extend karo.`);
-      sendFCM(b.driver_phone, '⏰ Trip Time 80% Complete', `${Math.round(elapsedMin)}/${Math.round(totalMin)} min elapsed.`);
+      sendFCM(b.customer_phone, '⏰ Time Khatam Hone Wala Hai!', `Sirf ~${minLeft} minute bacha hai. Extension chahiye? App mein extend karo.`, {}, { role: 'customer' });
+      sendFCM(b.driver_phone, '⏰ Trip Time 80% Complete', `${Math.round(elapsedMin)}/${Math.round(totalMin)} min elapsed.`, {}, { role: 'driver' });
       alerts.push('time_alert');
     }
     const extraKmCharge = Math.max(0, actual_km - parseFloat(b.km_included)) * (HOURLY_FARES[b.vehicle_type]?.extra || 8);

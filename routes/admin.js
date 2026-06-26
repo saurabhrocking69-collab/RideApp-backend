@@ -92,10 +92,10 @@ router.post('/verify-driver', async (req, res) => {
     const dr = await db.query('SELECT u.phone FROM drivers d JOIN users u ON d.id=u.id WHERE d.id::text = $1::text', [String(driver_id)]);
     if (dr.rows[0]) {
       const dPhone = dr.rows[0].phone;
-      if (status === 'approved') sendFCM(dPhone, '🎉 Sppero Buddy Captain — Approved!', 'Aapke documents verify ho gaye! Ab app mein login karke rides lo.');
-      else if (status === 'rejected') sendFCM(dPhone, '❌ Documents Reject Ho Gaye', message || 'Aapke documents mein problem hai.');
-      else if (status === 'resubmit') sendFCM(dPhone, '📋 Documents Resubmit Karein', message || 'Admin ne kuch documents dobara maange hain.');
-      else if (status === 'suspended') sendFCM(dPhone, '⚠️ Account Suspend Ho Gaya', message || 'Aapka account suspend kar diya gaya hai.');
+      if (status === 'approved') sendFCM(dPhone, '🎉 Sppero Buddy Captain — Approved!', 'Aapke documents verify ho gaye! Ab app mein login karke rides lo.', {}, { role: 'driver' });
+      else if (status === 'rejected') sendFCM(dPhone, '❌ Documents Reject Ho Gaye', message || 'Aapke documents mein problem hai.', {}, { role: 'driver' });
+      else if (status === 'resubmit') sendFCM(dPhone, '📋 Documents Resubmit Karein', message || 'Admin ne kuch documents dobara maange hain.', {}, { role: 'driver' });
+      else if (status === 'suspended') sendFCM(dPhone, '⚠️ Account Suspend Ho Gaya', message || 'Aapka account suspend kar diya gaya hai.', {}, { role: 'driver' });
     }
     res.json({ success: true, message: `Driver ${status} ho gaya` });
   } catch (err) { res.status(500).json({ error: err.message }); }
@@ -356,7 +356,7 @@ router.post('/resolve-dispute', async (req, res) => {
         if (driverUser.rows[0]) await client.query('UPDATE driver_wallet SET balance=balance+$1, total_earned=total_earned+$1 WHERE driver_id=$2', [driverEarning, driverUser.rows[0].id]);
         await client.query(`UPDATE hourly_bookings SET status='completed', ended_at=NOW(), driver_earning=$1, platform_fee=$2, total_fare=$3, payment_status='released', dispute_raised=false WHERE id=$4`, [driverEarning, commission, totalFare, booking_id]);
         await client.query('COMMIT');
-        sendFCM(b.driver_phone, '✅ Dispute Resolved in Your Favour', `₹${driverEarning.toFixed(0)} wallet mein add ho gaya!`);
+        sendFCM(b.driver_phone, '✅ Dispute Resolved in Your Favour', `₹${driverEarning.toFixed(0)} wallet mein add ho gaya!`, {}, { role: 'driver' });
         return res.json({ success: true, resolved: 'driver', driver_earning: driverEarning });
       } catch (e) { await client.query('ROLLBACK'); throw e; } finally { client.release(); }
     } else {
@@ -366,8 +366,8 @@ router.post('/resolve-dispute', async (req, res) => {
         await db.query("INSERT INTO transactions (user_id,type,amount,description) VALUES ($1,'credit',$2,'Hourly dispute resolved - full refund')", [cu.rows[0].id, b.base_fare]);
       }
       await db.query("UPDATE hourly_bookings SET status='cancelled', payment_status='refunded', dispute_raised=false WHERE id=$1", [booking_id]);
-      sendFCM(b.customer_phone, '✅ Dispute Resolved', `₹${b.base_fare} aapke wallet mein wapas!`);
-      sendFCM(b.driver_phone, '❌ Dispute Against You', 'Customer ko refund mil gaya');
+      sendFCM(b.customer_phone, '✅ Dispute Resolved', `₹${b.base_fare} aapke wallet mein wapas!`, {}, { role: 'customer' });
+      sendFCM(b.driver_phone, '❌ Dispute Against You', 'Customer ko refund mil gaya', {}, { role: 'driver' });
       return res.json({ success: true, resolved: 'customer', refunded: b.base_fare });
     }
   } catch (err) { res.status(500).json({ error: err.message }); }
@@ -601,7 +601,8 @@ router.post('/payout-approve', async (req, res) => {
     );
     sendFCM(payout.driver_phone, '✅ Payout Approved!',
       `₹${actualPayout.toFixed(0)} aapke ${payout.method === 'upi' ? 'UPI' : 'bank account'} mein transfer kar diya gaya!`,
-      { type: 'payout_approved' }
+      { type: 'payout_approved' },
+      { role: 'driver' }
     ).catch(() => {});
     res.json({ success: true, actual_payout: actualPayout, commission_deducted: commDeduct });
   } catch (err) { res.status(500).json({ error: err.message }); }
@@ -619,7 +620,8 @@ router.post('/payout-reject', async (req, res) => {
     if (!r.rows[0]) return res.status(400).json({ error: 'Payout nahi mila ya pehle se process ho chuka' });
     sendFCM(r.rows[0].driver_phone, '❌ Payout Rejected',
       note || 'Payout reject ho gaya — support se contact karo',
-      { type: 'payout_rejected' }
+      { type: 'payout_rejected' },
+      { role: 'driver' }
     ).catch(() => {});
     res.json({ success: true });
   } catch (err) { res.status(500).json({ error: err.message }); }
@@ -808,9 +810,10 @@ router.put('/complaints/:id/resolve', async (req, res) => {
     );
 
     // notify both parties
-    const phones = await db.query('SELECT phone FROM users WHERE id IN ($1,$2)', [c.filed_by, c.filed_against]);
+    const phones = await db.query('SELECT phone, role FROM users WHERE id IN ($1,$2)', [c.filed_by, c.filed_against]);
     for (const row of phones.rows) {
-      sendFCM(row.phone, 'Complaint Resolved', resolution_note.substring(0, 80), { type: 'complaint_resolved', complaint_id: req.params.id }).catch(() => {});
+      const fcmRole = row.role === 'driver' ? 'driver' : 'customer';
+      sendFCM(row.phone, 'Complaint Resolved', resolution_note.substring(0, 80), { type: 'complaint_resolved', complaint_id: req.params.id }, { role: fcmRole }).catch(() => {});
     }
     res.json({ success: true });
   } catch (err) { res.status(500).json({ error: err.message }); }
@@ -825,15 +828,16 @@ router.post('/complaints/:id/action', async (req, res) => {
   try {
     let description = '';
 
-    const targetUser = await db.query('SELECT phone FROM users WHERE id=$1', [target_user_id]);
+    const targetUser = await db.query('SELECT phone, role FROM users WHERE id=$1', [target_user_id]);
     const targetPhone = targetUser.rows[0]?.phone;
+    const targetFcmRole = targetUser.rows[0]?.role === 'driver' ? 'driver' : 'customer';
 
     if (action === 'warn') {
       await db.query(
         "INSERT INTO complaint_messages(complaint_id,sender_role,sender_name,message,is_internal) VALUES($1,'admin',$2,$3,true)",
         [req.params.id, admin_name || 'Admin', `[WARNING ISSUED] User ${target_user_id}: ${reason}`]
       );
-      if (targetPhone) sendFCM(targetPhone, '⚠️ Sppero Warning', reason || 'Platform guidelines violation', { type: 'warning' }).catch(() => {});
+      if (targetPhone) sendFCM(targetPhone, '⚠️ Sppero Warning', reason || 'Platform guidelines violation', { type: 'warning' }, { role: targetFcmRole }).catch(() => {});
       description = `Warning issued to user ${target_user_id}`;
     }
 
@@ -841,13 +845,13 @@ router.post('/complaints/:id/action', async (req, res) => {
       const days = parseInt(suspend_days) || 3;
       const suspendUntil = new Date(Date.now() + days * 86400000).toISOString();
       await db.query('UPDATE users SET suspended_until=$1 WHERE id=$2', [suspendUntil, target_user_id]).catch(() => {});
-      if (targetPhone) sendFCM(targetPhone, '🚫 Account Suspended', `Aapka account ${days} din ke liye suspend hua hai: ${reason}`, { type: 'suspended' }).catch(() => {});
+      if (targetPhone) sendFCM(targetPhone, '🚫 Account Suspended', `Aapka account ${days} din ke liye suspend hua hai: ${reason}`, { type: 'suspended' }, { role: targetFcmRole }).catch(() => {});
       description = `User ${target_user_id} suspended for ${days} days`;
     }
 
     if (action === 'ban') {
       await db.query('UPDATE users SET is_banned=true WHERE id=$1', [target_user_id]).catch(() => {});
-      if (targetPhone) sendFCM(targetPhone, '🚫 Account Banned', `Aapka account permanently ban ho gaya hai: ${reason}`, { type: 'banned' }).catch(() => {});
+      if (targetPhone) sendFCM(targetPhone, '🚫 Account Banned', `Aapka account permanently ban ho gaya hai: ${reason}`, { type: 'banned' }, { role: targetFcmRole }).catch(() => {});
       description = `User ${target_user_id} permanently banned`;
     }
 
@@ -863,7 +867,7 @@ router.post('/complaints/:id/action', async (req, res) => {
           [target_user_id, amt]
         ).catch(() => {});
       }
-      if (targetPhone) sendFCM(targetPhone, '💰 Refund Processed', `₹${amt} aapke wallet mein add ho gaya`, { type: 'refund', amount: amt }).catch(() => {});
+      if (targetPhone) sendFCM(targetPhone, '💰 Refund Processed', `₹${amt} aapke wallet mein add ho gaya`, { type: 'refund', amount: amt }, { role: targetFcmRole }).catch(() => {});
       description = `Refund ₹${amt} issued to user ${target_user_id}`;
     }
 

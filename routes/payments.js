@@ -56,7 +56,7 @@ router.post('/razorpay-webhook', express.raw({ type: 'application/json' }), asyn
             await db.query('UPDATE customer_wallet SET balance=balance+$1, updated_at=NOW() WHERE user_id=$2', [rupees, userId]);
             await db.query("INSERT INTO transactions (user_id,type,amount,description) VALUES ($1,'credit',$2,$3)", [userId, rupees, `Wallet recharge ₹${rupees} via webhook (${paymentId})`]);
             await db.query("INSERT INTO razorpay_topups (user_phone,amount,payment_id,status) VALUES ($1,$2,$3,'confirmed')", [phone, rupees, paymentId]);
-            sendFCM(phone, '✅ Wallet Recharge!', `₹${rupees} aapke wallet mein add ho gaya!`, { type: 'wallet_topup', amount: String(rupees) });
+            sendFCM(phone, '✅ Wallet Recharge!', `₹${rupees} aapke wallet mein add ho gaya!`, { type: 'wallet_topup', amount: String(rupees) }, { role: 'customer' });
           }
         }
       }
