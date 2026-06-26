@@ -1406,6 +1406,7 @@ async function openCmpDetail(id){
               ${['favor_complainant','favor_respondent','partial','inconclusive'].map(r=>`<option value="${r}"${r===c.resolution?' selected':''}>${r.replace(/_/g,' ')}</option>`).join('')}
             </select>
             <textarea id="cmp-res-note" class="input-sm" rows=2 placeholder="Resolution note...">${c.resolution_note||''}</textarea>
+            <input id="cmp-refund-amt" class="input-sm" type="number" placeholder="Refund ₹ (if any)" style="margin-bottom:6px;width:100%">
           </div>
           <button class="action-btn btn-green" style="white-space:nowrap;padding:8px 14px" onclick="cmpResolve('${c.id}')">✅ Resolve</button>
         </div>
@@ -1414,6 +1415,7 @@ async function openCmpDetail(id){
           <button class="action-btn btn-orange" onclick="cmpAction('${c.id}','suspend','${c.filed_against}')">🚫 Suspend</button>
           <button class="action-btn btn-red" onclick="cmpAction('${c.id}','ban','${c.filed_against}')">🔨 Ban</button>
           <button class="action-btn btn-green" onclick="cmpAction('${c.id}','refund','${c.filed_by}')">💸 Refund</button>
+          <button class="action-btn btn-orange" style="background:#f57c00" onclick="cmpRequestEvidence('${c.id}')">📎 Request Evidence</button>
           ${c.filer_role==='customer'?`<button class="action-btn btn-blue" onclick="cmpAction('${c.id}','strike','${c.filed_against}')">📌 Strike</button>`:''}
         </div>
         <div style="margin-top:10px">
@@ -1426,6 +1428,26 @@ async function openCmpDetail(id){
         </div>
         <div id="cmp-action-status" style="font-size:12px;margin-top:8px;color:#888"></div>
       </div>
+
+      ${(c.pickup_lat && c.drop_lat) ? `
+      <div style="margin-bottom:14px;background:#f3f4f6;border-radius:12px;padding:14px">
+        <div style="font-size:13px;font-weight:700;margin-bottom:8px">📍 Ride Location Snapshot</div>
+        <div style="font-size:12px;margin-bottom:6px">
+          <b>Pickup:</b> ${parseFloat(c.pickup_lat).toFixed(5)}, ${parseFloat(c.pickup_lng).toFixed(5)}
+          <a href="https://maps.google.com/?q=${c.pickup_lat},${c.pickup_lng}" target="_blank" style="margin-left:8px;color:#1565c0;font-weight:700">🗺️ Map</a>
+        </div>
+        <div style="font-size:12px;margin-bottom:6px">
+          <b>Drop:</b> ${parseFloat(c.drop_lat).toFixed(5)}, ${parseFloat(c.drop_lng).toFixed(5)}
+          <a href="https://maps.google.com/?q=${c.drop_lat},${c.drop_lng}" target="_blank" style="margin-left:8px;color:#1565c0;font-weight:700">🗺️ Map</a>
+        </div>
+        <a href="https://maps.google.com/maps/dir/${c.pickup_lat},${c.pickup_lng}/${c.drop_lat},${c.drop_lng}" target="_blank"
+          style="display:inline-block;background:#1565c0;color:#fff;border-radius:8px;padding:6px 14px;font-size:12px;font-weight:700;text-decoration:none">
+          🗺️ Full Route Dekho
+        </a>
+        ${c.driver_lat_at_complete ? `<div style="font-size:12px;margin-top:8px;color:#c62828"><b>⚠️ Driver location at completion:</b> ${parseFloat(c.driver_lat_at_complete).toFixed(5)}, ${parseFloat(c.driver_lng_at_complete).toFixed(5)}
+          <a href="https://maps.google.com/?q=${c.driver_lat_at_complete},${c.driver_lng_at_complete}" target="_blank" style="margin-left:8px;color:#1565c0;font-weight:700">🗺️ Map</a>
+        </div>` : ''}
+      </div>` : ''}
 
       <!-- Evidence -->
       ${evidence.length?`<div style="margin-bottom:14px"><div style="font-size:13px;font-weight:700;margin-bottom:8px">Evidence (${evidence.length})</div>
@@ -1487,6 +1509,16 @@ async function cmpSetStatus(id){
   }catch(e){st.textContent='❌ '+e.message;st.style.color='#c62828';}
 }
 
+async function cmpRequestEvidence(id){
+  const note=prompt('Evidence request note (optional):');
+  const st=document.getElementById('cmp-action-status');
+  try{
+    const d=await aJson('/api/admin/complaints/'+id+'/request-evidence',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({note:note||'',admin_name:'Admin'})});
+    st.textContent='✅ Evidence request bheja + user ko notification!'; st.style.color='#2e7d32';
+    setTimeout(()=>{closeCmpModal();loadComplaints();},1500);
+  }catch(e){st.textContent='❌ '+e.message;st.style.color='#c62828';}
+}
+
 async function cmpResolve(id){
   const resolution=document.getElementById('cmp-res-sel').value;
   const resolution_note=document.getElementById('cmp-res-note').value.trim();
@@ -1494,7 +1526,8 @@ async function cmpResolve(id){
   if(!resolution_note) return alert('Resolution note daalo');
   const st=document.getElementById('cmp-action-status');
   try{
-    const d=await aJson('/api/admin/complaints/'+id+'/resolve',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({resolution,resolution_note})});
+    const refundAmt=parseFloat(document.getElementById('cmp-refund-amt').value)||0;
+    const d=await aJson('/api/admin/complaints/'+id+'/resolve',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({resolution,resolution_note,refund_amount:refundAmt})});
     st.textContent='✅ Resolved!'; st.style.color='#2e7d32';
     setTimeout(()=>{closeCmpModal();loadComplaints();},1200);
   }catch(e){st.textContent='❌ '+e.message;st.style.color='#c62828';}

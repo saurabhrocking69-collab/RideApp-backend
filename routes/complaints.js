@@ -68,6 +68,7 @@ const { sendFCM } = require('../config/firebase');
     await db.query(`ALTER TABLE complaints ALTER COLUMN filed_against TYPE TEXT USING filed_against::TEXT`).catch(() => {});
     await db.query(`ALTER TABLE complaint_messages ALTER COLUMN sender_id TYPE TEXT USING sender_id::TEXT`).catch(() => {});
     await db.query(`ALTER TABLE complaint_evidence ALTER COLUMN uploaded_by TYPE TEXT USING uploaded_by::TEXT`).catch(() => {});
+    await db.query(`ALTER TABLE complaints ADD COLUMN IF NOT EXISTS refund_amount NUMERIC(10,2) DEFAULT 0`).catch(() => {});
     console.log('✅ Complaints tables ready');
   } catch (err) {
     console.error('❌ Complaints migration error:', err.message);

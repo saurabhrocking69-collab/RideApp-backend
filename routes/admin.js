@@ -752,6 +752,16 @@ router.put('/complaints/:id/status', async (req, res) => {
       "INSERT INTO complaint_timeline(complaint_id,event,description,actor_role,actor_name) VALUES($1,'status_changed',$2,'admin','Admin')",
       [req.params.id, `Status changed to ${status}${note ? ': ' + note : ''}`]
     );
+    const filerRes = await db.query(
+      'SELECT u.phone, (d.id IS NOT NULL) AS is_driver FROM users u LEFT JOIN drivers d ON d.id=u.id WHERE u.id=(SELECT filed_by FROM complaints WHERE id=$1)',
+      [req.params.id]
+    );
+    if (filerRes.rows[0]?.phone) {
+      const fcmRole = filerRes.rows[0].is_driver ? 'driver' : 'customer';
+      const statusLabels = { under_review:'Under Review ho gayi', awaiting_response:'Aapka jawab chahiye', evidence_requested:'Proof submit karo', escalated:'Senior team ko bheja', resolved:'Resolve ho gayi', closed:'Closed ho gayi' };
+      const msg = statusLabels[status] || `Status: ${status}`;
+      sendFCM(filerRes.rows[0].phone, `📋 Complaint Update`, msg, { type: 'complaint_update', complaint_id: req.params.id, status }, { role: fcmRole }).catch(() => {});
+    }
     res.json({ success: true });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
@@ -800,6 +810,9 @@ router.put('/complaints/:id/resolve', async (req, res) => {
       "UPDATE complaints SET status='resolved', resolution=$1, resolution_note=$2, action_taken=$3, resolved_at=NOW(), updated_at=NOW() WHERE id=$4",
       [resolution, resolution_note, action_taken || null, req.params.id]
     );
+    if (req.body.refund_amount) {
+      await db.query("UPDATE complaints SET refund_amount=$1 WHERE id=$2", [parseFloat(req.body.refund_amount)||0, req.params.id]).catch(() => {});
+    }
     await db.query(
       "INSERT INTO complaint_messages(complaint_id,sender_role,sender_name,message,is_internal) VALUES($1,'admin',$2,$3,false)",
       [req.params.id, admin_name || 'Sppero Team', `[RESOLVED] ${resolution_note}`]
@@ -872,6 +885,7 @@ router.post('/complaints/:id/action', async (req, res) => {
           "INSERT INTO customer_wallet(user_id,balance) VALUES($1,$2) ON CONFLICT(user_id) DO UPDATE SET balance=customer_wallet.balance+$2",
           [target_user_id, amt]
         ).catch(() => {});
+        await db.query("UPDATE complaints SET refund_amount=$1 WHERE id=$2", [amt, req.params.id]).catch(() => {});
       }
       if (targetPhone) sendFCM(targetPhone, '💰 Refund Processed', `₹${amt} aapke wallet mein add ho gaya`, { type: 'refund', amount: amt }, { role: targetFcmRole }).catch(() => {});
       description = `Refund ₹${amt} issued to user ${target_user_id}`;
@@ -962,6 +976,27 @@ router.put('/customer-profile/:id/unrestrict', async (req, res) => {
       "UPDATE users SET booking_restricted=false, booking_restricted_reason=NULL, trust_score=LEAST(100,COALESCE(trust_score,0)+20) WHERE id=$1",
       [req.params.id]
     );
+    res.json({ success: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// POST /api/admin/complaints/:id/request-evidence
+router.post('/complaints/:id/request-evidence', async (req, res) => {
+  const { note, admin_name } = req.body;
+  try {
+    await db.query("UPDATE complaints SET status='evidence_requested', updated_at=NOW() WHERE id=$1", [req.params.id]);
+    await db.query(
+      "INSERT INTO complaint_timeline(complaint_id,event,description,actor_role,actor_name) VALUES($1,'evidence_requested',$2,'admin',$3)",
+      [req.params.id, `Evidence requested${note ? ': ' + note : ''}`, admin_name || 'Admin']
+    );
+    const filerRes = await db.query(
+      'SELECT u.phone, (d.id IS NOT NULL) AS is_driver FROM users u LEFT JOIN drivers d ON d.id=u.id WHERE u.id=(SELECT filed_by FROM complaints WHERE id=$1)',
+      [req.params.id]
+    );
+    if (filerRes.rows[0]?.phone) {
+      const fcmRole = filerRes.rows[0].is_driver ? 'driver' : 'customer';
+      sendFCM(filerRes.rows[0].phone, '📎 Proof Chahiye — Complaint Update', note || 'Admin ne aapka proof/screenshot manga hai. App mein jaake upload karo.', { type: 'evidence_requested', complaint_id: req.params.id }, { role: fcmRole }).catch(() => {});
+    }
     res.json({ success: true });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
