@@ -4,6 +4,70 @@ const db = require('../config/db');
 const cloudinary = require('../config/cloudinary');
 const { sendFCM } = require('../config/firebase');
 
+// ─── Auto-migrate: create complaints tables if they don't exist ───────────────
+(async () => {
+  try {
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS complaints (
+        id               SERIAL PRIMARY KEY,
+        ride_id          TEXT,
+        filed_by         INTEGER NOT NULL,
+        filed_against    INTEGER NOT NULL,
+        filer_role       VARCHAR(20) NOT NULL,
+        complaint_type   VARCHAR(60) NOT NULL,
+        title            TEXT NOT NULL,
+        description      TEXT NOT NULL,
+        priority         VARCHAR(20) NOT NULL DEFAULT 'normal',
+        status           VARCHAR(30) NOT NULL DEFAULT 'open',
+        resolution       TEXT,
+        resolution_note  TEXT,
+        action_taken     TEXT,
+        assigned_admin   TEXT,
+        resolved_at      TIMESTAMP,
+        created_at       TIMESTAMP NOT NULL DEFAULT NOW(),
+        updated_at       TIMESTAMP NOT NULL DEFAULT NOW()
+      )
+    `);
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS complaint_messages (
+        id             SERIAL PRIMARY KEY,
+        complaint_id   INTEGER NOT NULL,
+        sender_id      INTEGER,
+        sender_role    VARCHAR(20),
+        sender_name    VARCHAR(100),
+        message        TEXT NOT NULL,
+        is_internal    BOOLEAN NOT NULL DEFAULT FALSE,
+        created_at     TIMESTAMP NOT NULL DEFAULT NOW()
+      )
+    `);
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS complaint_evidence (
+        id             SERIAL PRIMARY KEY,
+        complaint_id   INTEGER NOT NULL,
+        uploaded_by    INTEGER,
+        file_url       TEXT NOT NULL,
+        caption        TEXT,
+        created_at     TIMESTAMP NOT NULL DEFAULT NOW()
+      )
+    `);
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS complaint_timeline (
+        id             SERIAL PRIMARY KEY,
+        complaint_id   INTEGER NOT NULL,
+        event          VARCHAR(60),
+        description    TEXT,
+        actor_role     VARCHAR(20),
+        actor_name     VARCHAR(100),
+        metadata       TEXT,
+        created_at     TIMESTAMP NOT NULL DEFAULT NOW()
+      )
+    `);
+    console.log('✅ Complaints tables ready');
+  } catch (err) {
+    console.error('❌ Complaints migration error:', err.message);
+  }
+})();
+
 // ─── Phone-based auth (consistent with rest of app) ──────────────────────────
 // Accepts phone via body (POST) or query (GET). Looks up user ID from DB.
 async function phoneAuth(req, res, next) {

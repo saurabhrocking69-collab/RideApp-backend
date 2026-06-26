@@ -159,7 +159,9 @@ router.post('/start', async (req, res) => {
   try {
     const r = await db.query('SELECT otp FROM hourly_bookings WHERE id=$1', [booking_id]);
     if (!r.rows[0] || r.rows[0].otp !== otp) return res.status(400).json({ success: false, message: 'Galat OTP!' });
+    const started_at = new Date().toISOString();
     await db.query(`UPDATE hourly_bookings SET status='active', started_at=NOW() WHERE id=$1`, [booking_id]);
+    emitToRoom('hourly_' + booking_id, 'hourlyTripStarted', { booking_id, started_at });
     res.json({ success: true });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
