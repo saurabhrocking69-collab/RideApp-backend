@@ -19,6 +19,7 @@ const { sendFCM } = require('../config/firebase');
         description      TEXT NOT NULL,
         priority         VARCHAR(20) NOT NULL DEFAULT 'normal',
         status           VARCHAR(30) NOT NULL DEFAULT 'open',
+        source           VARCHAR(30) NOT NULL DEFAULT 'manual',
         resolution       TEXT,
         resolution_note  TEXT,
         action_taken     TEXT,
