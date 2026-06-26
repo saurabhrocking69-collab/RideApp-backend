@@ -1,10 +1,3 @@
-const Sentry = require('@sentry/node');
-Sentry.init({
-  dsn: process.env.SENTRY_DSN || 'https://4367c95061c05f0f9a5768bffdd05dec@o4511631997796352.ingest.us.sentry.io/4511632039804933',
-  environment: process.env.NODE_ENV || 'production',
-  tracesSampleRate: 0.1,
-});
-
 const express    = require('express');
 const cors       = require('cors');
 const http       = require('http');
@@ -117,8 +110,6 @@ app.use('/api/favourites', favouritesRouter);
 app.use('/api/complaints', complaintsRouter);
 app.use('/api/bonus',      bonusRouter);
 
-// Sentry error handler — must be after all routes
-app.use(Sentry.expressErrorHandler());
 
 // Admin portal HTML
 app.get('/admin', (_req, res) =>
