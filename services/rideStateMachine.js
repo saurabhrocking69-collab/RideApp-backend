@@ -16,7 +16,7 @@ const TRANSITIONS = {
 // FCM payloads per transition — [title, body, data.type, channelId?]
 const FCM_MAP = {
   matched:   { customer: ['🚗 Driver Mil Gaya!',         'Aapka driver aa raha hai — OTP ready karo!',           'ride_matched'] },
-  arrived:   { customer: ['🚗 Driver Aa Gaya!',          'Driver pickup pe hai — OTP batao aur trip shuru karo!', 'driver_arrived'] },
+  arrived:   { customer: ['📍 Sppero Buddy Pahunch Gaya!', 'Aapka Sppero Buddy pickup point pe pahunch gaya — OTP batao aur trip shuru karo!', 'driver_arrived'] },
   started:   { customer: ['🚀 Trip Shuru Ho Gaya!',      'Aapka ride chal raha hai. Safe journey!',               'trip_started'] },
   completed: {
     customer: ['🏁 Trip Complete!',   'Payment karo aur driver ko rate karo!',  'trip_completed'],

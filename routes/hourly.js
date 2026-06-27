@@ -153,6 +153,28 @@ router.post('/driver-cancel', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+// POST /api/hourly/arrived — driver marks arrival at pickup point
+router.post('/arrived', async (req, res) => {
+  const { booking_id, driver_phone } = req.body;
+  try {
+    const r = await db.query(
+      `SELECT * FROM hourly_bookings WHERE id=$1 AND driver_phone=$2 AND status='matched'`,
+      [booking_id, driver_phone]
+    );
+    if (!r.rows[0]) return res.status(404).json({ success: false, message: 'Booking nahi mili ya already shuru ho gayi' });
+    const b = r.rows[0];
+    sendFCM(
+      b.customer_phone,
+      '📍 Sppero Buddy Pahunch Gaya!',
+      'Aapka Sppero Buddy pickup point pe pahunch gaya — OTP batao aur trip shuru karo!',
+      { type: 'driver_arrived', booking_id: String(booking_id) },
+      { role: 'customer' }
+    );
+    emitToRoom('hourly_' + booking_id, 'hourlyDriverArrived', { booking_id });
+    res.json({ success: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
 // POST /api/hourly/start
 router.post('/start', async (req, res) => {
   const { booking_id, otp } = req.body;
@@ -524,6 +546,27 @@ router.post('/chat/send', async (req, res) => {
   if (!booking_id || !sender || !message) return res.status(400).json({ error: 'booking_id, sender, message required' });
   try {
     const created_at = new Date();
+
+    // First-message FCM: notify the other party only on their very first message
+    if (sender === 'driver') {
+      const prev = await db.query(
+        `SELECT 1 FROM chat_messages WHERE ride_id=$1 AND sender='driver' LIMIT 1`,
+        [`h_${booking_id}`]
+      );
+      if (prev.rows.length === 0) {
+        const b = await db.query('SELECT customer_phone FROM hourly_bookings WHERE id=$1', [booking_id]);
+        if (b.rows[0]) {
+          sendFCM(
+            b.rows[0].customer_phone,
+            '💬 Driver ne Message Kiya!',
+            message.length > 60 ? message.slice(0, 57) + '...' : message,
+            { type: 'new_chat_message', booking_id: String(booking_id) },
+            { role: 'customer' }
+          );
+        }
+      }
+    }
+
     await db.query('INSERT INTO chat_messages (ride_id, sender, message) VALUES ($1,$2,$3)', [`h_${booking_id}`, sender, message]);
     emitToRoom('hourly_' + booking_id, 'hourlyChatMessage', { sender, message, created_at });
     res.json({ success: true });
