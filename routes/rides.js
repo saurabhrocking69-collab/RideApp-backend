@@ -11,6 +11,7 @@ const { directFavouriteRideIds } = require('./favourites');
 const { transitionRide } = require('../services/rideStateMachine');
 const { getRideStatus, getDriverLoc, setRideStatus, clearRide: clearRideCache } = require('../services/rideCache');
 const { creditPeakBonusIfApplicable } = require('./bonus');
+const { maybeGrantReferralReward } = require('./referral');
 
 function emitRideUpdate(rideId, data) {
   emitToRoom('ride_' + rideId, 'rideUpdate', { rideId, ...data });
@@ -539,7 +540,10 @@ router.post('/payment-complete', async (req, res) => {
     let cashbacks = [];
     try {
       const u = await db.query('SELECT id FROM users WHERE phone=$1', [phone]);
-      if (u.rows[0]) cashbacks = await processCashback(u.rows[0].id, phone, ride_id, fare, payment_method);
+      if (u.rows[0]) {
+        cashbacks = await processCashback(u.rows[0].id, phone, ride_id, fare, payment_method);
+        maybeGrantReferralReward(u.rows[0].id).catch(() => {});
+      }
     } catch (_e) {}
 
     // Socket: customer's payment screen listens for this instead of polling
@@ -573,7 +577,10 @@ router.post('/cash-confirm', async (req, res) => {
       const passengerRes = await db.query(`SELECT passenger_id FROM rides WHERE id=$1`, [ride_id]);
       if (passengerRes.rows[0]) {
         const custUser = await db.query(`SELECT id, phone FROM users WHERE id=$1`, [passengerRes.rows[0].passenger_id]);
-        if (custUser.rows[0]) cashbacks = await processCashback(custUser.rows[0].id, custUser.rows[0].phone, ride_id, fare, method);
+        if (custUser.rows[0]) {
+          cashbacks = await processCashback(custUser.rows[0].id, custUser.rows[0].phone, ride_id, fare, method);
+          maybeGrantReferralReward(custUser.rows[0].id).catch(() => {});
+        }
       }
     } catch (_e) {}
     // Notify customer's payment screen via socket so it can advance to post-ride without polling

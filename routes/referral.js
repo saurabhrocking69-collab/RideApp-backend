@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const db = require('../config/db');
+const { sendFCM } = require('../config/firebase');
 
 function genReferralCode(name) {
   const base = (name || 'USER').substring(0, 4).toUpperCase().replace(/[^A-Z]/g, '');
@@ -37,17 +38,82 @@ router.post('/apply', async (req, res) => {
     if (exists.rows.length > 0) return res.json({ success: false, message: 'Aap pehle referral use kar chuke' });
     const settingRow = await db.query(`SELECT value FROM reward_settings WHERE key='referral_reward'`);
     const reward = settingRow.rows[0] ? parseFloat(settingRow.rows[0].value) : 50;
+    // Status = 'pending' — reward credited only after referred user completes first ride
     await db.query(
-      `INSERT INTO referrals (referrer_id, referred_id, referral_code, reward_amount, status) VALUES ($1,$2,$3,$4,'completed')`,
+      `INSERT INTO referrals (referrer_id, referred_id, referral_code, reward_amount, status) VALUES ($1,$2,$3,$4,'pending')`,
       [referrer.rows[0].id, newUser.rows[0].id, referral_code.toUpperCase(), reward]
     );
-    for (const uid of [referrer.rows[0].id, newUser.rows[0].id]) {
-      await db.query('INSERT INTO customer_wallet (user_id) VALUES ($1) ON CONFLICT (user_id) DO NOTHING', [uid]);
-      await db.query('UPDATE customer_wallet SET balance = balance + $1 WHERE user_id = $2', [reward, uid]);
-      await db.query("INSERT INTO transactions (user_id, type, amount, description) VALUES ($1,'credit',$2,'Referral reward')", [uid, reward]);
-    }
-    res.json({ success: true, message: `₹${reward} reward dono ko mil gaya!` });
+    res.json({ success: true, message: `Referral code apply ho gaya! ₹${reward} reward aapki pehli ride complete hone ke baad milega.` });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+// Called after every ride payment finalizes — credits reward if this is referred user's 1st ride
+async function maybeGrantReferralReward(userId) {
+  try {
+    // Find a pending referral where this user is the referred person
+    const ref = await db.query(
+      `SELECT r.id, r.referrer_id, r.reward_amount,
+              u_ref.phone AS referrer_phone, u_ref.name AS referrer_name
+       FROM referrals r
+       JOIN users u_ref ON u_ref.id = r.referrer_id
+       WHERE r.referred_id = $1 AND r.status = 'pending'`,
+      [userId]
+    );
+    if (!ref.rows[0]) return false;
+
+    // Count completed rides for this user — must be exactly 1 (this ride, just committed)
+    const countRes = await db.query(
+      `SELECT COUNT(*) FROM rides WHERE passenger_id = $1 AND payment_status = 'completed'`,
+      [userId]
+    );
+    if (parseInt(countRes.rows[0].count) !== 1) return false;
+
+    const refRow = ref.rows[0];
+    const reward = parseFloat(refRow.reward_amount);
+
+    // Atomic guard — prevents double-credit if called twice
+    const upd = await db.query(
+      `UPDATE referrals SET status = 'completed' WHERE id = $1 AND status = 'pending' RETURNING id`,
+      [refRow.id]
+    );
+    if (!upd.rows[0]) return false;
+
+    // Credit wallet for both referrer and referred
+    for (const uid of [refRow.referrer_id, userId]) {
+      await db.query('INSERT INTO customer_wallet (user_id) VALUES ($1) ON CONFLICT (user_id) DO NOTHING', [uid]);
+      await db.query('UPDATE customer_wallet SET balance = balance + $1 WHERE user_id = $2', [reward, uid]);
+      await db.query(
+        `INSERT INTO transactions (user_id, type, amount, description) VALUES ($1,'credit',$2,'Referral reward — pehli ride complete')`,
+        [uid, reward]
+      );
+    }
+
+    // FCM to referrer
+    sendFCM(
+      refRow.referrer_phone,
+      '🎉 Referral Reward Mila!',
+      `Aapke dost ne pehli ride complete ki! ₹${reward} aapke wallet mein add ho gaya.`,
+      { type: 'referral_reward', amount: String(reward) },
+      { role: 'customer' }
+    ).catch(() => {});
+
+    // FCM to referred user
+    const referredUser = await db.query('SELECT phone FROM users WHERE id = $1', [userId]);
+    if (referredUser.rows[0]) {
+      sendFCM(
+        referredUser.rows[0].phone,
+        '🎉 Referral Reward Mila!',
+        `Pehli ride complete! ₹${reward} referral bonus aapke wallet mein add ho gaya.`,
+        { type: 'referral_reward', amount: String(reward) },
+        { role: 'customer' }
+      ).catch(() => {});
+    }
+
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
+
 module.exports = router;
+module.exports.maybeGrantReferralReward = maybeGrantReferralReward;
