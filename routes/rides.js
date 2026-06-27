@@ -702,6 +702,50 @@ router.post('/rate', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+// GET /api/rides/driver-eta — nearest available driver per vehicle type from pickup point
+router.get('/driver-eta', async (req, res) => {
+  const { pickup_lat, pickup_lng } = req.query;
+  if (!pickup_lat || !pickup_lng) return res.status(400).json({ error: 'pickup_lat and pickup_lng required' });
+  const lat = parseFloat(pickup_lat);
+  const lng = parseFloat(pickup_lng);
+  if (isNaN(lat) || isNaN(lng)) return res.status(400).json({ error: 'Invalid coordinates' });
+
+  const AVG_SPEED_KMH = { bike: 20, auto: 16, car: 22, eriksha: 15, green_bike: 18, electric_auto: 16, luxury: 25 };
+
+  try {
+    const drRes = await db.query(
+      `SELECT CASE WHEN d.vehicle_type = 'ultra_luxury' THEN 'luxury' ELSE d.vehicle_type END AS vehicle_type,
+              dl.lat, dl.lng
+       FROM drivers d
+       JOIN users u ON d.id = u.id
+       JOIN driver_locations dl ON dl.phone = u.phone
+       WHERE d.is_online = true
+         AND d.verification_status = 'approved'
+         AND dl.updated_at > NOW() - INTERVAL '10 minutes'
+         AND NOT EXISTS (
+           SELECT 1 FROM rides r2
+           WHERE r2.driver_id = d.id AND r2.status IN ('matched','arrived','started')
+         )`
+    );
+
+    const nearest = {};
+    for (const dr of drRes.rows) {
+      if (!dr.lat || !dr.lng) continue;
+      const dist = haversineKm(lat, lng, parseFloat(dr.lat), parseFloat(dr.lng));
+      if (dist > 20) continue;
+      const prev = nearest[dr.vehicle_type];
+      if (!prev || dist < prev.dist_km) {
+        const speed = AVG_SPEED_KMH[dr.vehicle_type] || 20;
+        nearest[dr.vehicle_type] = {
+          dist_km: Math.round(dist * 10) / 10,
+          eta_min: Math.max(1, Math.round((dist / speed) * 60) + 1),
+        };
+      }
+    }
+    res.json({ eta: nearest });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
 // GET /api/rides/history
 router.get('/history', async (req, res) => {
   const { phone } = req.query;
