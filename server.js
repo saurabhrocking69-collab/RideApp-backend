@@ -438,6 +438,24 @@ setTimeout(async () => {
   await db.query(`CREATE INDEX IF NOT EXISTS idx_chat_ride ON chat_messages(ride_id, created_at)`).catch(() => {});
   console.log('✅ Chat messages table ready');
 
+  // ── Reward Settings Table (admin-configurable amounts) ──────────────────────
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS reward_settings (
+      key        VARCHAR(60) PRIMARY KEY,
+      value      NUMERIC(10,2) NOT NULL,
+      label      TEXT,
+      updated_at TIMESTAMPTZ DEFAULT NOW()
+    )
+  `).catch(() => {});
+  await db.query(`
+    INSERT INTO reward_settings (key, value, label) VALUES
+      ('referral_reward',   50, 'Referral Reward (₹ to both referrer & referred)'),
+      ('scratch_card_min',   1, 'Scratch Card Min Amount (₹)'),
+      ('scratch_card_max',   5, 'Scratch Card Max Amount (₹)')
+    ON CONFLICT (key) DO NOTHING
+  `).catch(() => {});
+  console.log('✅ Reward settings table ready');
+
   try {
     const stuck = await db.query(
       `SELECT id, pickup_lat, pickup_lng, ride_type FROM rides WHERE status='requested' AND driver_id IS NULL`

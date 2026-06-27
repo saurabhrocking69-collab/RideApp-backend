@@ -35,16 +35,18 @@ router.post('/apply', async (req, res) => {
     if (referrer.rows[0].id === newUser.rows[0].id) return res.json({ success: false, message: 'Apna hi code use nahi kar sakte' });
     const exists = await db.query('SELECT id FROM referrals WHERE referred_id = $1', [newUser.rows[0].id]);
     if (exists.rows.length > 0) return res.json({ success: false, message: 'Aap pehle referral use kar chuke' });
+    const settingRow = await db.query(`SELECT value FROM reward_settings WHERE key='referral_reward'`);
+    const reward = settingRow.rows[0] ? parseFloat(settingRow.rows[0].value) : 50;
     await db.query(
-      `INSERT INTO referrals (referrer_id, referred_id, referral_code, reward_amount, status) VALUES ($1,$2,$3,50,'completed')`,
-      [referrer.rows[0].id, newUser.rows[0].id, referral_code.toUpperCase()]
+      `INSERT INTO referrals (referrer_id, referred_id, referral_code, reward_amount, status) VALUES ($1,$2,$3,$4,'completed')`,
+      [referrer.rows[0].id, newUser.rows[0].id, referral_code.toUpperCase(), reward]
     );
     for (const uid of [referrer.rows[0].id, newUser.rows[0].id]) {
       await db.query('INSERT INTO customer_wallet (user_id) VALUES ($1) ON CONFLICT (user_id) DO NOTHING', [uid]);
-      await db.query('UPDATE customer_wallet SET balance = balance + 50 WHERE user_id = $1', [uid]);
-      await db.query("INSERT INTO transactions (user_id, type, amount, description) VALUES ($1,'credit',50,'Referral reward')", [uid]);
+      await db.query('UPDATE customer_wallet SET balance = balance + $1 WHERE user_id = $2', [reward, uid]);
+      await db.query("INSERT INTO transactions (user_id, type, amount, description) VALUES ($1,'credit',$2,'Referral reward')", [uid, reward]);
     }
-    res.json({ success: true, message: '₹50 reward dono ko mil gaya!' });
+    res.json({ success: true, message: `₹${reward} reward dono ko mil gaya!` });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 

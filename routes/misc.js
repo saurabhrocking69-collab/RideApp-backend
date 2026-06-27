@@ -85,7 +85,11 @@ router.post('/scratch-card/create', async (req, res) => {
   try {
     const user = await db.query('SELECT id FROM users WHERE phone = $1', [phone]);
     if (user.rows.length === 0) return res.json({ success: false });
-    const reward = Math.random() < 0.5 ? 1 : 2;
+    const cfg = await db.query(`SELECT key, value FROM reward_settings WHERE key IN ('scratch_card_min','scratch_card_max')`);
+    const cfgMap = Object.fromEntries(cfg.rows.map(r => [r.key, parseFloat(r.value)]));
+    const scMin = cfgMap['scratch_card_min'] ?? 1;
+    const scMax = cfgMap['scratch_card_max'] ?? 5;
+    const reward = Math.floor(Math.random() * (scMax - scMin + 1)) + scMin;
     const card = await db.query(
       `INSERT INTO scratch_cards (user_id, ride_id, reward_amount) VALUES ($1, $2, $3) RETURNING id, reward_amount`,
       [user.rows[0].id, ride_id || null, reward]

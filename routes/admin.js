@@ -1001,6 +1001,117 @@ router.post('/complaints/:id/request-evidence', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+// ── Reward Settings ───────────────────────────────────────────────────────────
+router.get('/reward-settings', async (req, res) => {
+  try {
+    const r = await db.query('SELECT key, value, label, updated_at FROM reward_settings ORDER BY key');
+    res.json({ settings: r.rows });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+router.put('/reward-settings', async (req, res) => {
+  const { key, value } = req.body;
+  if (!key || value === undefined || isNaN(Number(value))) return res.status(400).json({ error: 'key and numeric value required' });
+  try {
+    const r = await db.query(
+      `UPDATE reward_settings SET value=$1, updated_at=NOW() WHERE key=$2 RETURNING key, value, label`,
+      [Number(value), key]
+    );
+    if (!r.rows[0]) return res.status(404).json({ error: 'Setting not found' });
+    res.json({ success: true, setting: r.rows[0] });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ── Customer Rewards Analytics ─────────────────────────────────────────────────
+router.get('/customer-rewards', async (req, res) => {
+  try {
+    const r = await db.query(`
+      SELECT
+        u.id,
+        u.name,
+        u.phone,
+        COALESCE(w.balance, 0)                                           AS wallet_balance,
+        COUNT(DISTINCT ri.id)                                            AS rides_completed,
+        COALESCE(SUM(DISTINCT ri.fare) FILTER (WHERE ri.id IS NOT NULL), 0) AS total_fare_paid,
+        COALESCE(sc_sum.total, 0)                                        AS scratch_rewards,
+        COALESCE(ref_sum.total, 0)                                       AS referral_rewards
+      FROM users u
+      LEFT JOIN customer_wallet w      ON w.user_id = u.id
+      LEFT JOIN rides ri               ON ri.passenger_id = u.id AND ri.status = 'payment_complete'
+      LEFT JOIN (
+        SELECT sc.user_id, SUM(sc.reward_amount) AS total
+        FROM scratch_cards sc WHERE sc.is_scratched = true GROUP BY sc.user_id
+      ) sc_sum ON sc_sum.user_id = u.id
+      LEFT JOIN (
+        SELECT r2.referred_id AS uid, SUM(r2.reward_amount) AS total
+        FROM referrals r2 WHERE r2.status='completed' GROUP BY r2.referred_id
+      ) ref_sum ON ref_sum.uid = u.id
+      GROUP BY u.id, u.name, u.phone, w.balance, sc_sum.total, ref_sum.total
+      ORDER BY rides_completed DESC, total_fare_paid DESC
+      LIMIT 200
+    `);
+    res.json({ customers: r.rows });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ── Driver Earnings Detail ─────────────────────────────────────────────────────
+router.get('/driver-earnings-detail', async (req, res) => {
+  try {
+    const r = await db.query(`
+      SELECT
+        d.phone,
+        d.name,
+        d.vehicle_type,
+        d.is_verified,
+        COUNT(DISTINCT ri.id)                                                       AS rides_completed,
+        COALESCE(SUM(ri.fare), 0)                                                   AS total_fare_generated,
+        COALESCE(SUM(ri.fare * COALESCE(d.commission_rate, 15) / 100.0), 0)        AS platform_commission,
+        COALESCE(SUM(ri.fare) - SUM(ri.fare * COALESCE(d.commission_rate,15)/100.0), 0) AS driver_earnings,
+        COALESCE(bl.total_bonus, 0)                                                 AS bonus_earned,
+        COALESCE(bw.balance, 0)                                                     AS bonus_wallet_balance
+      FROM drivers d
+      LEFT JOIN users ud              ON ud.phone = d.phone
+      LEFT JOIN rides ri              ON ri.driver_id = ud.id AND ri.status = 'payment_complete'
+      LEFT JOIN (
+        SELECT driver_phone, SUM(amount) AS total_bonus FROM bonus_ledger GROUP BY driver_phone
+      ) bl ON bl.driver_phone = d.phone
+      LEFT JOIN bonus_wallet bw ON bw.driver_phone = d.phone
+      GROUP BY d.phone, d.name, d.vehicle_type, d.is_verified, bl.total_bonus, bw.balance
+      ORDER BY total_fare_generated DESC
+      LIMIT 200
+    `);
+    res.json({ drivers: r.rows });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ── Referral Detail ────────────────────────────────────────────────────────────
+router.get('/referral-detail', async (req, res) => {
+  try {
+    const r = await db.query(`
+      SELECT
+        rf.id,
+        rf.referral_code,
+        rf.reward_amount,
+        rf.status,
+        rf.created_at,
+        u_er.name   AS referrer_name,
+        u_er.phone  AS referrer_phone,
+        u_ed.name   AS referred_name,
+        u_ed.phone  AS referred_phone,
+        COUNT(ri.id)::int AS referred_rides_done
+      FROM referrals rf
+      LEFT JOIN users u_er ON u_er.id = rf.referrer_id
+      LEFT JOIN users u_ed ON u_ed.id = rf.referred_id
+      LEFT JOIN rides ri   ON ri.passenger_id = rf.referred_id AND ri.status = 'payment_complete'
+      GROUP BY rf.id, rf.referral_code, rf.reward_amount, rf.status, rf.created_at,
+               u_er.name, u_er.phone, u_ed.name, u_ed.phone
+      ORDER BY rf.created_at DESC
+      LIMIT 300
+    `);
+    res.json({ referrals: r.rows });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
 // ── Startup: ensure ride_incidents table exists ────────────────────────────────
 (async () => {
   try {

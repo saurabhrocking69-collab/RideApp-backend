@@ -160,6 +160,7 @@ input,select,textarea{outline:none}
     <button class="tab" onclick="showSection('payouts',this)">💰 Payouts</button>
     <button class="tab" onclick="showSection('complaints',this);loadComplaints()">⚠️ Complaints</button>
     <button class="tab" onclick="showSection('incidents',this);loadIncidents()">🚨 Incidents</button>
+    <button class="tab" onclick="showSection('rewards',this);loadRewards()">💎 Rewards</button>
   </div>
 
   <!-- TRANSACTIONS -->
@@ -473,6 +474,67 @@ input,select,textarea{outline:none}
         <thead><tr><th>Date</th><th>Type</th><th>Ride</th><th>Driver</th><th>Customer</th><th>Details</th><th>Status</th><th>Action</th></tr></thead>
         <tbody id="inc-body"><tr><td colspan=8 class=loading>Loading...</td></tr></tbody>
       </table></div>
+    </div>
+  </div>
+
+  <!-- REWARDS -->
+  <div id="rewards" class="section">
+    <!-- Sub-tabs -->
+    <div style="display:flex;gap:6px;margin-bottom:16px;flex-wrap:wrap">
+      <button class="ptab active" id="rwt-settings" onclick="showRwTab('settings',this)">⚙️ Amount Settings</button>
+      <button class="ptab" id="rwt-customers" onclick="showRwTab('customers',this);loadCustomerRewards()">👥 Customer Rewards</button>
+      <button class="ptab" id="rwt-drivers" onclick="showRwTab('drivers',this);loadDriverEarnings()">🚗 Driver Earnings</button>
+      <button class="ptab" id="rwt-referrals" onclick="showRwTab('referrals',this);loadReferralDetail()">🔗 Referral Detail</button>
+    </div>
+
+    <!-- Settings sub-panel -->
+    <div id="rwp-settings">
+      <div class="card">
+        <div class="card-title">💎 Reward Amount Settings <button class="refresh-btn" onclick="loadRewardSettings()">⟳ Reload</button></div>
+        <p style="color:#888;font-size:12px;margin-bottom:14px">Yahan se scratch card, referral aur cashback amounts control karo. Change hote hi sab naye rides pe apply ho jaata hai.</p>
+        <div id="reward-settings-grid" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:14px">
+          <div class=loading>Loading settings...</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Customer rewards sub-panel -->
+    <div id="rwp-customers" style="display:none">
+      <div class="card">
+        <div class="card-title">👥 Customer Rewards & Spend <button class="refresh-btn" onclick="loadCustomerRewards()">⟳ Reload</button></div>
+        <div style="overflow-x:auto">
+          <table>
+            <thead><tr><th>Name</th><th>Phone</th><th>Rides Done</th><th>Total Fare Paid</th><th>Scratch Rewards</th><th>Referral Rewards</th><th>Total Rewards</th><th>Wallet Balance</th></tr></thead>
+            <tbody id="cust-rewards-body"><tr><td colspan=8 class=loading>Loading...</td></tr></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- Driver earnings sub-panel -->
+    <div id="rwp-drivers" style="display:none">
+      <div class="card">
+        <div class="card-title">🚗 Driver Earnings & Commission <button class="refresh-btn" onclick="loadDriverEarnings()">⟳ Reload</button></div>
+        <div style="overflow-x:auto">
+          <table>
+            <thead><tr><th>Name</th><th>Phone</th><th>Vehicle</th><th>Rides</th><th>Total Fare</th><th>Platform Cut</th><th>Driver Earning</th><th>Bonus Earned</th><th>Bonus Wallet</th></tr></thead>
+            <tbody id="drv-earnings-body"><tr><td colspan=9 class=loading>Loading...</td></tr></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- Referral detail sub-panel -->
+    <div id="rwp-referrals" style="display:none">
+      <div class="card">
+        <div class="card-title">🔗 Referral Chain Detail <button class="refresh-btn" onclick="loadReferralDetail()">⟳ Reload</button></div>
+        <div style="overflow-x:auto">
+          <table>
+            <thead><tr><th>Date</th><th>Code</th><th>Referrer</th><th>Referred User</th><th>Rides by Referred</th><th>Reward Amount</th><th>Status</th></tr></thead>
+            <tbody id="ref-detail-body"><tr><td colspan=7 class=loading>Loading...</td></tr></tbody>
+          </table>
+        </div>
+      </div>
     </div>
   </div>
 
@@ -1655,6 +1717,108 @@ async function unrestrictCustomer(id){
 }
 
 // ── Bootstrap ───────────────────────────────────────────
+// ── Rewards tab ───────────────────────────────────────────────────────────────
+function showRwTab(name, btn) {
+  ['settings','customers','drivers','referrals'].forEach(t => {
+    document.getElementById('rwp-'+t).style.display = t===name ? '' : 'none';
+    document.getElementById('rwt-'+t).classList.toggle('active', t===name);
+  });
+}
+
+async function loadRewardSettings() {
+  const grid = document.getElementById('reward-settings-grid');
+  grid.innerHTML = '<div class=loading>Loading...</div>';
+  try {
+    const d = await aJson('/api/admin/reward-settings');
+    if (!d.settings || !d.settings.length) { grid.innerHTML = '<p style="color:#888">No settings found.</p>'; return; }
+    grid.innerHTML = d.settings.map(s => `
+      <div class="card" style="margin:0;padding:14px">
+        <div style="font-size:11px;color:#888;margin-bottom:6px">${s.label || s.key}</div>
+        <div style="font-size:11px;color:#bbb;margin-bottom:8px">Key: <code>${s.key}</code></div>
+        <div style="display:flex;gap:8px;align-items:center">
+          <input type="number" id="rs-${s.key}" value="${parseFloat(s.value)}" step="0.5" min="0"
+            class="input-sm" style="width:100px;font-size:14px;font-weight:700">
+          <button class="action-btn btn-dark" onclick="saveRewardSetting('${s.key}')">💾 Save</button>
+        </div>
+        <div style="font-size:10px;color:#aaa;margin-top:6px">Updated: ${new Date(s.updated_at).toLocaleString('en-IN')}</div>
+      </div>
+    `).join('');
+  } catch(e) { grid.innerHTML = `<p style="color:red">${e.message}</p>`; }
+}
+
+async function saveRewardSetting(key) {
+  const val = document.getElementById('rs-'+key).value;
+  try {
+    const d = await aFetch('/api/admin/reward-settings', { method:'PUT', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ key, value: val }) }).then(r=>r.json());
+    if (d.success) { alert(`✅ ${key} updated to ₹${parseFloat(val)}`); loadRewardSettings(); }
+    else alert('❌ ' + (d.error || 'Update failed'));
+  } catch(e) { alert('❌ ' + e.message); }
+}
+
+async function loadRewards() {
+  loadRewardSettings();
+}
+
+async function loadCustomerRewards() {
+  const tbody = document.getElementById('cust-rewards-body');
+  tbody.innerHTML = '<tr><td colspan=8 class=loading>Loading...</td></tr>';
+  try {
+    const d = await aJson('/api/admin/customer-rewards');
+    if (!d.customers || !d.customers.length) { tbody.innerHTML = '<tr><td colspan=8 style="text-align:center;color:#999">No data</td></tr>'; return; }
+    tbody.innerHTML = d.customers.map(c => {
+      const totalRewards = parseFloat(c.scratch_rewards||0) + parseFloat(c.referral_rewards||0);
+      return `<tr>
+        <td>${c.name||'—'}</td>
+        <td>${c.phone}</td>
+        <td style="text-align:center;font-weight:700">${c.rides_completed||0}</td>
+        <td class="amount-green">₹${parseFloat(c.total_fare_paid||0).toFixed(0)}</td>
+        <td>₹${parseFloat(c.scratch_rewards||0).toFixed(0)}</td>
+        <td>₹${parseFloat(c.referral_rewards||0).toFixed(0)}</td>
+        <td style="font-weight:700;color:#7b1fa2">₹${totalRewards.toFixed(0)}</td>
+        <td>₹${parseFloat(c.wallet_balance||0).toFixed(2)}</td>
+      </tr>`;
+    }).join('');
+  } catch(e) { tbody.innerHTML = `<tr><td colspan=8 style="color:red">${e.message}</td></tr>`; }
+}
+
+async function loadDriverEarnings() {
+  const tbody = document.getElementById('drv-earnings-body');
+  tbody.innerHTML = '<tr><td colspan=9 class=loading>Loading...</td></tr>';
+  try {
+    const d = await aJson('/api/admin/driver-earnings-detail');
+    if (!d.drivers || !d.drivers.length) { tbody.innerHTML = '<tr><td colspan=9 style="text-align:center;color:#999">No data</td></tr>'; return; }
+    tbody.innerHTML = d.drivers.map(dr => `<tr>
+      <td>${dr.name||'—'}</td>
+      <td>${dr.phone}</td>
+      <td>${dr.vehicle_type||'—'}</td>
+      <td style="text-align:center;font-weight:700">${dr.rides_completed||0}</td>
+      <td class="amount-green">₹${parseFloat(dr.total_fare_generated||0).toFixed(0)}</td>
+      <td class="amount-red">₹${parseFloat(dr.platform_commission||0).toFixed(0)}</td>
+      <td style="font-weight:700;color:#1565c0">₹${parseFloat(dr.driver_earnings||0).toFixed(0)}</td>
+      <td style="color:#6a1b9a">₹${parseFloat(dr.bonus_earned||0).toFixed(0)}</td>
+      <td>₹${parseFloat(dr.bonus_wallet_balance||0).toFixed(2)}</td>
+    </tr>`).join('');
+  } catch(e) { tbody.innerHTML = `<tr><td colspan=9 style="color:red">${e.message}</td></tr>`; }
+}
+
+async function loadReferralDetail() {
+  const tbody = document.getElementById('ref-detail-body');
+  tbody.innerHTML = '<tr><td colspan=7 class=loading>Loading...</td></tr>';
+  try {
+    const d = await aJson('/api/admin/referral-detail');
+    if (!d.referrals || !d.referrals.length) { tbody.innerHTML = '<tr><td colspan=7 style="text-align:center;color:#999">Koi referral nahi mila</td></tr>'; return; }
+    tbody.innerHTML = d.referrals.map(r => `<tr>
+      <td>${new Date(r.created_at).toLocaleDateString('en-IN')}</td>
+      <td><code>${r.referral_code}</code></td>
+      <td>${r.referrer_name||'—'}<br><span style="color:#888;font-size:10px">${r.referrer_phone}</span></td>
+      <td>${r.referred_name||'—'}<br><span style="color:#888;font-size:10px">${r.referred_phone}</span></td>
+      <td style="text-align:center;font-weight:700">${r.referred_rides_done||0}</td>
+      <td class="amount-green">₹${parseFloat(r.reward_amount||0).toFixed(0)}</td>
+      <td><span class="chip ${r.status==='completed'?'badge-verified':'badge-pending'}">${r.status}</span></td>
+    </tr>`).join('');
+  } catch(e) { tbody.innerHTML = `<tr><td colspan=7 style="color:red">${e.message}</td></tr>`; }
+}
+
 async function loadAll(){
   document.getElementById('last-refresh').textContent=new Date().toLocaleTimeString('en-IN');
   await loadDashboard();
