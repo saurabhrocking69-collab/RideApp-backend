@@ -425,6 +425,19 @@ setTimeout(async () => {
   await db.query(`CREATE INDEX IF NOT EXISTS idx_cashback_user ON cashback_events(user_id, created_at)`).catch(() => {});
   console.log('✅ Cashback events table ready');
 
+  // ── Chat Messages Table (standard + hourly, ride_id prefixed with 'h_' for hourly) ──
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS chat_messages (
+      id         BIGSERIAL PRIMARY KEY,
+      ride_id    TEXT NOT NULL,
+      sender     TEXT NOT NULL,
+      message    TEXT NOT NULL,
+      created_at TIMESTAMPTZ DEFAULT NOW()
+    )
+  `).catch(() => {});
+  await db.query(`CREATE INDEX IF NOT EXISTS idx_chat_ride ON chat_messages(ride_id, created_at)`).catch(() => {});
+  console.log('✅ Chat messages table ready');
+
   try {
     const stuck = await db.query(
       `SELECT id, pickup_lat, pickup_lng, ride_type FROM rides WHERE status='requested' AND driver_id IS NULL`
