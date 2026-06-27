@@ -253,6 +253,11 @@ router.post('/cancel', async (req, res) => {
       if (!owner.rows[0]) return res.status(403).json({ error: 'Yeh ride tumhari nahi hai' });
     }
     await db.query("UPDATE rides SET status = 'cancelled' WHERE id = $1", [ride_id]);
+    const rideInfo = await db.query('SELECT p.phone AS passenger_phone FROM rides r JOIN users p ON r.passenger_id=p.id WHERE r.id=$1', [ride_id]);
+    if (rideInfo.rows[0]) {
+      emitRideUpdate(ride_id, { status: 'cancelled' });
+      sendFCM(rideInfo.rows[0].passenger_phone, '🚫 Ride Cancel Ho Gayi', 'Driver ne ride cancel kar di', { type: 'ride_cancelled', ride_id: String(ride_id) }, { role: 'customer' });
+    }
     res.json({ success: true, message: 'Trip cancel ki', reason });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
@@ -883,7 +888,8 @@ router.post('/extension-accept', async (req, res) => {
     await client.query("UPDATE ride_extensions SET status='accepted', new_ride_id=$1 WHERE id=$2", [newRide.rows[0].id, extension_id]);
     await client.query('COMMIT');
     client.release();
-    sendFCM(ext.customer_phone, '✅ Extension Accepted!', `Driver aa raha hai — ${ext.new_drop}`, {}, { role: 'customer' });
+    sendFCM(ext.customer_phone, '✅ Extension Accepted!', `Driver aa raha hai — ${ext.new_drop}`, { type: 'extension_accepted', ride_id: String(newRide.rows[0].id) }, { role: 'customer' });
+    emitRideUpdate(ext.original_ride_id, { status: 'extension_accepted', new_ride_id: newRide.rows[0].id, fare: ext.estimated_fare });
     res.json({ success: true, new_ride_id: newRide.rows[0].id, fare: ext.estimated_fare });
   } catch (err) {
     await client.query('ROLLBACK').catch(() => {}); client.release();
