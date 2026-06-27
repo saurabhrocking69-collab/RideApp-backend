@@ -163,7 +163,7 @@ async function _bmqAssignNext({ rideId, pickupLat, pickupLng, rideType, queue, r
 
   // Notify driver immediately — BEFORE any other awaits
   const rideEmoji = { bike: '🏍️', auto: '🛺', car: '🚕', eriksha: '🛵', luxury: '🚙' }[rideType] || '🚗';
-  sendFCM(nextPhone, `${rideEmoji} Naya Ride Request!`, `📍 ${rideType.toUpperCase()} ride nearby — 45 sec mein accept karo!`, { type: 'new_ride', ride_id: String(rideId) }, { channelId: 'ride_requests' });
+  sendFCM(nextPhone, `${rideEmoji} Naya Ride Request!`, `📍 ${rideType.toUpperCase()} ride nearby — 45 sec mein accept karo!`, { type: 'new_ride', ride_id: String(rideId) }, { channelId: 'ride_requests', role: 'driver' });
   emitToRoom('driver_' + nextPhone, 'newRideAssigned', { rideId, secondsToAccept: 45 });
 
   // Non-critical ops — fire and forget, don't block notification path
