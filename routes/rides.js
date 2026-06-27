@@ -721,7 +721,7 @@ router.get('/driver-eta', async (req, res) => {
        JOIN driver_locations dl ON dl.phone = u.phone
        WHERE d.is_online = true
          AND d.verification_status = 'approved'
-         AND dl.updated_at > NOW() - INTERVAL '10 minutes'
+         AND dl.updated_at > NOW() - INTERVAL '2 hours'
          AND NOT EXISTS (
            SELECT 1 FROM rides r2
            WHERE r2.driver_id = d.id AND r2.status IN ('matched','arrived','started')
