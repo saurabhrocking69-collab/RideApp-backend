@@ -277,6 +277,15 @@ router.get('/', phoneAuth, async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+// ─── GET /api/complaints/types/list ──────────────────────────────────────────
+// MUST be before /:id — otherwise Express matches 'types/list' as an id
+router.get('/types/list', phoneAuth, async (req, res) => {
+  try {
+    const driver = await isDriver(req.user.phone);
+    res.json({ types: driver ? COMPLAINT_TYPES_DRIVER : COMPLAINT_TYPES_CUSTOMER });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
 // ─── GET /api/complaints/:id ──────────────────────────────────────────────────
 router.get('/:id', phoneAuth, async (req, res) => {
   const userId = req.user.id;
@@ -413,21 +422,15 @@ router.post('/:id/appeal', phoneAuth, async (req, res) => {
       return res.status(400).json({ error: 'Sirf resolved complaints ko appeal kar sakte hain' });
 
     const name = req.user.name || 'Unknown';
+    const isDriverUser = await isDriver(req.user.phone);
+    const senderRole = isDriverUser ? 'driver' : 'customer';
     await db.query("UPDATE complaints SET status='appealed',updated_at=NOW() WHERE id=$1", [c.id]);
     await db.query(
       'INSERT INTO complaint_messages(complaint_id,sender_id,sender_role,sender_name,message) VALUES($1,$2,$3,$4,$5)',
-      [c.id, userId, 'customer', name, `[APPEAL] ${reason.trim()}`]
+      [c.id, userId, senderRole, name, `[APPEAL] ${reason.trim()}`]
     );
     await logTimeline(c.id, 'appealed', `${name} ne appeal ki`, null, name, { reason });
     res.json({ message: 'Appeal submit ho gayi, team dobara review karegi' });
-  } catch (err) { res.status(500).json({ error: err.message }); }
-});
-
-// ─── GET /api/complaints/types/list ──────────────────────────────────────────
-router.get('/types/list', phoneAuth, async (req, res) => {
-  try {
-    const driver = await isDriver(req.user.phone);
-    res.json({ types: driver ? COMPLAINT_TYPES_DRIVER : COMPLAINT_TYPES_CUSTOMER });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 

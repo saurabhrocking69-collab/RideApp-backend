@@ -133,7 +133,7 @@ router.post('/accept', async (req, res) => {
     const result = await db.query(`UPDATE hourly_bookings SET driver_phone=$1, status='matched' WHERE id=$2 AND status='pending' AND driver_phone IS NULL RETURNING *`, [driver_phone, booking_id]);
     if (result.rows.length === 0) return res.json({ success: false, message: 'Already taken' });
     const booking = result.rows[0];
-    sendFCM(booking.customer_phone, '⏱️ Driver Mil Gaya!', 'Hourly booking ke liye driver aa raha hai!', {}, { role: 'customer' });
+    sendFCM(booking.customer_phone, '⏱️ Driver Mil Gaya!', 'Hourly booking ke liye driver aa raha hai!', { type: 'hourly_matched', booking_id: String(booking_id) }, { role: 'customer' });
     emitToRoom('hourly_' + booking_id, 'hourlyMatched', { status: 'matched', driver_phone, booking_id });
     res.json({ success: true });
   } catch (err) { res.status(500).json({ error: err.message }); }
@@ -398,7 +398,7 @@ router.post('/accept-extend', async (req, res) => {
        extend_total_minutes=COALESCE(extend_total_minutes,0)+$4, extend_total_fare=COALESCE(extend_total_fare,0)+$5 WHERE id=$6`,
       [newHours, newKm, newFare, extMinutes, parseFloat(b.extend_escrow), booking_id]
     );
-    sendFCM(b.customer_phone, '✅ Extension Accept Ho Gaya!', `Trip ab ${newHours >= 24 ? (newHours/24)+'d' : newHours+'h'} ke liye extend ho gaya — ${newKm} km included`, {}, { role: 'customer' });
+    sendFCM(b.customer_phone, '✅ Extension Accept Ho Gaya!', `Trip ab ${newHours >= 24 ? (newHours/24)+'d' : newHours+'h'} ke liye extend ho gaya — ${newKm} km included`, { type: 'hourly_extension_result', booking_id: String(booking_id), accepted: 'true' }, { role: 'customer' });
     const io = getIO();
     if (io) io.to('hourly_' + booking_id).emit('hourlyExtensionResult', { accepted: true, new_hours: newHours, new_km: newKm, new_fare: newFare });
     res.json({ success: true, new_hours: newHours, new_km: newKm, new_fare: newFare });
@@ -420,7 +420,7 @@ router.post('/reject-extend', async (req, res) => {
       }
     }
     await db.query('UPDATE hourly_bookings SET extend_requested_hours=NULL, extend_escrow=0 WHERE id=$1', [booking_id]);
-    sendFCM(b.customer_phone, '❌ Extension Reject Ho Gaya', `₹${parseFloat(b.extend_escrow || 0).toFixed(0)} wapas aapke wallet mein`, {}, { role: 'customer' });
+    sendFCM(b.customer_phone, '❌ Extension Reject Ho Gaya', `₹${parseFloat(b.extend_escrow || 0).toFixed(0)} wapas aapke wallet mein`, { type: 'hourly_extension_result', booking_id: String(booking_id), accepted: 'false' }, { role: 'customer' });
     const io = getIO();
     if (io) io.to('hourly_' + booking_id).emit('hourlyExtensionResult', { accepted: false, refund: parseFloat(b.extend_escrow || 0) });
     res.json({ success: true });
