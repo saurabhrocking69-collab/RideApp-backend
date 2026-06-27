@@ -456,6 +456,38 @@ setTimeout(async () => {
   `).catch(() => {});
   console.log('✅ Reward settings table ready');
 
+  // ── driver_payouts: ensure table exists with Razorpay columns ────────────────
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS driver_payouts (
+      id                      SERIAL PRIMARY KEY,
+      driver_phone            VARCHAR(20),
+      amount                  DECIMAL(10,2),
+      bank_account            VARCHAR(50),
+      bank_ifsc               VARCHAR(20),
+      bank_holder             VARCHAR(100),
+      upi_id                  VARCHAR(100),
+      method                  VARCHAR(20) DEFAULT 'bank',
+      status                  VARCHAR(20) DEFAULT 'pending',
+      admin_note              TEXT,
+      transaction_ref         VARCHAR(100),
+      requested_at            TIMESTAMP DEFAULT NOW(),
+      settled_at              TIMESTAMP,
+      razorpay_payout_id      VARCHAR(100),
+      razorpay_status         VARCHAR(30),
+      razorpay_fund_account_id VARCHAR(100),
+      commission_deducted     DECIMAL(10,2) DEFAULT 0
+    )
+  `).catch(() => {});
+  for (const col of [
+    'razorpay_payout_id      VARCHAR(100)',
+    'razorpay_status         VARCHAR(30)',
+    'razorpay_fund_account_id VARCHAR(100)',
+    'commission_deducted     DECIMAL(10,2) DEFAULT 0',
+  ]) {
+    await db.query(`ALTER TABLE driver_payouts ADD COLUMN IF NOT EXISTS ${col}`).catch(() => {});
+  }
+  console.log('✅ Driver payouts table ready');
+
   try {
     const stuck = await db.query(
       `SELECT id, pickup_lat, pickup_lng, ride_type FROM rides WHERE status='requested' AND driver_id IS NULL`

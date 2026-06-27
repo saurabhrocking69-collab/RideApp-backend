@@ -570,41 +570,105 @@ router.get('/driver-payouts', async (req, res) => {
 
 // POST /api/admin/payout-approve
 router.post('/payout-approve', async (req, res) => {
-  const { payout_id, transaction_ref, note } = req.body;
+  const { payout_id, note } = req.body;
   try {
-    const p = await db.query(`SELECT * FROM driver_payouts WHERE id=$1 AND status='pending'`, [payout_id]);
+    const p = await db.query(
+      `SELECT * FROM driver_payouts WHERE id=$1 AND status IN ('pending','failed')`, [payout_id]
+    );
     if (!p.rows[0]) return res.status(400).json({ error: 'Payout nahi mila ya pehle se process ho chuka' });
     const payout = p.rows[0];
+
     const drvRes = await db.query(
-      `SELECT w.driver_id, w.balance, COALESCE(w.pending_commission, 0) AS pending_commission
+      `SELECT w.driver_id, w.balance, COALESCE(w.pending_commission,0) AS pending_commission, u.name
        FROM driver_wallet w JOIN users u ON w.driver_id=u.id WHERE u.phone=$1`,
       [payout.driver_phone]
     );
     if (!drvRes.rows[0]) return res.status(404).json({ error: 'Driver wallet nahi mili' });
-    const { driver_id, balance, pending_commission } = drvRes.rows[0];
-    const amt = parseFloat(payout.amount);
-    if (parseFloat(balance) < amt) return res.status(400).json({ error: `Wallet balance (₹${parseFloat(balance).toFixed(0)}) payout amount (₹${amt.toFixed(0)}) se kam hai` });
-    const commDeduct = Math.min(parseFloat(pending_commission), amt);
+    const { driver_id, balance, pending_commission, name: driverName } = drvRes.rows[0];
+
+    const amt         = parseFloat(payout.amount);
+    const commDeduct  = Math.min(parseFloat(pending_commission), amt);
     const actualPayout = amt - commDeduct;
+
+    if (parseFloat(balance) < amt)
+      return res.status(400).json({ error: `Wallet balance (₹${parseFloat(balance).toFixed(0)}) payout amount (₹${amt.toFixed(0)}) se kam hai` });
+
+    // 1 — Deduct wallet immediately (reversed by webhook on failure)
     await db.query(
-      `UPDATE driver_wallet SET balance=balance-$1, total_withdrawn=total_withdrawn+$2,
-       pending_commission=GREATEST(0, COALESCE(pending_commission,0)-$3) WHERE driver_id=$4`,
+      `UPDATE driver_wallet
+       SET balance=balance-$1, total_withdrawn=total_withdrawn+$2,
+           pending_commission=GREATEST(0, COALESCE(pending_commission,0)-$3)
+       WHERE driver_id=$4`,
       [amt, actualPayout, commDeduct, driver_id]
     );
-    if (commDeduct > 0) await db.query(
-      `UPDATE driver_commissions SET status='settled' WHERE driver_phone=$1 AND status='cash_owed'`,
-      [payout.driver_phone]
-    ).catch(() => {});
+    if (commDeduct > 0) {
+      await db.query(
+        `UPDATE driver_commissions SET status='settled' WHERE driver_phone=$1 AND status='cash_owed'`,
+        [payout.driver_phone]
+      ).catch(() => {});
+    }
+
+    // 2 — Auto-transfer via RazorpayX if account is configured
+    if (process.env.RAZORPAY_ACCOUNT_NUMBER) {
+      const rpPayout = require('../services/razorpayPayout');
+      try {
+        const contactId      = await rpPayout.ensureContact(payout.driver_phone, driverName);
+        const fundAccountId  = await rpPayout.createFundAccount(contactId, payout);
+        const rpResult       = await rpPayout.initiatePayout(fundAccountId, actualPayout, payout_id, payout.method);
+
+        await db.query(
+          `UPDATE driver_payouts
+           SET status='processing', razorpay_payout_id=$1, razorpay_fund_account_id=$2,
+               razorpay_status=$3, commission_deducted=$4, admin_note=$5, settled_at=NOW()
+           WHERE id=$6`,
+          [rpResult.id, fundAccountId, rpResult.status, commDeduct, note || '', payout_id]
+        );
+        sendFCM(
+          payout.driver_phone,
+          '⏳ Payout Processing!',
+          `₹${actualPayout.toFixed(0)} ka transfer shuru — ${payout.method === 'upi' ? 'UPI' : 'bank'} mein jald credit ho jaayega.`,
+          { type: 'payout_processing', payout_id: String(payout_id) },
+          { role: 'driver' }
+        ).catch(() => {});
+
+        return res.json({
+          success: true, razorpay: true,
+          actual_payout: actualPayout, commission_deducted: commDeduct,
+          razorpay_payout_id: rpResult.id, razorpay_status: rpResult.status,
+        });
+      } catch (rpErr) {
+        // Razorpay call failed — roll back wallet deduction
+        await db.query(
+          `UPDATE driver_wallet
+           SET balance=balance+$1, total_withdrawn=GREATEST(0, total_withdrawn-$2),
+               pending_commission=COALESCE(pending_commission,0)+$3
+           WHERE driver_id=$4`,
+          [amt, actualPayout, commDeduct, driver_id]
+        ).catch(() => {});
+        if (commDeduct > 0) {
+          await db.query(
+            `UPDATE driver_commissions SET status='cash_owed' WHERE driver_phone=$1 AND status='settled'`,
+            [payout.driver_phone]
+          ).catch(() => {});
+        }
+        return res.status(500).json({ error: rpErr.message });
+      }
+    }
+
+    // 3 — Fallback: manual mode (RAZORPAY_ACCOUNT_NUMBER not configured)
     await db.query(
-      `UPDATE driver_payouts SET status='completed', transaction_ref=$1, admin_note=$2, settled_at=NOW() WHERE id=$3`,
-      [transaction_ref || '', note || '', payout_id]
+      `UPDATE driver_payouts
+       SET status='completed', commission_deducted=$1, admin_note=$2, settled_at=NOW()
+       WHERE id=$3`,
+      [commDeduct, note || '', payout_id]
     );
-    sendFCM(payout.driver_phone, '✅ Payout Approved!',
+    sendFCM(
+      payout.driver_phone, '✅ Payout Approved!',
       `₹${actualPayout.toFixed(0)} aapke ${payout.method === 'upi' ? 'UPI' : 'bank account'} mein transfer kar diya gaya!`,
       { type: 'payout_approved' },
       { role: 'driver' }
     ).catch(() => {});
-    res.json({ success: true, actual_payout: actualPayout, commission_deducted: commDeduct });
+    res.json({ success: true, razorpay: false, actual_payout: actualPayout, commission_deducted: commDeduct });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 

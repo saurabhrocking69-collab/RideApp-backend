@@ -389,8 +389,8 @@ input,select,textarea{outline:none}
     <div id="payout-pending-sec">
       <div class="card">
         <div class="card-title">⏳ Pending Payout Requests <button class="refresh-btn" onclick="loadPayouts('pending')">Reload</button></div>
-        <div style="overflow-x:auto"><table><thead><tr><th>Date</th><th>Driver</th><th>Phone</th><th>Amount</th><th>Method</th><th>Bank / UPI Details</th><th>Wallet Bal</th><th>Comm Due</th><th>Action</th></tr></thead>
-        <tbody id="payout-pending-body"><tr><td colspan=9 class=loading>Loading...</td></tr></tbody></table></div>
+        <div style="overflow-x:auto"><table><thead><tr><th>Date</th><th>Driver</th><th>Phone</th><th>Amount</th><th>Method / Details</th><th>Wallet Bal</th><th>Comm Due</th><th>Action</th></tr></thead>
+        <tbody id="payout-pending-body"><tr><td colspan=8 class=loading>Loading...</td></tr></tbody></table></div>
       </div>
     </div>
     <div id="payout-financials-sec" style="display:none">
@@ -403,7 +403,7 @@ input,select,textarea{outline:none}
     <div id="payout-history-sec" style="display:none">
       <div class="card">
         <div class="card-title">📋 Payout History <button class="refresh-btn" onclick="loadPayoutHistory()">Reload</button></div>
-        <div style="overflow-x:auto"><table><thead><tr><th>Date</th><th>Driver</th><th>Amount</th><th>Method</th><th>Status</th><th>Txn Ref</th><th>Note</th><th>Settled At</th></tr></thead>
+        <div style="overflow-x:auto"><table><thead><tr><th>Date</th><th>Driver</th><th>Amount</th><th>Method</th><th>Status</th><th>Razorpay ID / UTR</th><th>Note</th><th>Settled At</th></tr></thead>
         <tbody id="payout-history-body"><tr><td colspan=8 class=loading>Loading...</td></tr></tbody></table></div>
       </div>
     </div>
@@ -1261,37 +1261,60 @@ function setPayoutTab(t,btn){
   else if(t==='financials') loadDriverFinancials();
   else loadPayoutHistory();
 }
+function payoutMethodHtml(p){
+  return p.method==='upi'
+    ? `📱 UPI<br><span style="font-size:10px;color:#555">${p.upi_id||'-'}</span>`
+    : `🏦 Bank<br><span style="font-size:10px;color:#555"><b>${p.bank_holder||''}</b> ${p.bank_account||'-'} / ${p.bank_ifsc||''}</span>`;
+}
 async function loadPayouts(status){
   try{
-    const d=await aJson('/api/admin/driver-payouts?status='+(status||'pending'));
-    const payouts=d.payouts||[];
-    document.getElementById('payout-pending-body').innerHTML=payouts.filter(p=>p.status==='pending').map(p=>`<tr>
+    const d=await aJson('/api/admin/driver-payouts?status=all');
+    const all=d.payouts||[];
+    const pending=all.filter(p=>p.status==='pending'||p.status==='failed');
+    const processing=all.filter(p=>p.status==='processing');
+    const pendingRows=pending.map(p=>`<tr>
       <td>${fmt(p.requested_at)}</td>
       <td><b>${p.driver_name||'-'}</b></td>
       <td>${p.driver_phone}</td>
       <td class="amount-green" style="font-weight:800;font-size:14px">₹${parseFloat(p.amount).toFixed(0)}</td>
-      <td>${p.method==='upi'?'📱 UPI':'🏦 Bank'}</td>
-      <td style="font-size:11px;line-height:1.5">${p.method==='upi'?(p.upi_id||'-'):'<b>'+(p.bank_holder||'')+'</b><br>'+(p.bank_account||'-')+'<br><span style="color:#888">'+(p.bank_ifsc||'')+'</span>'}</td>
+      <td style="font-size:11px;line-height:1.6">${payoutMethodHtml(p)}</td>
       <td>₹${parseFloat(p.wallet_balance||0).toFixed(0)}</td>
       <td class="${parseFloat(p.pending_commission||0)>0?'amount-red':''}">₹${parseFloat(p.pending_commission||0).toFixed(0)}</td>
-      <td>
-        <button class="action-btn btn-green" onclick="openApproveModal(${p.id},'${p.driver_phone}',${parseFloat(p.amount)})">✅ Approve</button>
+      <td>${p.status==='failed'?'<span class="chip badge-rejected" style="margin-bottom:4px">❌ Failed — Retry</span><br>':''}
+        <button class="action-btn btn-green" onclick="openApproveModal(${p.id},'${p.driver_phone}',${parseFloat(p.amount)},'${(p.method||'bank')}')">🚀 Send via Razorpay</button>
         <button class="action-btn btn-red" onclick="rejectPayout(${p.id})">❌ Reject</button>
       </td>
-    </tr>`).join('')||'<tr><td colspan=9 class=loading>✅ Koi pending request nahi</td></tr>';
+    </tr>`).join('');
+    const processingRows=processing.map(p=>`<tr style="background:#fffde7">
+      <td>${fmt(p.requested_at)}</td>
+      <td><b>${p.driver_name||'-'}</b></td>
+      <td>${p.driver_phone}</td>
+      <td class="amount-green" style="font-weight:800">₹${parseFloat(p.amount).toFixed(0)}</td>
+      <td style="font-size:11px;line-height:1.6">${payoutMethodHtml(p)}</td>
+      <td colspan=2><span class="chip badge-pending">⏳ Processing via Razorpay</span><br>
+        <span style="font-size:10px;font-family:monospace;color:#888">${p.razorpay_payout_id||''}</span></td>
+      <td style="color:#888;font-size:11px">Waiting for bank confirmation</td>
+    </tr>`).join('');
+    document.getElementById('payout-pending-body').innerHTML=
+      (pendingRows+processingRows)||'<tr><td colspan=8 class=loading>✅ Koi pending request nahi</td></tr>';
   }catch(e){if(e.message!=='Unauthorized')console.error(e);}
 }
 async function loadPayoutHistory(){
   try{
     const d=await aJson('/api/admin/driver-payouts?status=all');
-    const payouts=(d.payouts||[]).filter(p=>p.status!=='pending');
+    const payouts=(d.payouts||[]).filter(p=>!['pending','processing'].includes(p.status));
+    const statusBadge=s=>({
+      completed:'<span class="badge-approved">✅ Completed</span>',
+      rejected:'<span class="badge-rejected">❌ Rejected</span>',
+      failed:'<span class="badge-rejected">❌ Failed</span>',
+    }[s]||`<span>${s}</span>`);
     document.getElementById('payout-history-body').innerHTML=payouts.map(p=>`<tr>
       <td>${fmt(p.requested_at)}</td>
-      <td>${p.driver_name||'-'} (${p.driver_phone})</td>
+      <td>${p.driver_name||'-'}<br><span style="color:#888;font-size:10px">${p.driver_phone}</span></td>
       <td class="${p.status==='completed'?'amount-green':'amount-red'}" style="font-weight:800">₹${parseFloat(p.amount).toFixed(0)}</td>
-      <td>${p.method==='upi'?'📱 UPI':'🏦 Bank'}</td>
-      <td><span class="badge-${p.status==='completed'?'approved':'rejected'}">${p.status==='completed'?'✅ Completed':'❌ Rejected'}</span></td>
-      <td style="font-size:11px;font-family:monospace">${p.transaction_ref||'-'}</td>
+      <td style="font-size:11px">${payoutMethodHtml(p)}</td>
+      <td>${statusBadge(p.status)}</td>
+      <td style="font-size:11px;font-family:monospace">${p.razorpay_payout_id?`<span style="color:#7b1fa2">${p.razorpay_payout_id}</span><br>`:''}${p.transaction_ref||'-'}</td>
       <td style="font-size:11px;color:#888">${p.admin_note||'-'}</td>
       <td>${fmt(p.settled_at)}</td>
     </tr>`).join('')||'<tr><td colspan=8 class=loading>Koi history nahi</td></tr>';
@@ -1315,38 +1338,48 @@ async function loadDriverFinancials(){
     </tr>`).join('')||'<tr><td colspan=11 class=loading>Koi driver nahi</td></tr>';
   }catch(e){if(e.message!=='Unauthorized')console.error(e);}
 }
-function openApproveModal(id,phone,amount){
+function openApproveModal(id, phone, amount, method){
+  const modeLabel = method==='upi' ? 'UPI' : 'IMPS (Bank)';
   document.getElementById('payout-modal-content').innerHTML=`
-    <h3 style="margin-bottom:12px;font-size:15px">✅ Payout Approve Karo</h3>
-    <div style="background:#e8f5e9;border-radius:10px;padding:12px;margin-bottom:14px">
-      <div style="font-size:13px;color:#555"><b>Driver:</b> ${phone}</div>
-      <div style="font-size:26px;font-weight:900;color:#2e7d32;margin-top:4px">₹${parseFloat(amount).toFixed(0)}</div>
+    <h3 style="margin-bottom:12px;font-size:15px">🚀 Razorpay se Transfer Karo</h3>
+    <div style="background:#e8f5e9;border-radius:10px;padding:14px;margin-bottom:14px">
+      <div style="font-size:12px;color:#555"><b>Driver:</b> ${phone}</div>
+      <div style="font-size:28px;font-weight:900;color:#2e7d32;margin:4px 0">₹${parseFloat(amount).toFixed(0)}</div>
+      <div style="font-size:11px;color:#888">Mode: ${modeLabel} &nbsp;|&nbsp; Auto via RazorpayX</div>
     </div>
-    <div style="font-size:12px;color:#666;margin-bottom:5px">Transaction Reference (UTR / IMPS / UPI Ref)</div>
-    <input id="payout-txn-ref" placeholder="e.g. UTR123456789" class="input-sm" style="margin-bottom:10px">
+    <div style="background:#fff3e0;border-radius:8px;padding:10px;font-size:11px;color:#e65100;margin-bottom:14px;line-height:1.6">
+      ⚡ System automatically create karega:<br>
+      1. Razorpay contact<br>
+      2. Fund account (bank/UPI)<br>
+      3. IMPS/UPI transfer<br>
+      Driver ko real-time notification milegi.
+    </div>
     <div style="font-size:12px;color:#666;margin-bottom:5px">Admin Note (optional)</div>
-    <input id="payout-note" placeholder="Optional..." class="input-sm" style="margin-bottom:16px">
+    <input id="payout-note" placeholder="Optional note..." class="input-sm" style="margin-bottom:16px">
     <div style="display:flex;gap:8px">
-      <button onclick="approvePayout(${id})" style="flex:1;background:#4CAF50;color:#fff;border:none;border-radius:8px;padding:11px;cursor:pointer;font-weight:700;font-size:13px">✅ Confirm Approve</button>
-      <button onclick="closePayoutModal()" style="flex:1;background:#f0f0f0;color:#333;border:none;border-radius:8px;padding:11px;cursor:pointer;font-weight:700;font-size:13px">Cancel</button>
+      <button onclick="approvePayout(${id})" style="flex:1;background:#1a1a2e;color:#fff;border:none;border-radius:8px;padding:12px;cursor:pointer;font-weight:700;font-size:13px">🚀 Confirm Auto Transfer</button>
+      <button onclick="closePayoutModal()" style="flex:1;background:#f0f0f0;color:#333;border:none;border-radius:8px;padding:12px;cursor:pointer;font-weight:700;font-size:13px">Cancel</button>
     </div>
-    <div id="payout-action-status" style="font-size:12px;margin-top:10px;text-align:center;min-height:18px"></div>
+    <div id="payout-action-status" style="font-size:12px;margin-top:12px;text-align:center;min-height:18px"></div>
   `;
   document.getElementById('payout-modal').classList.add('open');
 }
 async function approvePayout(id){
-  const txnRef=document.getElementById('payout-txn-ref').value.trim();
   const note=document.getElementById('payout-note').value.trim();
   const statusEl=document.getElementById('payout-action-status');
-  statusEl.textContent='Processing...';statusEl.style.color='#888';
+  statusEl.innerHTML='<span style="color:#888">⏳ Razorpay se transfer initiate ho raha hai...</span>';
   try{
-    const d=await aJson('/api/admin/payout-approve',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({payout_id:id,transaction_ref:txnRef,note})});
+    const d=await aJson('/api/admin/payout-approve',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({payout_id:id,note})});
     if(d.success){
-      statusEl.textContent='✅ Approved! ₹'+parseFloat(d.actual_payout).toFixed(0)+' payout'+(d.commission_deducted>0?' (₹'+parseFloat(d.commission_deducted).toFixed(0)+' comm deducted)':'');
-      statusEl.style.color='#2e7d32';
-      setTimeout(()=>{closePayoutModal();loadPayouts('pending');},1800);
-    }else{statusEl.textContent='❌ '+(d.error||'Error');statusEl.style.color='#c62828';}
-  }catch(e){statusEl.textContent='❌ '+e.message;statusEl.style.color='#c62828';}
+      if(d.razorpay){
+        statusEl.innerHTML='<span style="color:#2e7d32;font-weight:700">✅ Transfer shuru! Razorpay ID: '+d.razorpay_payout_id+'</span><br>'
+          +'<span style="color:#888;font-size:11px">₹'+parseFloat(d.actual_payout).toFixed(0)+' transfer ho raha hai'+(d.commission_deducted>0?' (₹'+parseFloat(d.commission_deducted).toFixed(0)+' comm deducted)':'')+'</span>';
+      }else{
+        statusEl.innerHTML='<span style="color:#2e7d32;font-weight:700">✅ Manual payout marked! ₹'+parseFloat(d.actual_payout).toFixed(0)+'</span>';
+      }
+      setTimeout(()=>{closePayoutModal();loadPayouts('pending');},2500);
+    }else{statusEl.innerHTML='<span style="color:#c62828">❌ '+(d.error||'Error')+'</span>';}
+  }catch(e){statusEl.innerHTML='<span style="color:#c62828">❌ '+e.message+'</span>';}
 }
 async function rejectPayout(id){
   const note=prompt('Rejection reason (driver ko dikhega):');
