@@ -310,6 +310,12 @@ input,select,textarea{outline:none}
 
   <!-- SETTINGS -->
   <div id="settings" class="section">
+    <div style="background:#fff3cd;border:2px solid #e65100;border-radius:14px;padding:18px;margin-bottom:20px">
+      <div style="font-size:16px;font-weight:900;color:#bf360c;margin-bottom:8px">🔄 Test Mode → Live Mode Reset</div>
+      <p style="font-size:13px;color:#5d4037;margin-bottom:12px">Ye button <strong>sabhi test wallets</strong> (customer + driver), transactions, bonus, cashback, referral rewards aur commission records ko zero kar deta hai. Sirf <strong>ek baar</strong> live launch se pehle use karo.</p>
+      <button onclick="resetTestMoney()" style="background:#e65100;color:#fff;border:none;border-radius:10px;padding:12px 24px;font-size:14px;font-weight:900;cursor:pointer;letter-spacing:0.5px">🗑️ Reset All Test Money (Irreversible)</button>
+      <div id="reset-result" style="margin-top:10px;font-size:13px;font-weight:700"></div>
+    </div>
     <div class="grid2">
       <div class="card">
         <div class="card-title">⚡ Surge Pricing</div>
@@ -1058,6 +1064,27 @@ async function verifyTopup(id){
 }
 
 // ── Settings ────────────────────────────────────────────
+async function resetTestMoney(){
+  if (!confirm('⚠️ Confirm: Sabhi test wallets, transactions, bonus, cashback ZERO ho jayenge.\n\nYe action IRREVERSIBLE hai. Continue?')) return;
+  if (!confirm('FINAL CONFIRM: Kya aap pakka sure hain? Saara test money delete ho jayega.')) return;
+  const el = document.getElementById('reset-result');
+  el.textContent = '⏳ Resetting...'; el.style.color = '#e65100';
+  try {
+    const d = await aJson('/api/admin/reset-test-money', { method: 'POST', headers: { 'Content-Type': 'application/json' } });
+    if (d.success) {
+      el.textContent = '✅ ' + d.message;
+      el.style.color = '#2e7d32';
+      const r = d.results;
+      el.textContent += ` | Wallets: ${r.customer_wallets||0}c/${r.driver_wallets||0}d | Txns: ${r.transactions||0} | Bonus: ${r.bonus_wallets||0} | Cashback: ${r.cashback_events||0}`;
+    } else {
+      el.textContent = '❌ ' + (d.error || 'Failed');
+      el.style.color = '#c62828';
+    }
+  } catch(e) {
+    el.textContent = '❌ Error: ' + e.message;
+    el.style.color = '#c62828';
+  }
+}
 async function setSurge(){
   const m=parseFloat(document.getElementById('surge-input').value);
   const d=await aJson('/api/admin/surge',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({multiplier:m})});

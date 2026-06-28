@@ -486,6 +486,35 @@ setTimeout(async () => {
   }
   console.log('✅ Driver payouts table ready');
 
+  // ── razorpay_topups: idempotency guard for wallet top-ups ────────────────────
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS razorpay_topups (
+      id          SERIAL PRIMARY KEY,
+      user_phone  VARCHAR(15) NOT NULL,
+      amount      DECIMAL(10,2) NOT NULL,
+      payment_id  VARCHAR(100) UNIQUE NOT NULL,
+      status      VARCHAR(20) NOT NULL DEFAULT 'confirmed',
+      created_at  TIMESTAMP DEFAULT NOW()
+    )
+  `).catch(() => {});
+  await db.query(`CREATE INDEX IF NOT EXISTS idx_razorpay_topups_payment ON razorpay_topups(payment_id)`).catch(() => {});
+  console.log('✅ razorpay_topups table ready');
+
+  // ── driver_commission_payments: track driver commission Razorpay payments ─────
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS driver_commission_payments (
+      id           SERIAL PRIMARY KEY,
+      driver_phone VARCHAR(15) NOT NULL,
+      amount       DECIMAL(10,2) NOT NULL,
+      payment_id   VARCHAR(100) NOT NULL,
+      status       VARCHAR(20) NOT NULL DEFAULT 'initiated',
+      created_at   TIMESTAMP DEFAULT NOW()
+    )
+  `).catch(() => {});
+  await db.query(`CREATE INDEX IF NOT EXISTS idx_dcp_phone ON driver_commission_payments(driver_phone)`).catch(() => {});
+  await db.query(`CREATE INDEX IF NOT EXISTS idx_dcp_payment ON driver_commission_payments(payment_id)`).catch(() => {});
+  console.log('✅ driver_commission_payments table ready');
+
   try {
     const stuck = await db.query(
       `SELECT id, pickup_lat, pickup_lng, ride_type FROM rides WHERE status='requested' AND driver_id IS NULL`
