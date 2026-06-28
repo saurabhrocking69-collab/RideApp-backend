@@ -1285,31 +1285,30 @@ router.post('/incidents/:id/compensate-driver', async (req, res) => {
 
 // POST /api/admin/reset-test-money — ONE-TIME: zero all test-mode balances before live launch
 router.post('/reset-test-money', async (req, res) => {
-  const client = await db.connect();
+  // Run each reset independently (no transaction) so a missing column in one table
+  // doesn't abort and roll back everything else via PostgreSQL transaction abort state.
+  const q = (sql) => db.query(sql).then(r => r.rowCount).catch(() => 0);
   try {
-    await client.query('BEGIN');
     const results = {};
-    results.customer_wallets   = (await client.query('UPDATE customer_wallet SET balance = 0, updated_at = NOW()')).rowCount;
-    results.transactions       = (await client.query('DELETE FROM transactions')).rowCount;
-    results.driver_wallets     = (await client.query('UPDATE driver_wallet SET balance = 0, total_earned = 0, updated_at = NOW()')).rowCount;
-    await client.query('UPDATE driver_wallet SET pending_commission = 0 WHERE pending_commission IS NOT NULL').catch(() => {});
-    results.bonus_wallets      = (await client.query('UPDATE bonus_wallet SET balance = 0, total_earned = 0, total_redeemed = 0, updated_at = NOW()').catch(() => ({ rowCount: 0 }))).rowCount;
-    results.bonus_ledger       = (await client.query('DELETE FROM bonus_ledger').catch(() => ({ rowCount: 0 }))).rowCount;
-    results.cashback_events    = (await client.query('DELETE FROM cashback_events').catch(() => ({ rowCount: 0 }))).rowCount;
-    results.loyalty_points     = (await client.query('UPDATE customer_loyalty SET total_points = 0, updated_at = NOW()').catch(() => ({ rowCount: 0 }))).rowCount;
-    results.referral_rewards   = (await client.query('DELETE FROM referral_rewards').catch(() => ({ rowCount: 0 }))).rowCount;
-    results.razorpay_topups    = (await client.query('DELETE FROM razorpay_topups').catch(() => ({ rowCount: 0 }))).rowCount;
-    results.commission_payments = (await client.query('DELETE FROM driver_commission_payments').catch(() => ({ rowCount: 0 }))).rowCount;
-    results.scratch_cards      = (await client.query('DELETE FROM scratch_cards').catch(() => ({ rowCount: 0 }))).rowCount;
-    await client.query(`UPDATE driver_commissions SET status = 'settled' WHERE status != 'settled'`).catch(() => {});
-    await client.query('COMMIT');
+    results.customer_wallets    = await q('UPDATE customer_wallet SET balance = 0, updated_at = NOW()');
+    results.transactions        = await q('DELETE FROM transactions');
+    results.driver_wallets      = await q('UPDATE driver_wallet SET balance = 0, total_earned = 0, updated_at = NOW()');
+    results.driver_commission   = await q('UPDATE driver_wallet SET pending_commission = 0 WHERE pending_commission IS NOT NULL');
+    results.bonus_wallets       = await q('UPDATE bonus_wallet SET balance = 0, total_earned = 0, total_redeemed = 0, updated_at = NOW()');
+    results.bonus_ledger        = await q('DELETE FROM bonus_ledger');
+    results.cashback_events     = await q('DELETE FROM cashback_events');
+    results.loyalty_points      = await q('UPDATE customer_loyalty SET total_points = 0, updated_at = NOW()');
+    results.referral_rewards    = await q('DELETE FROM referral_rewards');
+    results.razorpay_topups     = await q('DELETE FROM razorpay_topups');
+    results.commission_payments = await q('DELETE FROM driver_commission_payments');
+    results.scratch_cards       = await q('DELETE FROM scratch_cards');
+    results.driver_debts        = await q(`UPDATE driver_commissions SET status = 'settled' WHERE status != 'settled'`);
     console.log('🔄 Admin reset-test-money executed:', results);
     res.json({ success: true, message: 'All test money reset to zero. Ready for live launch!', results });
   } catch (err) {
-    await client.query('ROLLBACK');
     console.error('reset-test-money error:', err.message);
     res.status(500).json({ error: err.message });
-  } finally { client.release(); }
+  }
 });
 
 module.exports = router;
