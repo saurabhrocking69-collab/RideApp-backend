@@ -198,6 +198,9 @@ io.on('connection', (socket) => {
     await db.query(`CREATE INDEX IF NOT EXISTS idx_complaint_msgs_cid        ON complaint_messages(complaint_id)`);
     await db.query(`CREATE INDEX IF NOT EXISTS idx_complaint_tl_cid          ON complaint_timeline(complaint_id)`);
     await db.query(`ALTER TABLE complaints ADD COLUMN IF NOT EXISTS source VARCHAR(30) DEFAULT 'manual'`).catch(() => {});
+    await db.query(`ALTER TABLE complaint_messages ADD COLUMN IF NOT EXISTS is_internal BOOLEAN NOT NULL DEFAULT FALSE`).catch(() => {});
+    await db.query(`ALTER TABLE complaint_messages ADD COLUMN IF NOT EXISTS sender_role VARCHAR(20)`).catch(() => {});
+    await db.query(`ALTER TABLE complaint_messages ADD COLUMN IF NOT EXISTS sender_name VARCHAR(100)`).catch(() => {});
     console.log('✅ Complaint tables ready (immediate)');
   } catch (e) {
     console.error('❌ Complaint table init error:', e.message);

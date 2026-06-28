@@ -69,6 +69,9 @@ const { sendFCM } = require('../config/firebase');
     await db.query(`ALTER TABLE complaint_messages ALTER COLUMN sender_id TYPE TEXT USING sender_id::TEXT`).catch(() => {});
     await db.query(`ALTER TABLE complaint_evidence ALTER COLUMN uploaded_by TYPE TEXT USING uploaded_by::TEXT`).catch(() => {});
     await db.query(`ALTER TABLE complaints ADD COLUMN IF NOT EXISTS refund_amount NUMERIC(10,2) DEFAULT 0`).catch(() => {});
+    await db.query(`ALTER TABLE complaint_messages ADD COLUMN IF NOT EXISTS is_internal BOOLEAN NOT NULL DEFAULT FALSE`).catch(() => {});
+    await db.query(`ALTER TABLE complaint_messages ADD COLUMN IF NOT EXISTS sender_role VARCHAR(20)`).catch(() => {});
+    await db.query(`ALTER TABLE complaint_messages ADD COLUMN IF NOT EXISTS sender_name VARCHAR(100)`).catch(() => {});
     console.log('✅ Complaints tables ready');
   } catch (err) {
     console.error('❌ Complaints migration error:', err.message);
@@ -274,7 +277,7 @@ router.get('/', phoneAuth, async (req, res) => {
       [...params, limit, offset]
     );
     res.json({ complaints: result.rows });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { console.error('GET /api/complaints error:', err.message, 'userId:', userId); res.status(500).json({ error: err.message }); }
 });
 
 // ─── GET /api/complaints/types/list ──────────────────────────────────────────
