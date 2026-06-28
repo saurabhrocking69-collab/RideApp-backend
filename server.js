@@ -137,62 +137,59 @@ io.on('connection', (socket) => {
   try {
     await db.query(`
       CREATE TABLE IF NOT EXISTS complaints (
-        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-        ride_id TEXT,
-        filed_by INTEGER NOT NULL REFERENCES users(id),
-        filed_against INTEGER NOT NULL REFERENCES users(id),
-        filer_role VARCHAR(10) NOT NULL CHECK (filer_role IN ('customer','driver')),
-        complaint_type VARCHAR(50) NOT NULL,
-        title VARCHAR(200) NOT NULL,
-        description TEXT NOT NULL,
-        status VARCHAR(30) NOT NULL DEFAULT 'open'
-          CHECK (status IN ('open','under_review','awaiting_response','evidence_requested','escalated','resolved','closed','appealed')),
-        priority VARCHAR(10) NOT NULL DEFAULT 'normal'
-          CHECK (priority IN ('low','normal','high','urgent')),
-        assigned_admin VARCHAR(100),
-        resolution VARCHAR(30)
-          CHECK (resolution IN ('favor_complainant','favor_respondent','partial','inconclusive','withdrawn')),
-        resolution_note TEXT,
-        action_taken VARCHAR(50),
-        resolved_at TIMESTAMPTZ,
-        source VARCHAR(30) DEFAULT 'manual',
-        created_at TIMESTAMPTZ DEFAULT NOW(),
-        updated_at TIMESTAMPTZ DEFAULT NOW()
+        id               SERIAL PRIMARY KEY,
+        ride_id          TEXT,
+        filed_by         TEXT NOT NULL,
+        filed_against    TEXT NOT NULL,
+        filer_role       VARCHAR(20) NOT NULL,
+        complaint_type   VARCHAR(60) NOT NULL,
+        title            TEXT NOT NULL,
+        description      TEXT NOT NULL,
+        priority         VARCHAR(20) NOT NULL DEFAULT 'normal',
+        status           VARCHAR(30) NOT NULL DEFAULT 'open',
+        source           VARCHAR(30) NOT NULL DEFAULT 'manual',
+        resolution       TEXT,
+        resolution_note  TEXT,
+        action_taken     TEXT,
+        assigned_admin   TEXT,
+        refund_amount    NUMERIC(10,2) DEFAULT 0,
+        resolved_at      TIMESTAMP,
+        created_at       TIMESTAMP NOT NULL DEFAULT NOW(),
+        updated_at       TIMESTAMP NOT NULL DEFAULT NOW()
       )
     `);
     await db.query(`
       CREATE TABLE IF NOT EXISTS complaint_messages (
-        id SERIAL PRIMARY KEY,
-        complaint_id UUID NOT NULL REFERENCES complaints(id) ON DELETE CASCADE,
-        sender_id INTEGER REFERENCES users(id),
-        sender_role VARCHAR(10) NOT NULL,
-        sender_name VARCHAR(100),
-        message TEXT NOT NULL,
-        is_internal BOOLEAN DEFAULT FALSE,
-        created_at TIMESTAMPTZ DEFAULT NOW()
+        id             SERIAL PRIMARY KEY,
+        complaint_id   INTEGER NOT NULL,
+        sender_id      TEXT,
+        sender_role    VARCHAR(20),
+        sender_name    VARCHAR(100),
+        message        TEXT NOT NULL,
+        is_internal    BOOLEAN NOT NULL DEFAULT FALSE,
+        created_at     TIMESTAMP NOT NULL DEFAULT NOW()
       )
     `);
     await db.query(`
       CREATE TABLE IF NOT EXISTS complaint_evidence (
-        id SERIAL PRIMARY KEY,
-        complaint_id UUID NOT NULL REFERENCES complaints(id) ON DELETE CASCADE,
-        uploaded_by INTEGER NOT NULL REFERENCES users(id),
-        file_url TEXT NOT NULL,
-        file_type VARCHAR(20) DEFAULT 'image',
-        caption TEXT,
-        created_at TIMESTAMPTZ DEFAULT NOW()
+        id             SERIAL PRIMARY KEY,
+        complaint_id   INTEGER NOT NULL,
+        uploaded_by    TEXT,
+        file_url       TEXT NOT NULL,
+        caption        TEXT,
+        created_at     TIMESTAMP NOT NULL DEFAULT NOW()
       )
     `);
     await db.query(`
       CREATE TABLE IF NOT EXISTS complaint_timeline (
-        id SERIAL PRIMARY KEY,
-        complaint_id UUID NOT NULL REFERENCES complaints(id) ON DELETE CASCADE,
-        event VARCHAR(50) NOT NULL,
-        description TEXT NOT NULL,
-        actor_role VARCHAR(10),
-        actor_name VARCHAR(100),
-        metadata JSONB,
-        created_at TIMESTAMPTZ DEFAULT NOW()
+        id             SERIAL PRIMARY KEY,
+        complaint_id   INTEGER NOT NULL,
+        event          VARCHAR(60),
+        description    TEXT,
+        actor_role     VARCHAR(20),
+        actor_name     VARCHAR(100),
+        metadata       TEXT,
+        created_at     TIMESTAMP NOT NULL DEFAULT NOW()
       )
     `);
     await db.query(`CREATE INDEX IF NOT EXISTS idx_complaints_filed_by      ON complaints(filed_by)`);
@@ -248,8 +245,8 @@ setTimeout(async () => {
       ride_id TEXT,
       incident_type VARCHAR(50) NOT NULL,
       detected_by VARCHAR(10) NOT NULL DEFAULT 'system',
-      driver_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
-      customer_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+      driver_id TEXT,
+      customer_id TEXT,
       metadata JSONB,
       resolved BOOLEAN DEFAULT FALSE,
       created_at TIMESTAMPTZ DEFAULT NOW()
@@ -264,63 +261,61 @@ setTimeout(async () => {
   // ── Complaint system tables ───────────────────────
   const complaintTables = [
     `CREATE TABLE IF NOT EXISTS complaints (
-      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-      ride_id TEXT,
-      filed_by INTEGER NOT NULL REFERENCES users(id),
-      filed_against INTEGER NOT NULL REFERENCES users(id),
-      filer_role VARCHAR(10) NOT NULL CHECK (filer_role IN ('customer','driver')),
-      complaint_type VARCHAR(50) NOT NULL,
-      title VARCHAR(200) NOT NULL,
-      description TEXT NOT NULL,
-      status VARCHAR(30) NOT NULL DEFAULT 'open'
-        CHECK (status IN ('open','under_review','awaiting_response','evidence_requested','escalated','resolved','closed','appealed')),
-      priority VARCHAR(10) NOT NULL DEFAULT 'normal'
-        CHECK (priority IN ('low','normal','high','urgent')),
-      assigned_admin VARCHAR(100),
-      resolution VARCHAR(30)
-        CHECK (resolution IN ('favor_complainant','favor_respondent','partial','inconclusive','withdrawn')),
-      resolution_note TEXT,
-      action_taken VARCHAR(50),
-      resolved_at TIMESTAMPTZ,
-      created_at TIMESTAMPTZ DEFAULT NOW(),
-      updated_at TIMESTAMPTZ DEFAULT NOW()
-    )`,
-    `CREATE TABLE IF NOT EXISTS complaint_evidence (
-      id SERIAL PRIMARY KEY,
-      complaint_id UUID NOT NULL REFERENCES complaints(id) ON DELETE CASCADE,
-      uploaded_by INTEGER NOT NULL REFERENCES users(id),
-      file_url TEXT NOT NULL,
-      file_type VARCHAR(20) DEFAULT 'image',
-      caption TEXT,
-      created_at TIMESTAMPTZ DEFAULT NOW()
+      id               SERIAL PRIMARY KEY,
+      ride_id          TEXT,
+      filed_by         TEXT NOT NULL,
+      filed_against    TEXT NOT NULL,
+      filer_role       VARCHAR(20) NOT NULL,
+      complaint_type   VARCHAR(60) NOT NULL,
+      title            TEXT NOT NULL,
+      description      TEXT NOT NULL,
+      priority         VARCHAR(20) NOT NULL DEFAULT 'normal',
+      status           VARCHAR(30) NOT NULL DEFAULT 'open',
+      source           VARCHAR(30) NOT NULL DEFAULT 'manual',
+      resolution       TEXT,
+      resolution_note  TEXT,
+      action_taken     TEXT,
+      assigned_admin   TEXT,
+      refund_amount    NUMERIC(10,2) DEFAULT 0,
+      resolved_at      TIMESTAMP,
+      created_at       TIMESTAMP NOT NULL DEFAULT NOW(),
+      updated_at       TIMESTAMP NOT NULL DEFAULT NOW()
     )`,
     `CREATE TABLE IF NOT EXISTS complaint_messages (
-      id SERIAL PRIMARY KEY,
-      complaint_id UUID NOT NULL REFERENCES complaints(id) ON DELETE CASCADE,
-      sender_id INTEGER REFERENCES users(id),
-      sender_role VARCHAR(10) NOT NULL,
-      sender_name VARCHAR(100),
-      message TEXT NOT NULL,
-      is_internal BOOLEAN DEFAULT FALSE,
-      created_at TIMESTAMPTZ DEFAULT NOW()
+      id             SERIAL PRIMARY KEY,
+      complaint_id   INTEGER NOT NULL,
+      sender_id      TEXT,
+      sender_role    VARCHAR(20),
+      sender_name    VARCHAR(100),
+      message        TEXT NOT NULL,
+      is_internal    BOOLEAN NOT NULL DEFAULT FALSE,
+      created_at     TIMESTAMP NOT NULL DEFAULT NOW()
+    )`,
+    `CREATE TABLE IF NOT EXISTS complaint_evidence (
+      id             SERIAL PRIMARY KEY,
+      complaint_id   INTEGER NOT NULL,
+      uploaded_by    TEXT,
+      file_url       TEXT NOT NULL,
+      caption        TEXT,
+      created_at     TIMESTAMP NOT NULL DEFAULT NOW()
     )`,
     `CREATE TABLE IF NOT EXISTS complaint_timeline (
-      id SERIAL PRIMARY KEY,
-      complaint_id UUID NOT NULL REFERENCES complaints(id) ON DELETE CASCADE,
-      event VARCHAR(50) NOT NULL,
-      description TEXT NOT NULL,
-      actor_role VARCHAR(10),
-      actor_name VARCHAR(100),
-      metadata JSONB,
-      created_at TIMESTAMPTZ DEFAULT NOW()
+      id             SERIAL PRIMARY KEY,
+      complaint_id   INTEGER NOT NULL,
+      event          VARCHAR(60),
+      description    TEXT,
+      actor_role     VARCHAR(20),
+      actor_name     VARCHAR(100),
+      metadata       TEXT,
+      created_at     TIMESTAMP NOT NULL DEFAULT NOW()
     )`,
-    `CREATE INDEX IF NOT EXISTS idx_complaints_filed_by ON complaints(filed_by)`,
-    `CREATE INDEX IF NOT EXISTS idx_complaints_filed_against ON complaints(filed_against)`,
-    `CREATE INDEX IF NOT EXISTS idx_complaints_status ON complaints(status)`,
-    `CREATE INDEX IF NOT EXISTS idx_complaints_ride_id ON complaints(ride_id)`,
-    `CREATE INDEX IF NOT EXISTS idx_complaint_msgs_cid ON complaint_messages(complaint_id)`,
-    `CREATE INDEX IF NOT EXISTS idx_complaint_tl_cid ON complaint_timeline(complaint_id)`,
-    `CREATE INDEX IF NOT EXISTS idx_complaint_ev_cid ON complaint_evidence(complaint_id)`,
+    `CREATE INDEX IF NOT EXISTS idx_complaints_filed_by      ON complaints(filed_by)`,
+    `CREATE INDEX IF NOT EXISTS idx_complaints_filed_against  ON complaints(filed_against)`,
+    `CREATE INDEX IF NOT EXISTS idx_complaints_status         ON complaints(status)`,
+    `CREATE INDEX IF NOT EXISTS idx_complaints_ride_id        ON complaints(ride_id)`,
+    `CREATE INDEX IF NOT EXISTS idx_complaint_msgs_cid        ON complaint_messages(complaint_id)`,
+    `CREATE INDEX IF NOT EXISTS idx_complaint_tl_cid          ON complaint_timeline(complaint_id)`,
+    `CREATE INDEX IF NOT EXISTS idx_complaint_ev_cid          ON complaint_evidence(complaint_id)`,
   ];
   for (const sql of complaintTables) await db.query(sql).catch((e) => console.error('Complaint table error:', e.message));
   console.log('✅ Complaint tables ready');
