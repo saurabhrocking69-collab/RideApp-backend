@@ -480,6 +480,12 @@ router.post('/payment-complete', async (req, res) => {
     const fare = parseFloat(ride.fare);
     const commission = Math.round(fare * 0.15 * 100) / 100;
 
+    // Idempotency: if already completed, just re-emit the socket so the driver gets notified
+    if (ride.payment_status === 'completed') {
+      emitToRoom('ride_' + ride_id, 'paymentConfirmed', { ride_id, status: 'completed', payment_method: ride.payment_method, cashbacks: [] });
+      return res.json({ success: true, status: 'completed', already_done: true });
+    }
+
     if (payment_method === 'cash') {
       await db.query(`UPDATE rides SET payment_method = 'cash', payment_status = 'cash_pending' WHERE id = $1`, [ride_id]);
       await db.query(
