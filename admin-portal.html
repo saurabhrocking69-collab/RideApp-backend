@@ -310,6 +310,17 @@ input,select,textarea{outline:none}
 
   <!-- SETTINGS -->
   <div id="settings" class="section">
+    <div style="background:#e8f5e9;border:2px solid #2e7d32;border-radius:14px;padding:18px;margin-bottom:20px">
+      <div style="font-size:16px;font-weight:900;color:#1b5e20;margin-bottom:8px">💳 Manual Wallet Credit (Admin)</div>
+      <p style="font-size:13px;color:#2e7d32;margin-bottom:12px">Kisi bhi customer ke wallet mein test balance add karo. Razorpay ki zaroorat nahi.</p>
+      <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end">
+        <input id="wc-phone" type="text" placeholder="Customer phone (10 digits)" class="input-sm" style="width:180px">
+        <input id="wc-amount" type="number" placeholder="₹ Amount" class="input-sm" style="width:100px" min="1">
+        <input id="wc-note" type="text" placeholder="Note (optional)" class="input-sm" style="width:160px">
+        <button onclick="adminWalletCredit()" style="background:#2e7d32;color:#fff;border:none;border-radius:8px;padding:10px 20px;font-size:13px;font-weight:800;cursor:pointer">➕ Add Money</button>
+      </div>
+      <div id="wc-result" style="margin-top:10px;font-size:13px;font-weight:700"></div>
+    </div>
     <div style="background:#fff3cd;border:2px solid #e65100;border-radius:14px;padding:18px;margin-bottom:20px">
       <div style="font-size:16px;font-weight:900;color:#bf360c;margin-bottom:8px">🔄 Test Mode → Live Mode Reset</div>
       <p style="font-size:13px;color:#5d4037;margin-bottom:12px">Ye button <strong>sabhi test wallets</strong> (customer + driver), transactions, bonus, cashback, referral rewards aur commission records ko zero kar deta hai. Sirf <strong>ek baar</strong> live launch se pehle use karo.</p>
@@ -1064,6 +1075,17 @@ async function verifyTopup(id){
 }
 
 // ── Settings ────────────────────────────────────────────
+async function adminWalletCredit(){
+  const phone = document.getElementById('wc-phone').value.trim();
+  const amount = parseFloat(document.getElementById('wc-amount').value);
+  const note = document.getElementById('wc-note').value.trim();
+  const el = document.getElementById('wc-result');
+  if (!phone || phone.length !== 10) { el.innerHTML='<span style="color:red">❌ Valid 10-digit phone enter karo</span>'; return; }
+  if (!amount || amount <= 0) { el.innerHTML='<span style="color:red">❌ Valid amount enter karo</span>'; return; }
+  el.innerHTML='Adding...';
+  const d = await aJson('/api/admin/wallet-credit', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ phone, amount, note }) });
+  el.innerHTML = d.success ? `<span style="color:#2e7d32">✅ ₹${amount} added! New balance: ₹${d.new_balance}</span>` : `<span style="color:red">❌ ${d.error}</span>`;
+}
 async function resetTestMoney(){
   if (!confirm('⚠️ Confirm: Sabhi test wallets, transactions, bonus, cashback ZERO ho jayenge.\n\nYe action IRREVERSIBLE hai. Continue?')) return;
   if (!confirm('FINAL CONFIRM: Kya aap pakka sure hain? Saara test money delete ho jayega.')) return;

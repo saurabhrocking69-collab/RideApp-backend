@@ -1283,6 +1283,22 @@ router.post('/incidents/:id/compensate-driver', async (req, res) => {
   } catch (_) {}
 })();
 
+// POST /api/admin/wallet-credit — manually credit a customer wallet (for testing / support)
+router.post('/wallet-credit', async (req, res) => {
+  const { phone, amount, note } = req.body;
+  const amt = parseFloat(amount);
+  if (!phone || !amt || amt <= 0) return res.status(400).json({ error: 'phone and amount required' });
+  try {
+    const user = await db.query('SELECT id FROM users WHERE phone=$1', [phone]);
+    if (!user.rows[0]) return res.status(404).json({ error: 'User not found' });
+    const uid = user.rows[0].id;
+    await db.query(`INSERT INTO customer_wallet (user_id, balance) VALUES ($1, $2) ON CONFLICT (user_id) DO UPDATE SET balance = customer_wallet.balance + $2, updated_at = NOW()`, [uid, amt]);
+    await db.query(`INSERT INTO transactions (user_id, type, amount, description) VALUES ($1, 'credit', $2, $3)`, [uid, amt, note || 'Admin manual credit']);
+    const bal = await db.query('SELECT balance FROM customer_wallet WHERE user_id=$1', [uid]);
+    res.json({ success: true, new_balance: parseFloat(bal.rows[0]?.balance || 0) });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
 // POST /api/admin/reset-test-money — ONE-TIME: zero all test-mode balances before live launch
 router.post('/reset-test-money', async (req, res) => {
   // Run each reset independently (no transaction) so a missing column in one table
