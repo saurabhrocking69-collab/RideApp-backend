@@ -1662,7 +1662,7 @@ async function cmpSendMsg(id){
 }
 
 // ── Incidents ───────────────────────────────────────────
-const INC_COLOR={early_completion:'#f44336',payment_skipped:'#ff9800'};
+const INC_COLOR={early_completion:'#f44336',payment_skipped:'#e65100'};
 const INC_LABEL={early_completion:'🛑 Early Completion',payment_skipped:'💸 Payment Skipped'};
 
 async function loadIncidents(){
@@ -1686,20 +1686,27 @@ async function loadIncidents(){
     const rows=d.incidents||[];
     if(!rows.length){body.innerHTML='<tr><td colspan=8 style="text-align:center;color:#aaa;padding:20px">Koi incident nahi</td></tr>';return;}
     body.innerHTML=rows.map(i=>{
-      const meta=i.metadata||{};
+      const meta=i.metadata||i.details||{};
       let detail='';
       if(i.incident_type==='early_completion') detail=`Drop se ${parseFloat(meta.dist_km||0).toFixed(1)}km door`;
-      if(i.incident_type==='payment_skipped') detail=`₹${meta.fare||'?'} — ${meta.payment_method||'cash'}`;
+      if(i.incident_type==='payment_skipped'){
+        const fareDisplay=i.fare?`₹${parseFloat(i.fare).toFixed(0)}`:(meta.fare?`₹${meta.fare}`:'₹?');
+        detail=`<b style="color:#e65100">${fareDisplay}</b> — ${meta.payment_method||'cash'}`;
+      }
+      const isPaySkip=i.incident_type==='payment_skipped';
+      const fareVal=parseFloat(i.fare||meta.fare||0);
+      const compAmt=fareVal>0?Math.round(fareVal*0.85).toFixed(0):'?';
       return `<tr>
         <td style="white-space:nowrap">${new Date(i.created_at).toLocaleString('en-IN',{day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'})}</td>
         <td><span class="chip" style="background:${INC_COLOR[i.incident_type]||'#999'};color:#fff">${INC_LABEL[i.incident_type]||i.incident_type}</span></td>
-        <td>${i.ride_id?'#'+i.ride_id:'-'}</td>
+        <td style="font-size:12px">${i.ride_id?'#'+String(i.ride_id).slice(-6):'-'}</td>
         <td>${i.driver_name||'-'}<br><span style="font-size:10px;color:#888">${i.driver_phone||''}</span></td>
         <td>${i.customer_name||'-'}<br><span style="font-size:10px;color:#888">${i.customer_phone||''}</span></td>
         <td style="font-size:12px;color:#555">${detail}</td>
-        <td><span class="chip" style="background:${i.resolved?'#4CAF50':'#f44336'};color:#fff">${i.resolved?'Resolved':'Open'}</span></td>
-        <td>
-          ${!i.resolved?`<button class="action-btn btn-green" onclick="resolveIncident(${i.id})">✅ Resolve</button>`:''}
+        <td><span class="chip" style="background:${i.resolved?'#4CAF50':'#f44336'};color:#fff">${i.resolved?'✅ Resolved':'🔴 Open'}</span></td>
+        <td style="white-space:nowrap">
+          ${!i.resolved&&isPaySkip?`<button class="action-btn" style="background:#e65100;color:#fff;margin-bottom:4px" onclick="compensateDriver(${i.id},'${(i.driver_name||'Driver').replace(/'/g,'\\x27')}',${fareVal})">💰 Compensate (₹${compAmt})</button><br>`:''}
+          ${!i.resolved&&!isPaySkip?`<button class="action-btn btn-green" onclick="resolveIncident(${i.id})">✅ Resolve</button>`:''}
           ${i.customer_id?`<button class="action-btn btn-blue" onclick="viewCustomerProfile(${i.customer_id})">👤 Customer</button>`:''}
         </td>
       </tr>`;
@@ -1712,6 +1719,35 @@ async function resolveIncident(id){
     await aJson('/api/admin/incidents/'+id+'/resolve',{method:'PUT'});
     loadIncidents();
   }catch(e){alert('Error: '+e.message);}
+}
+
+async function compensateDriver(incidentId, driverName, fareAmt){
+  const commission=Math.round(fareAmt*0.15*100)/100;
+  const compensation=Math.round((fareAmt-commission)*100)/100;
+  const confirmed=confirm(
+    `💰 Driver Compensation Confirm\n\n`+
+    `Driver: ${driverName}\n`+
+    `Ride Fare: ₹${fareAmt}\n`+
+    `15% Commission: ₹${commission}\n`+
+    `──────────────────────────\n`+
+    `Net Compensation: ₹${compensation}\n\n`+
+    `Yeh amount driver ke Sppero wallet mein credit hoga.\n`+
+    `Incident resolve hoga. Kya aap confirm karte ho?`
+  );
+  if(!confirmed) return;
+  try{
+    const admin=prompt('Admin name (confirmation ke liye):') || 'Admin';
+    const d=await aJson('/api/admin/incidents/'+incidentId+'/compensate-driver',{
+      method:'POST',
+      body:JSON.stringify({admin_name:admin})
+    });
+    if(d.success){
+      alert(`✅ Done!\n\n₹${d.compensation_amount} ${d.driver_name} ke wallet mein credit hua.\nDriver ko notification bhi bheja gaya.`);
+      loadIncidents();
+    } else {
+      alert('❌ Error: '+(d.error||'Unknown error'));
+    }
+  }catch(e){alert('❌ Network error: '+e.message);}
 }
 
 async function viewCustomerProfile(id){

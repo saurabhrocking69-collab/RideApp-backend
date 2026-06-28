@@ -1176,7 +1176,90 @@ router.get('/referral-detail', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// ── Startup: ensure ride_incidents table exists ────────────────────────────────
+// ── POST /api/admin/incidents/:id/compensate-driver ─────────────────────────
+// Credits the driver's wallet with (fare - commission) for a payment_skipped incident,
+// resolves the incident, and closes the linked complaint.
+router.post('/incidents/:id/compensate-driver', async (req, res) => {
+  const { admin_name } = req.body;
+  try {
+    const incRes = await db.query(
+      `SELECT i.*,
+              r.fare,
+              ud.name AS driver_name, ud.phone AS driver_phone,
+              uc.name AS customer_name, uc.phone AS customer_phone
+       FROM ride_incidents i
+       LEFT JOIN rides r ON i.ride_id = r.id::text
+       LEFT JOIN users ud ON i.driver_id = ud.id
+       LEFT JOIN users uc ON i.customer_id = uc.id
+       WHERE i.id = $1`,
+      [req.params.id]
+    );
+    if (!incRes.rows[0]) return res.status(404).json({ error: 'Incident nahi mila' });
+    const inc = incRes.rows[0];
+
+    if (inc.incident_type !== 'payment_skipped')
+      return res.status(400).json({ error: 'Sirf payment_skipped incidents ke liye compensation hai' });
+    if (inc.resolved)
+      return res.status(409).json({ error: 'Yeh incident already resolved hai' });
+
+    const fare = parseFloat(inc.fare || 0);
+    if (fare <= 0) return res.status(400).json({ error: 'Fare amount nahi mila — ride record check karo' });
+    if (!inc.driver_id) return res.status(400).json({ error: 'Driver ID nahi mila' });
+
+    const commission = Math.round(fare * 0.15 * 100) / 100;
+    const compensation = Math.round((fare - commission) * 100) / 100;
+
+    // Credit driver wallet
+    await db.query(
+      `INSERT INTO driver_wallet (driver_id, balance, total_earned)
+       VALUES ($1, $2, $3)
+       ON CONFLICT (driver_id) DO UPDATE SET
+         balance      = driver_wallet.balance + $2,
+         total_earned = driver_wallet.total_earned + $3,
+         updated_at   = NOW()`,
+      [inc.driver_id, compensation, compensation]
+    );
+
+    // Mark incident resolved
+    await db.query('UPDATE ride_incidents SET resolved = true WHERE id = $1', [req.params.id]);
+
+    // Resolve linked payment_issue complaint if exists
+    const cmpRes = await db.query(
+      `SELECT id FROM complaints WHERE ride_id = $1 AND complaint_type = 'payment_issue' LIMIT 1`,
+      [inc.ride_id]
+    );
+    if (cmpRes.rows[0]) {
+      const cid = cmpRes.rows[0].id;
+      const note = `Driver ${inc.driver_name || ''} ko ₹${compensation} compensation diya (₹${fare} fare - 15% commission). Customer ka trust score already -25 hua tha.`;
+      await db.query(
+        `UPDATE complaints SET status='resolved', resolution='favor_complainant',
+         resolution_note=$1, refund_amount=$2, action_taken='compensate_driver',
+         resolved_at=NOW(), updated_at=NOW() WHERE id=$3`,
+        [note, compensation, cid]
+      ).catch(() => {});
+      await db.query(
+        `INSERT INTO complaint_timeline(complaint_id,event,description,actor_role,actor_name)
+         VALUES($1,'driver_compensated',$2,'admin',$3)`,
+        [cid, `₹${compensation} driver wallet mein credited by admin`, admin_name || 'Admin']
+      ).catch(() => {});
+    }
+
+    // Notify driver
+    if (inc.driver_phone) {
+      sendFCM(
+        inc.driver_phone,
+        '💰 Compensation Credited!',
+        `Aapki complaint verified hui. ₹${compensation} Sppero wallet mein add ho gaye! (Ride ₹${fare} - 15% fee)`,
+        { type: 'compensation_credited', amount: String(compensation) },
+        { role: 'driver' }
+      ).catch(() => {});
+    }
+
+    res.json({ success: true, compensation_amount: compensation, driver_name: inc.driver_name || 'Driver' });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ── Startup: ensure ride_incidents table + columns exist ─────────────────────
 (async () => {
   try {
     await db.query(`
@@ -1186,11 +1269,17 @@ router.get('/referral-detail', async (req, res) => {
         incident_type TEXT NOT NULL,
         driver_id     TEXT,
         customer_id   TEXT,
+        detected_by   TEXT DEFAULT 'system',
+        metadata      JSONB DEFAULT '{}',
         details       JSONB DEFAULT '{}',
         resolved      BOOLEAN DEFAULT false,
         created_at    TIMESTAMPTZ DEFAULT NOW()
       )
     `);
+    // Ensure both column names exist for schema migration safety
+    await db.query(`ALTER TABLE ride_incidents ADD COLUMN IF NOT EXISTS metadata JSONB DEFAULT '{}'`).catch(() => {});
+    await db.query(`ALTER TABLE ride_incidents ADD COLUMN IF NOT EXISTS detected_by TEXT DEFAULT 'system'`).catch(() => {});
+    await db.query(`ALTER TABLE ride_incidents ADD COLUMN IF NOT EXISTS details JSONB DEFAULT '{}'`).catch(() => {});
   } catch (_) {}
 })();
 
