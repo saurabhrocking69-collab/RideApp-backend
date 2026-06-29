@@ -316,9 +316,14 @@ router.get('/:id', phoneAuth, async (req, res) => {
          LEFT JOIN users u ON cm.sender_id=u.id::text
          WHERE cm.complaint_id=$1 AND cm.is_internal=false ORDER BY cm.created_at ASC`,
         [c.id]
-      ),
-      db.query('SELECT * FROM complaint_evidence WHERE complaint_id=$1 ORDER BY created_at ASC', [c.id]),
-      db.query('SELECT * FROM complaint_timeline WHERE complaint_id=$1 ORDER BY created_at ASC', [c.id]),
+      ).catch(() => db.query(
+        `SELECT cm.*, u.name AS sender_name FROM complaint_messages cm
+         LEFT JOIN users u ON cm.sender_id=u.id::text
+         WHERE cm.complaint_id=$1 ORDER BY cm.created_at ASC`,
+        [c.id]
+      ).catch(() => ({ rows: [] }))),
+      db.query('SELECT * FROM complaint_evidence WHERE complaint_id=$1 ORDER BY created_at ASC', [c.id]).catch(() => ({ rows: [] })),
+      db.query('SELECT * FROM complaint_timeline WHERE complaint_id=$1 ORDER BY created_at ASC', [c.id]).catch(() => ({ rows: [] })),
     ]);
     res.json({ complaint: c, messages: messages.rows, evidence: evidence.rows, timeline: timeline.rows });
   } catch (err) { res.status(500).json({ error: err.message }); }
