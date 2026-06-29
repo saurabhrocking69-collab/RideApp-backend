@@ -9,7 +9,8 @@ const { sendFCM } = require('../config/firebase');
 router.post('/create-order', async (req, res) => {
   const { amount, ride_id } = req.body;
   try {
-    const order = await razorpay.orders.create({ amount: Math.round(amount * 100), currency: 'INR', receipt: 'ride_' + ride_id });
+    const receipt = ('ride_' + String(ride_id)).substring(0, 40);
+    const order = await razorpay.orders.create({ amount: Math.round(amount * 100), currency: 'INR', receipt });
     res.json({ success: true, order_id: order.id, amount: order.amount, key_id: process.env.RAZORPAY_KEY_ID });
   } catch (err) { res.status(500).json({ success: false, error: err.message }); }
 });
