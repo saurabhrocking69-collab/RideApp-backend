@@ -28,8 +28,10 @@ router.post('/fare-estimate', async (req, res) => {
     const hour = new Date().getHours();
     const isNight = hour >= parseInt(f.night_start || 22) || hour < parseInt(f.night_end || 6);
     const nightMult = isNight ? parseFloat(f.night_multiplier || 1.2) : 1;
-    const fare = Math.round((parseFloat(f.base_fare) + distKm * parseFloat(f.per_km_rate)) * nightMult);
-    res.json({ fare, distance_km: Math.round(distKm * 10) / 10, is_night: isNight });
+    const base_fare = parseFloat(f.base_fare);
+    const per_km_rate = parseFloat(f.per_km_rate);
+    const fare = Math.round((base_fare + distKm * per_km_rate) * nightMult);
+    res.json({ fare, base_fare, per_km_rate, night_multiplier: nightMult, distance_km: Math.round(distKm * 10) / 10, is_night: isNight });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
