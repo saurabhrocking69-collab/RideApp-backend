@@ -321,6 +321,48 @@ input,select,textarea{outline:none}
       </div>
       <div id="wc-result" style="margin-top:10px;font-size:13px;font-weight:700"></div>
     </div>
+    <!-- Cancellation Fee Settings -->
+    <div id="cancel-settings-card" style="background:#f3e5f5;border:2px solid #7b1fa2;border-radius:14px;padding:18px;margin-bottom:20px">
+      <div style="font-size:16px;font-weight:900;color:#4a148c;margin-bottom:4px">🚫 Cancellation Fee Settings</div>
+      <p style="font-size:12px;color:#6a1b9a;margin-bottom:14px">Admin cancellation fees control karo. Enable/disable anytime. App automatically update ho jata hai.</p>
+      <div id="cancel-settings-form" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px">
+        <label style="font-size:12px;font-weight:700;color:#4a148c">
+          ✅ Enable Cancel Fees
+          <br><select id="cs-enabled" style="width:100%;padding:8px;border-radius:8px;border:1px solid #ce93d8;margin-top:4px;font-size:13px">
+            <option value="true">Enabled</option>
+            <option value="false">Disabled (All free)</option>
+          </select>
+        </label>
+        <label style="font-size:12px;font-weight:700;color:#4a148c">
+          ⏱️ Free Cancel Window (seconds)
+          <br><input id="cs-free-sec" type="number" min="0" max="300" style="width:100%;padding:8px;border-radius:8px;border:1px solid #ce93d8;margin-top:4px;font-size:13px">
+        </label>
+        <label style="font-size:12px;font-weight:700;color:#4a148c">
+          💰 Base Cancel Fee (₹)
+          <br><input id="cs-base-fee" type="number" min="0" style="width:100%;padding:8px;border-radius:8px;border:1px solid #ce93d8;margin-top:4px;font-size:13px">
+        </label>
+        <label style="font-size:12px;font-weight:700;color:#4a148c">
+          📍 Driver Arrived Fee (₹)
+          <br><input id="cs-arrived-fee" type="number" min="0" style="width:100%;padding:8px;border-radius:8px;border:1px solid #ce93d8;margin-top:4px;font-size:13px">
+        </label>
+        <label style="font-size:12px;font-weight:700;color:#4a148c">
+          🕐 Free Wait Minutes (driver)
+          <br><input id="cs-wait-free" type="number" min="0" style="width:100%;padding:8px;border-radius:8px;border:1px solid #ce93d8;margin-top:4px;font-size:13px">
+        </label>
+        <label style="font-size:12px;font-weight:700;color:#4a148c">
+          ₹ Extra Fee per Wait Minute
+          <br><input id="cs-wait-per-min" type="number" min="0" style="width:100%;padding:8px;border-radius:8px;border:1px solid #ce93d8;margin-top:4px;font-size:13px">
+        </label>
+      </div>
+      <div style="margin-top:14px;display:flex;gap:10px;flex-wrap:wrap;align-items:center">
+        <button onclick="saveCancelSettings()" style="background:#7b1fa2;color:#fff;border:none;border-radius:8px;padding:10px 22px;font-size:13px;font-weight:800;cursor:pointer">💾 Save Settings</button>
+        <div id="cs-result" style="font-size:13px;font-weight:700"></div>
+      </div>
+      <div style="margin-top:12px;padding:10px;background:rgba(123,31,162,0.07);border-radius:8px;font-size:11px;color:#6a1b9a">
+        <b>Formula:</b> Free window mein → ₹0 | Driver assigned → Base fee | Driver arrived → Arrived fee + (wait - free minutes) × per-min fee
+      </div>
+    </div>
+
     <div style="background:#fff3cd;border:2px solid #e65100;border-radius:14px;padding:18px;margin-bottom:20px">
       <div style="font-size:16px;font-weight:900;color:#bf360c;margin-bottom:8px">🔄 Test Mode → Live Mode Reset</div>
       <p style="font-size:13px;color:#5d4037;margin-bottom:12px">Ye button <strong>sabhi test wallets</strong> (customer + driver), transactions, bonus, cashback, referral rewards aur commission records ko zero kar deta hai. Sirf <strong>ek baar</strong> live launch se pehle use karo.</p>
@@ -625,7 +667,7 @@ function showSection(id,btn){
   if(id==='rides') loadRides();
   if(id==='topups') loadTopups();
   if(id==='verify') loadVerifications();
-  if(id==='settings'){loadFares();loadStdFares();}
+  if(id==='settings'){loadFares();loadStdFares();loadCancelSettings();}
   if(id==='marketing'){loadCampaigns();loadPromos();loadReferrals();}
   if(id==='payouts'){loadPayouts('pending');}
 }
@@ -1085,6 +1127,36 @@ async function adminWalletCredit(){
   el.innerHTML='Adding...';
   const d = await aJson('/api/admin/wallet-credit', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ phone, amount, note }) });
   el.innerHTML = d.success ? `<span style="color:#2e7d32">✅ ₹${amount} added! New balance: ₹${d.new_balance}</span>` : `<span style="color:red">❌ ${d.error}</span>`;
+}
+async function loadCancelSettings(){
+  try {
+    const d = await aJson('/api/admin/cancel-settings');
+    if (d.id) {
+      document.getElementById('cs-enabled').value = d.enabled ? 'true' : 'false';
+      document.getElementById('cs-free-sec').value = d.free_cancel_sec ?? 60;
+      document.getElementById('cs-base-fee').value = d.base_cancel_fee ?? 10;
+      document.getElementById('cs-arrived-fee').value = d.arrived_cancel_fee ?? 15;
+      document.getElementById('cs-wait-free').value = d.wait_fee_free_min ?? 3;
+      document.getElementById('cs-wait-per-min').value = d.wait_fee_per_min ?? 5;
+    }
+  } catch(e) {}
+}
+async function saveCancelSettings(){
+  const el = document.getElementById('cs-result');
+  el.textContent = 'Saving...';
+  const d = await aJson('/api/admin/cancel-settings', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({
+      enabled: document.getElementById('cs-enabled').value === 'true',
+      free_cancel_sec:    parseInt(document.getElementById('cs-free-sec').value),
+      base_cancel_fee:    parseInt(document.getElementById('cs-base-fee').value),
+      arrived_cancel_fee: parseInt(document.getElementById('cs-arrived-fee').value),
+      wait_fee_free_min:  parseInt(document.getElementById('cs-wait-free').value),
+      wait_fee_per_min:   parseInt(document.getElementById('cs-wait-per-min').value),
+    })
+  });
+  if (d.success) { el.innerHTML='<span style="color:#4a148c">✅ Saved! App me 5 min me reflect hoga.</span>'; }
+  else { el.innerHTML=`<span style="color:red">❌ ${d.error}</span>`; }
 }
 async function resetTestMoney(){
   if (!confirm('⚠️ Confirm: Sabhi test wallets, transactions, bonus, cashback ZERO ho jayenge.\n\nYe action IRREVERSIBLE hai. Continue?')) return;

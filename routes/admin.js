@@ -1327,4 +1327,60 @@ router.post('/reset-test-money', async (req, res) => {
   }
 });
 
+// ── Cancellation Fee Settings ────────────────────────────────────────────────
+
+// Ensure table exists on startup
+db.query(`
+  CREATE TABLE IF NOT EXISTS cancellation_settings (
+    id                  SERIAL PRIMARY KEY,
+    enabled             BOOLEAN DEFAULT true,
+    free_cancel_sec     INT     DEFAULT 60,
+    base_cancel_fee     INT     DEFAULT 10,
+    arrived_cancel_fee  INT     DEFAULT 15,
+    wait_fee_free_min   INT     DEFAULT 3,
+    wait_fee_per_min    INT     DEFAULT 5,
+    updated_at          TIMESTAMP DEFAULT NOW()
+  )
+`).then(async () => {
+  const existing = await db.query('SELECT id FROM cancellation_settings LIMIT 1');
+  if (existing.rows.length === 0) {
+    await db.query('INSERT INTO cancellation_settings DEFAULT VALUES');
+  }
+}).catch(() => {});
+
+// GET /api/admin/cancel-settings
+router.get('/cancel-settings', async (req, res) => {
+  try {
+    const r = await db.query('SELECT * FROM cancellation_settings ORDER BY id LIMIT 1');
+    res.json(r.rows[0] || {});
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// POST /api/admin/cancel-settings
+router.post('/cancel-settings', async (req, res) => {
+  const { enabled, free_cancel_sec, base_cancel_fee, arrived_cancel_fee, wait_fee_free_min, wait_fee_per_min } = req.body;
+  try {
+    await db.query(`
+      UPDATE cancellation_settings SET
+        enabled            = COALESCE($1, enabled),
+        free_cancel_sec    = COALESCE($2, free_cancel_sec),
+        base_cancel_fee    = COALESCE($3, base_cancel_fee),
+        arrived_cancel_fee = COALESCE($4, arrived_cancel_fee),
+        wait_fee_free_min  = COALESCE($5, wait_fee_free_min),
+        wait_fee_per_min   = COALESCE($6, wait_fee_per_min),
+        updated_at         = NOW()
+      WHERE id = (SELECT id FROM cancellation_settings ORDER BY id LIMIT 1)
+    `, [
+      enabled !== undefined ? enabled : null,
+      free_cancel_sec     != null ? parseInt(free_cancel_sec)     : null,
+      base_cancel_fee     != null ? parseInt(base_cancel_fee)     : null,
+      arrived_cancel_fee  != null ? parseInt(arrived_cancel_fee)  : null,
+      wait_fee_free_min   != null ? parseInt(wait_fee_free_min)   : null,
+      wait_fee_per_min    != null ? parseInt(wait_fee_per_min)    : null,
+    ]);
+    const r = await db.query('SELECT * FROM cancellation_settings ORDER BY id LIMIT 1');
+    res.json({ success: true, settings: r.rows[0] });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
 module.exports = router;

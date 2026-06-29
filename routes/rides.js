@@ -17,6 +17,9 @@ function emitRideUpdate(rideId, data) {
   emitToRoom('ride_' + rideId, 'rideUpdate', { rideId, ...data });
 }
 
+// Ensure arrived_at column exists (idempotent)
+db.query('ALTER TABLE rides ADD COLUMN IF NOT EXISTS arrived_at TIMESTAMP').catch(() => {});
+
 async function addLoyaltyPoints(userId, points) {
   try {
     await db.query(
@@ -263,12 +266,58 @@ router.post('/cancel', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+// Helper: load cancel settings from DB (falls back to defaults if table missing)
+async function getCancelSettings() {
+  try {
+    const r = await db.query('SELECT * FROM cancellation_settings ORDER BY id LIMIT 1');
+    return r.rows[0] || { enabled: true, free_cancel_sec: 60, base_cancel_fee: 10, arrived_cancel_fee: 15, wait_fee_free_min: 3, wait_fee_per_min: 5 };
+  } catch (_e) {
+    return { enabled: true, free_cancel_sec: 60, base_cancel_fee: 10, arrived_cancel_fee: 15, wait_fee_free_min: 3, wait_fee_per_min: 5 };
+  }
+}
+
+// GET /api/rides/cancel-info/:ride_id — live cancellation fee for a ride
+router.get('/cancel-info/:ride_id', async (req, res) => {
+  try {
+    const rideRes = await db.query(
+      `SELECT r.status, r.driver_id, r.arrived_at,
+              EXTRACT(EPOCH FROM (NOW() - r.created_at)) AS seconds_since_book,
+              EXTRACT(EPOCH FROM (NOW() - r.arrived_at)) AS seconds_driver_waited
+       FROM rides r WHERE r.id = $1`,
+      [req.params.ride_id]
+    );
+    if (!rideRes.rows[0]) return res.status(404).json({ error: 'Ride not found' });
+    const ride = rideRes.rows[0];
+    const cs = await getCancelSettings();
+    const secSinceBook = Math.round(ride.seconds_since_book || 0);
+    const secDriverWaited = ride.arrived_at ? Math.max(0, Math.round(ride.seconds_driver_waited || 0)) : 0;
+
+    let fee = 0, is_free = true, message = 'Free cancel';
+    if (cs.enabled && ride.driver_id) {
+      if (secSinceBook <= cs.free_cancel_sec) {
+        fee = 0; is_free = true; message = `Free (${cs.free_cancel_sec - secSinceBook}s remaining)`;
+      } else if (ride.status === 'arrived') {
+        const waitMinutes = Math.floor(secDriverWaited / 60);
+        const extraMinutes = Math.max(0, waitMinutes - cs.wait_fee_free_min);
+        fee = cs.arrived_cancel_fee + extraMinutes * cs.wait_fee_per_min;
+        is_free = false;
+        message = `₹${fee} cancel fee (driver ${waitMinutes} min wait kar raha)`;
+      } else {
+        fee = cs.base_cancel_fee; is_free = false; message = `₹${fee} cancel fee`;
+      }
+    }
+    res.json({ fee, is_free, message, driver_wait_sec: secDriverWaited, sec_since_book: secSinceBook, settings: cs });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
 // POST /api/rides/cancel-smart
 router.post('/cancel-smart', async (req, res) => {
   const { ride_id, cancelled_by, reason, phone } = req.body;
   try {
+    const cs = await getCancelSettings();
     const rideRes = await db.query(
       `SELECT r.*, EXTRACT(EPOCH FROM (NOW() - r.created_at)) AS seconds_since_book,
+              EXTRACT(EPOCH FROM (NOW() - r.arrived_at)) AS seconds_driver_waited,
               p.phone AS passenger_phone, u.phone AS driver_phone
        FROM rides r
        LEFT JOIN users p ON r.passenger_id = p.id
@@ -279,6 +328,7 @@ router.post('/cancel-smart', async (req, res) => {
     if (rideRes.rows.length === 0) return res.json({ success: false, message: 'Ride nahi mili' });
     const ride = rideRes.rows[0];
     const secondsAfterBook = Math.round(ride.seconds_since_book || 0);
+    const secDriverWaited  = ride.arrived_at ? Math.max(0, Math.round(ride.seconds_driver_waited || 0)) : 0;
     let penalty = 0;
     let message = 'Ride cancel ho gayi';
 
@@ -292,11 +342,18 @@ router.post('/cancel-smart', async (req, res) => {
       const metrics = cm.rows[0];
       let cancelsToday = metrics.last_cancel_date && metrics.last_cancel_date.toISOString().split('T')[0] === today ? metrics.cancels_today : 0;
 
-      if (secondsAfterBook <= 60) {
-        penalty = 0; message = 'Free cancellation (1 min ke andar)';
+      if (!cs.enabled || secondsAfterBook <= cs.free_cancel_sec) {
+        penalty = 0; message = `Free cancellation (${cs.free_cancel_sec}s ke andar)`;
       } else if (ride.driver_id) {
-        if (cancelsToday >= 3) { penalty = 10; message = 'Cancel fee ₹10 (aaj 3 se zyada cancel)'; }
-        else { penalty = ride.status === 'arrived' ? 15 : 10; message = `Cancel fee ₹${penalty}`; }
+        if (ride.status === 'arrived') {
+          const waitMin = Math.floor(secDriverWaited / 60);
+          const extraMin = Math.max(0, waitMin - cs.wait_fee_free_min);
+          penalty = cs.arrived_cancel_fee + extraMin * cs.wait_fee_per_min;
+        } else {
+          penalty = cs.base_cancel_fee;
+        }
+        if (cancelsToday >= 3) { penalty = cs.base_cancel_fee; }
+        message = penalty > 0 ? `Cancel fee ₹${penalty}` : 'Free cancellation';
       }
 
       const newTrust = Math.max(0, (metrics.trust_score || 100) - (penalty > 0 ? 5 : 2));

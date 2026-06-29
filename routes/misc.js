@@ -10,6 +10,34 @@ router.get('/fare-settings', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+// GET /api/app/config — single endpoint for all dynamic config: fares, surge, hourly packages
+// App fetches this at startup + every 5 min to stay in sync with admin panel changes
+router.get('/app/config', async (req, res) => {
+  try {
+    const { getSurge, HOURLY_FARES } = require('../services/pricing');
+    const faresResult = await db.query('SELECT * FROM fare_settings ORDER BY vehicle_type');
+    const faresMap = {};
+    for (const row of faresResult.rows) {
+      faresMap[row.vehicle_type] = {
+        base_fare:        parseFloat(row.base_fare),
+        per_km_rate:      parseFloat(row.per_km_rate),
+        night_multiplier: parseFloat(row.night_multiplier || 1.3),
+        night_start:      row.night_start || '22:00',
+        night_end:        row.night_end   || '06:00',
+      };
+    }
+    const cancelRes = await db.query('SELECT * FROM cancellation_settings ORDER BY id LIMIT 1').catch(() => ({ rows: [] }));
+    const cancelSettings = cancelRes.rows[0] || { enabled: true, free_cancel_sec: 60, base_cancel_fee: 10, arrived_cancel_fee: 15, wait_fee_free_min: 3, wait_fee_per_min: 5 };
+    res.json({
+      fares:               faresMap,
+      surge:               getSurge(),
+      hourly_fares:        HOURLY_FARES,
+      cancel_settings:     cancelSettings,
+      fetched_at:          new Date().toISOString(),
+    });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
 // POST /api/fare-estimate — accepts either pre-calculated `distance` km OR lat/lng coords
 router.post('/fare-estimate', async (req, res) => {
   const { pickup_lat, pickup_lng, drop_lat, drop_lng, ride_type, distance } = req.body;

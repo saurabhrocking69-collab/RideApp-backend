@@ -77,6 +77,7 @@ async function transitionRide(rideId, newStatus, opts = {}) {
     values.push(val);
   }
   if (newStatus === 'completed') setPairs.push('completed_at = NOW()');
+  if (newStatus === 'arrived')   setPairs.push('arrived_at = NOW()');
   values.push(prevStatus); // for WHERE clause
   const guardIdx = idx;
 
