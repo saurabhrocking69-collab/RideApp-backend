@@ -423,4 +423,103 @@ router.post('/commission-pay-verify', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+// ── GET /api/driver/demand-zones — Hot ride zones near driver ──
+router.get('/demand-zones', async (req, res) => {
+  const { lat, lng } = req.query;
+  try {
+    const driverLat = parseFloat(lat) || 26.8;
+    const driverLng = parseFloat(lng) || 80.9;
+    // Active + recent rides grouped by ~2km grid cells
+    const r = await db.query(`
+      SELECT
+        ROUND(pickup_lat::numeric / 0.018) * 0.018 AS zone_lat,
+        ROUND(pickup_lng::numeric / 0.018) * 0.018 AS zone_lng,
+        COUNT(*) AS ride_count,
+        MAX(ride_type) AS top_vehicle,
+        ROUND(AVG(CAST(REGEXP_REPLACE(COALESCE(fare,'0'), '[^0-9.]', '', 'g') AS numeric))) AS avg_fare
+      FROM rides
+      WHERE created_at > NOW() - INTERVAL '90 minutes'
+        AND pickup_lat BETWEEN $1 - 0.35 AND $1 + 0.35
+        AND pickup_lng BETWEEN $2 - 0.35 AND $2 + 0.35
+        AND pickup_lat IS NOT NULL AND pickup_lng IS NOT NULL
+      GROUP BY zone_lat, zone_lng
+      HAVING COUNT(*) >= 1
+      ORDER BY ride_count DESC
+      LIMIT 8
+    `, [driverLat, driverLng]);
+
+    const zones = r.rows.map(z => {
+      const zLat = parseFloat(z.zone_lat);
+      const zLng = parseFloat(z.zone_lng);
+      const distKm = haversineKm(driverLat, driverLng, zLat, zLng);
+      const count = parseInt(z.ride_count);
+      return {
+        lat: zLat, lng: zLng,
+        ride_count: count,
+        top_vehicle: z.top_vehicle || 'any',
+        avg_fare: parseInt(z.avg_fare) || 0,
+        dist_km: Math.round(distKm * 10) / 10,
+        heat: count >= 5 ? 'high' : count >= 3 ? 'medium' : 'low',
+      };
+    }).sort((a, b) => a.dist_km - b.dist_km);
+
+    res.json({ zones, updated_at: new Date().toISOString() });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ── GET /api/driver/level/:phone — Driver tier + progress ──
+router.get('/level/:phone', async (req, res) => {
+  try {
+    const r = await db.query(`
+      SELECT u.id, u.name, d.rating, d.status,
+        (SELECT COUNT(*) FROM rides WHERE driver_id = u.id AND payment_status = 'completed') AS completed_rides,
+        (SELECT COALESCE(AVG(rating),0) FROM ride_ratings WHERE driver_id = u.id) AS avg_rating,
+        (SELECT COUNT(*) FROM rides WHERE driver_id = u.id AND cancelled_by = 'driver'
+          AND created_at > NOW() - INTERVAL '30 days') AS cancels_30d,
+        (SELECT COUNT(*) FROM rides WHERE driver_id = u.id
+          AND created_at > NOW() - INTERVAL '30 days') AS rides_30d
+      FROM users u JOIN drivers d ON d.id = u.id WHERE u.phone = $1`, [req.params.phone]);
+
+    if (!r.rows[0]) return res.status(404).json({ error: 'Driver nahi mila' });
+    const d = r.rows[0];
+    const completed = parseInt(d.completed_rides) || 0;
+    const rating = parseFloat(d.avg_rating) || parseFloat(d.rating) || 4.5;
+    const rides30 = parseInt(d.rides_30d) || 0;
+    const cancelRate = rides30 > 0 ? (parseInt(d.cancels_30d) / rides30) * 100 : 0;
+
+    const LEVELS = [
+      { id: 'platinum', emoji: '💎', name: 'Platinum', minRides: 1000, minRating: 4.8, maxCancel: 5,
+        benefits: ['8% commission chhoot', 'Priority matching', 'Featured badge', 'Premium support 24x7', 'Monthly bonus eligible'], color: '#9C27B0' },
+      { id: 'gold',     emoji: '🥇', name: 'Gold',     minRides: 500,  minRating: 4.7, maxCancel: 10,
+        benefits: ['5% commission chhoot', 'Priority matching', 'Gold badge', 'Priority support'], color: '#F59E0B' },
+      { id: 'silver',   emoji: '🥈', name: 'Silver',   minRides: 100,  minRating: 4.5, maxCancel: 20,
+        benefits: ['2% commission chhoot', 'Silver badge', 'Priority support'], color: '#64748B' },
+      { id: 'bronze',   emoji: '🥉', name: 'Bronze',   minRides: 0,    minRating: 0,   maxCancel: 100,
+        benefits: ['Standard commission', 'Basic support'], color: '#CD7F32' },
+    ];
+
+    let curIdx = LEVELS.length - 1;
+    for (let i = 0; i < LEVELS.length; i++) {
+      if (completed >= LEVELS[i].minRides && rating >= LEVELS[i].minRating && cancelRate <= LEVELS[i].maxCancel) {
+        curIdx = i; break;
+      }
+    }
+    const cur = LEVELS[curIdx];
+    const next = curIdx > 0 ? LEVELS[curIdx - 1] : null;
+    const progress = next
+      ? Math.min(99, Math.round(((completed - cur.minRides) / (next.minRides - cur.minRides)) * 100))
+      : 100;
+
+    res.json({
+      level: cur.id, levelName: cur.name, levelEmoji: cur.emoji, levelColor: cur.color,
+      nextLevel: next?.id || null, nextLevelName: next?.name || null, nextLevelEmoji: next?.emoji || null,
+      progress, nextTarget: next?.minRides || 0,
+      completed_rides: completed, avg_rating: Math.round(rating * 10) / 10,
+      cancel_rate: Math.round(cancelRate * 10) / 10, rides_this_month: rides30,
+      benefits: cur.benefits,
+      requirements: next ? { rides: next.minRides, rating: next.minRating, cancel_rate: next.maxCancel } : null,
+    });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
 module.exports = router;
