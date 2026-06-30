@@ -12,6 +12,7 @@ const { transitionRide } = require('../services/rideStateMachine');
 const { getRideStatus, getDriverLoc, setRideStatus, clearRide: clearRideCache } = require('../services/rideCache');
 const { creditPeakBonusIfApplicable } = require('./bonus');
 const { maybeGrantReferralReward } = require('./referral');
+const { getSurgeMultiplier } = require('../services/locationIntelligence');
 
 function emitRideUpdate(rideId, data) {
   emitToRoom('ride_' + rideId, 'rideUpdate', { rideId, ...data });
@@ -98,6 +99,10 @@ router.post('/book', async (req, res) => {
     let fare = Math.round(parseFloat(f.base_fare) + (distance * parseFloat(f.per_km_rate)));
     if (isNight) fare = Math.round(fare * parseFloat(f.night_multiplier));
 
+    // Surge pricing
+    const surgeMultiplier = await getSurgeMultiplier(pickup_lat, pickup_lng);
+    if (surgeMultiplier > 1.0) fare = Math.round(fare * surgeMultiplier);
+
     const ride = await db.query(
       `INSERT INTO rides (passenger_id, pickup, drop_location, ride_type, fare, status, pickup_lat, pickup_lng, drop_lat, drop_lng, discount, promo_code)
        VALUES ($1, $2, $3, $4, $5, 'searching', $6, $7, $8, $9, $10, $11) RETURNING *`,
@@ -105,9 +110,35 @@ router.post('/book', async (req, res) => {
     );
     await db.query("UPDATE rides SET status = 'requested' WHERE id = $1", [ride.rows[0].id]);
 
-    res.json({ message: 'Driver dhundh rahe hain...', fare: '₹' + fare, distance: distance + ' km', ride_id: ride.rows[0].id, status: 'requested' });
+    res.json({ message: 'Driver dhundh rahe hain...', fare: '₹' + fare, distance: distance + ' km', ride_id: ride.rows[0].id, status: 'requested', surge_multiplier: surgeMultiplier });
 
     assignRideToNextDriver(ride.rows[0].id, pickup_lat || null, pickup_lng || null, ride_type).catch(() => {});
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// GET /api/rides/surge-check — surge multiplier for a pickup location
+router.get('/surge-check', async (req, res) => {
+  const { lat, lng } = req.query;
+  const multiplier = await getSurgeMultiplier(parseFloat(lat), parseFloat(lng));
+  const label = multiplier >= 2.0 ? '2x' : multiplier >= 1.5 ? '1.5x' : multiplier >= 1.3 ? '1.3x' : multiplier > 1.0 ? '1.2x' : null;
+  res.json({ surge: multiplier, label, is_surge: multiplier > 1.0 });
+});
+
+// POST /api/rides/:id/driver-location — driver posts live GPS during active ride
+router.post('/:id/driver-location', async (req, res) => {
+  const { lat, lng, phone } = req.body;
+  const rideId = req.params.id;
+  if (!lat || !lng) return res.status(400).json({ error: 'lat lng required' });
+  try {
+    // Update driver_locations table
+    if (phone) {
+      await db.query(`
+        UPDATE driver_locations SET lat=$1, lng=$2, updated=NOW() WHERE phone=$3
+      `, [lat, lng, phone]);
+    }
+    // Emit to customer's socket room
+    emitToRoom('ride_' + rideId, 'driverMoved', { lat, lng });
+    res.json({ ok: true });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 

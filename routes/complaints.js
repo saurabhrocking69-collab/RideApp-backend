@@ -207,8 +207,10 @@ router.post('/', phoneAuth, async (req, res) => {
       filedAgainstId = filerRole === 'customer' ? ride.driver_id : ride.passenger_id;
     }
 
-    if (!filedAgainstId)
-      return res.status(400).json({ error: 'Ride select karo ya against_id do — kiske khilaf complaint hai?' });
+    if (!filedAgainstId) {
+      // Platform-level complaints (app errors, payment issues, etc.) have no specific user to file against
+      filedAgainstId = 'sppero_platform';
+    }
     if (filedAgainstId === userId)
       return res.status(400).json({ error: 'Apne khilaf complaint nahi kar sakte' });
 

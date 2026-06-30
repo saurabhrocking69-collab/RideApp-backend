@@ -17,6 +17,7 @@ const { rideQueue, assignRideToNextDriver } = require('./workers/rideWorker');
 
 // ── Services ────────────────────────────────────
 const { driverLocations } = require('./services/matching');
+const { startLocationJobs } = require('./services/locationIntelligence');
 const db                  = require('./config/db');
 
 // ── Middleware ───────────────────────────────────
@@ -551,6 +552,7 @@ setInterval(() => {
 // ── Start server ─────────────────────────────────
 server.listen(process.env.PORT || 3000, '0.0.0.0', () => {
   console.log('🚀 Server running on port ' + (process.env.PORT || 3000));
+  startLocationJobs();
 });
 
 // ── Graceful shutdown ────────────────────────────

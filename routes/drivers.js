@@ -522,4 +522,39 @@ router.get('/level/:phone', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+// ── GET /api/driver/demand-prediction — hourly demand curve for current weekday ──
+router.get('/demand-prediction', async (req, res) => {
+  const { getDemandPrediction } = require('../services/locationIntelligence');
+  try {
+    const hourly = await getDemandPrediction();
+    const nowHour = new Date().getHours();
+
+    // Find peak windows (top 3 hours)
+    const sorted = [...hourly].sort((a, b) => b.rides - a.rides);
+    const peakHours = sorted.slice(0, 3).map(h => h.hour).sort((a, b) => a - b);
+
+    // Next upcoming peak (> now)
+    const nextPeak = peakHours.find(h => h > nowHour) ?? peakHours[0];
+    const minsToNextPeak = nextPeak > nowHour
+      ? (nextPeak - nowHour) * 60
+      : (24 - nowHour + nextPeak) * 60;
+
+    const fmtHour = h => {
+      const ampm = h < 12 ? 'AM' : 'PM';
+      const h12 = h % 12 || 12;
+      return `${h12}:00 ${ampm}`;
+    };
+
+    res.json({
+      hourly,
+      peak_hours: peakHours,
+      next_peak: nextPeak,
+      next_peak_label: fmtHour(nextPeak),
+      mins_to_next_peak: minsToNextPeak,
+      current_hour: nowHour,
+      current_intensity: hourly[nowHour]?.intensity || 0,
+    });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
 module.exports = router;
