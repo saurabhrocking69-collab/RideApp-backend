@@ -134,7 +134,7 @@ router.get('/pending-ride', async (req, res) => {
     if (fallback.rows[0]) {
       const fb = fallback.rows[0];
       const fbKm = (fb.pickup_lat && fb.drop_lat) ? haversineKm(parseFloat(fb.pickup_lat), parseFloat(fb.pickup_lng), parseFloat(fb.drop_lat), parseFloat(fb.drop_lng)) : null;
-      return res.json({ ride: { ...fb, distance: fbKm ? fbKm.toFixed(1) : null }, pending_commission: pendingComm });
+      return res.json({ ride: { ...fb, seconds_to_accept: 30, distance: fbKm ? fbKm.toFixed(1) : null }, pending_commission: pendingComm });
     }
     return res.json({ ride: null });
   } catch (err) { res.status(500).json({ error: err.message }); }

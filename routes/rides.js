@@ -185,7 +185,12 @@ router.post('/accept', async (req, res) => {
     }
 
     res.json({ success: true, message: 'Ride accepted!', otp });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) {
+    if (err.message && err.message.includes('Concurrent transition')) {
+      return res.json({ success: false, message: 'Ride kisi aur driver ne le li — agli dekho!' });
+    }
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // POST /api/rides/reject-offer
