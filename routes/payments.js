@@ -7,7 +7,9 @@ const { sendFCM } = require('../config/firebase');
 
 // POST /api/payment/create-order
 router.post('/create-order', async (req, res) => {
+  if (!razorpay) return res.status(500).json({ success: false, error: 'Payment gateway configured nahi hai — admin se contact karo' });
   const { amount, ride_id } = req.body;
+  if (!amount || amount < 1) return res.status(400).json({ success: false, error: 'Valid amount chahiye' });
   try {
     const receipt = ('ride_' + String(ride_id)).substring(0, 40);
     const order = await razorpay.orders.create({ amount: Math.round(amount * 100), currency: 'INR', receipt });
