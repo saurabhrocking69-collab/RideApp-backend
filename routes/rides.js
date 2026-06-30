@@ -276,11 +276,11 @@ async function getCancelSettings() {
   }
 }
 
-// GET /api/rides/cancel-info/:ride_id — live cancellation fee for a ride
+// GET /api/rides/cancel-info/:ride_id — live cancellation fee + wait fare for a ride
 router.get('/cancel-info/:ride_id', async (req, res) => {
   try {
     const rideRes = await db.query(
-      `SELECT r.status, r.driver_id, r.arrived_at,
+      `SELECT r.status, r.driver_id, r.arrived_at, r.fare,
               EXTRACT(EPOCH FROM (NOW() - r.created_at)) AS seconds_since_book,
               EXTRACT(EPOCH FROM (NOW() - r.arrived_at)) AS seconds_driver_waited
        FROM rides r WHERE r.id = $1`,
@@ -292,6 +292,7 @@ router.get('/cancel-info/:ride_id', async (req, res) => {
     const secSinceBook = Math.round(ride.seconds_since_book || 0);
     const secDriverWaited = ride.arrived_at ? Math.max(0, Math.round(ride.seconds_driver_waited || 0)) : 0;
 
+    // ── Cancel fee system ──
     let fee = 0, is_free = true, message = 'Free cancel';
     if (cs.enabled && ride.driver_id) {
       if (secSinceBook <= cs.free_cancel_sec) {
@@ -306,7 +307,29 @@ router.get('/cancel-info/:ride_id', async (req, res) => {
         fee = cs.base_cancel_fee; is_free = false; message = `₹${fee} cancel fee`;
       }
     }
-    res.json({ fee, is_free, message, driver_wait_sec: secDriverWaited, sec_since_book: secSinceBook, settings: cs });
+
+    // ── Wait fare system (separate) — ₹1/min after 3 min free ──
+    const WAIT_FARE_FREE_MIN = 3;
+    const WAIT_FARE_PER_MIN = 1;
+    const waitFareMin = Math.floor(secDriverWaited / 60);
+    const waitFareBillableMin = Math.max(0, waitFareMin - WAIT_FARE_FREE_MIN);
+    const waitFareAdd = waitFareBillableMin * WAIT_FARE_PER_MIN;
+    const origFare = parseFloat(String(ride.fare || '0').replace(/[^0-9.]/g, '')) || 0;
+
+    res.json({
+      // cancel fee (existing)
+      fee, is_free, message,
+      driver_wait_sec: secDriverWaited,
+      sec_since_book: secSinceBook,
+      settings: cs,
+      driver_status: ride.status,
+      // wait fare (separate system)
+      wait_fare_add: waitFareAdd,
+      wait_fare_new_total: origFare + waitFareAdd,
+      wait_fare_orig: origFare,
+      wait_fare_free_min: WAIT_FARE_FREE_MIN,
+      wait_fare_billable_min: waitFareBillableMin,
+    });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
