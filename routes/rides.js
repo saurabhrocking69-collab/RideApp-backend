@@ -1128,4 +1128,64 @@ router.post('/surge-fare', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+// ────────────────────────────────────────────────────────
+// SCHEDULED RIDES
+// ────────────────────────────────────────────────────────
+db.query(`CREATE TABLE IF NOT EXISTS scheduled_rides (
+  id SERIAL PRIMARY KEY,
+  customer_phone VARCHAR(20) NOT NULL,
+  pickup TEXT NOT NULL,
+  drop_location TEXT NOT NULL,
+  pickup_lat DECIMAL(10,7), pickup_lng DECIMAL(10,7),
+  drop_lat  DECIMAL(10,7), drop_lng  DECIMAL(10,7),
+  vehicle_type VARCHAR(30) DEFAULT 'auto',
+  scheduled_at TIMESTAMP NOT NULL,
+  status VARCHAR(20) DEFAULT 'pending',
+  fare_estimate INT DEFAULT 0,
+  notes TEXT,
+  created_at TIMESTAMP DEFAULT NOW()
+)`).catch(() => {});
+
+// POST /api/rides/schedule
+router.post('/schedule', async (req, res) => {
+  const { customer_phone, pickup, drop_location, pickup_lat, pickup_lng, drop_lat, drop_lng, vehicle_type, scheduled_at, fare_estimate, notes } = req.body;
+  if (!customer_phone || !pickup || !drop_location || !scheduled_at)
+    return res.status(400).json({ error: 'customer_phone, pickup, drop_location, aur scheduled_at chahiye' });
+  const scheduledDate = new Date(scheduled_at);
+  if (isNaN(scheduledDate.getTime()) || scheduledDate <= new Date())
+    return res.status(400).json({ error: 'scheduled_at future mein hona chahiye' });
+  try {
+    const r = await db.query(
+      `INSERT INTO scheduled_rides (customer_phone, pickup, drop_location, pickup_lat, pickup_lng, drop_lat, drop_lng, vehicle_type, scheduled_at, fare_estimate, notes)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING *`,
+      [customer_phone, pickup, drop_location, pickup_lat||null, pickup_lng||null, drop_lat||null, drop_lng||null, vehicle_type||'auto', scheduledDate, fare_estimate||0, notes||null]
+    );
+    res.json({ success: true, ride: r.rows[0] });
+  } catch (e) { res.status(500).json({ error: String(e.message) }); }
+});
+
+// GET /api/rides/scheduled/:phone
+router.get('/scheduled/:phone', async (req, res) => {
+  try {
+    const r = await db.query(
+      `SELECT * FROM scheduled_rides WHERE customer_phone=$1 AND status='pending' AND scheduled_at > NOW() ORDER BY scheduled_at ASC LIMIT 20`,
+      [req.params.phone]
+    );
+    res.json({ rides: r.rows });
+  } catch (e) { res.status(500).json({ error: String(e.message) }); }
+});
+
+// DELETE /api/rides/scheduled/:id  — body: { phone }
+router.delete('/scheduled/:id', async (req, res) => {
+  const { phone } = req.body;
+  try {
+    const r = await db.query(
+      `UPDATE scheduled_rides SET status='cancelled' WHERE id=$1 AND customer_phone=$2 RETURNING id`,
+      [req.params.id, phone]
+    );
+    if (r.rows.length === 0) return res.status(404).json({ error: 'Ride nahi mili ya unauthorized' });
+    res.json({ success: true });
+  } catch (e) { res.status(500).json({ error: String(e.message) }); }
+});
+
 module.exports = router;
