@@ -964,6 +964,36 @@ router.get('/driver-eta', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+// GET /api/rides/nearby-drivers — available driver positions near a point (for map display)
+router.get('/nearby-drivers', async (req, res) => {
+  const { lat, lng } = req.query;
+  if (!lat || !lng) return res.status(400).json({ error: 'lat and lng required' });
+  const clat = parseFloat(lat), clng = parseFloat(lng);
+  if (isNaN(clat) || isNaN(clng)) return res.status(400).json({ error: 'Invalid coordinates' });
+  try {
+    const drRes = await db.query(
+      `SELECT CASE WHEN d.vehicle_type = 'ultra_luxury' THEN 'luxury' ELSE d.vehicle_type END AS vehicle_type,
+              dl.lat, dl.lng
+       FROM drivers d
+       JOIN users u ON d.id = u.id
+       JOIN driver_locations dl ON dl.phone = u.phone
+       WHERE d.is_online = true
+         AND d.verification_status = 'approved'
+         AND dl.updated_at > NOW() - INTERVAL '30 minutes'
+         AND NOT EXISTS (
+           SELECT 1 FROM rides r2
+           WHERE r2.driver_id = d.id AND r2.status IN ('matched','arrived','started')
+         )`
+    );
+    const drivers = drRes.rows
+      .filter(dr => dr.lat && dr.lng)
+      .map(dr => ({ lat: parseFloat(dr.lat), lng: parseFloat(dr.lng), vehicleType: dr.vehicle_type }))
+      .filter(dr => haversineKm(clat, clng, dr.lat, dr.lng) <= 6)
+      .slice(0, 25);
+    res.json({ drivers });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
 // GET /api/rides/history
 router.get('/history', async (req, res) => {
   const { phone } = req.query;
