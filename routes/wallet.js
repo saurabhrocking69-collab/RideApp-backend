@@ -106,7 +106,14 @@ router.post('/topup/verify', async (req, res) => {
   const client = await db.connect();
   try {
     const dup = await client.query("SELECT id FROM razorpay_topups WHERE payment_id=$1 AND status='confirmed'", [razorpay_payment_id]);
-    if (dup.rows.length > 0) return res.json({ success: false, error: 'Payment already processed' });
+    if (dup.rows.length > 0) {
+      // Webhook already credited this payment — return success so app updates balance + history
+      const user2 = await client.query('SELECT id FROM users WHERE phone=$1', [phone]);
+      const w2 = user2.rows[0]
+        ? await client.query('SELECT balance FROM customer_wallet WHERE user_id=$1', [user2.rows[0].id])
+        : null;
+      return res.json({ success: true, balance: parseFloat(w2?.rows[0]?.balance || 0), message: `₹${amount} wallet mein add ho gaya!` });
+    }
     const rupees = parseFloat(amount);
     await client.query('BEGIN');
     const user = await client.query('SELECT id FROM users WHERE phone=$1', [phone]);
