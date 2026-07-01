@@ -1231,12 +1231,13 @@ router.post('/surge-fare', async (req, res) => {
 
     await db.query(
       `UPDATE rides SET
-         fare         = $1,
-         surge_count  = $2,
-         base_fare    = COALESCE(base_fare, fare),
+         fare              = $1,
+         surge_count       = $2,
+         base_fare         = COALESCE(base_fare, fare),
          assigned_to_phone = NULL,
          assignment_expires_at = NULL,
-         assignment_queue = '[]'
+         assignment_queue  = '[]',
+         offered_phones    = '{}'
        WHERE id = $3`,
       [newFare, newSurgeCount, ride_id]
     );
