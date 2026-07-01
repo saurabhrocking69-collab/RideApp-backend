@@ -24,6 +24,7 @@
     "bcryptjs": "^3.0.3",
     "bullmq": "^5.78.1",
     "cloudinary": "^2.10.0",
+    "compression": "^1.8.1",
     "cors": "^2.8.6",
     "dotenv": "^17.4.2",
     "expo-asset": "^56.0.15",

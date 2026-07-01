@@ -1,8 +1,9 @@
-const express    = require('express');
-const cors       = require('cors');
-const http       = require('http');
-const { Server } = require('socket.io');
-const rateLimit  = require('express-rate-limit');
+const express      = require('express');
+const cors         = require('cors');
+const compression  = require('compression');
+const http         = require('http');
+const { Server }   = require('socket.io');
+const rateLimit    = require('express-rate-limit');
 const { createAdapter } = require('@socket.io/redis-adapter');
 
 // ── Config singletons ────────────────────────────
@@ -66,6 +67,7 @@ redis.on('ready', async () => {
 
 // ── Core middleware ──────────────────────────────
 app.use(cors());
+app.use(compression());
 
 // CRITICAL: Razorpay webhook needs raw Buffer for HMAC verification.
 // Must be registered BEFORE express.json() consumes the stream.
