@@ -557,4 +557,90 @@ router.get('/demand-prediction', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+// ── GET /api/driver/earnings-analytics/:phone ──────────────────────────────
+router.get('/earnings-analytics/:phone', async (req, res) => {
+  try {
+    const { phone } = req.params;
+    const user = await db.query(`SELECT id FROM users WHERE phone = $1`, [phone]);
+    if (!user.rows[0]) return res.status(404).json({ error: 'Driver nahi mila' });
+    const driverId = user.rows[0].id;
+
+    // 7-day daily earnings
+    const daily = await db.query(`
+      SELECT
+        DATE(created_at AT TIME ZONE 'Asia/Kolkata') AS day,
+        COUNT(*) AS rides,
+        COALESCE(SUM(CAST(REGEXP_REPLACE(COALESCE(fare,'0'), '[^0-9.]', '', 'g') AS numeric) * 0.85), 0) AS earned
+      FROM rides
+      WHERE driver_id = $1
+        AND payment_status = 'completed'
+        AND created_at > NOW() - INTERVAL '7 days'
+      GROUP BY day
+      ORDER BY day ASC
+    `, [driverId]);
+
+    // Hourly earning pattern (last 30 days)
+    const hourly = await db.query(`
+      SELECT
+        EXTRACT(HOUR FROM created_at AT TIME ZONE 'Asia/Kolkata') AS hour,
+        COUNT(*) AS rides,
+        COALESCE(AVG(CAST(REGEXP_REPLACE(COALESCE(fare,'0'), '[^0-9.]', '', 'g') AS numeric) * 0.85), 0) AS avg_earned
+      FROM rides
+      WHERE driver_id = $1
+        AND payment_status = 'completed'
+        AND created_at > NOW() - INTERVAL '30 days'
+      GROUP BY hour
+      ORDER BY hour
+    `, [driverId]);
+
+    // This week vs last week
+    const weekly = await db.query(`
+      SELECT
+        CASE WHEN created_at >= date_trunc('week', NOW() AT TIME ZONE 'Asia/Kolkata') THEN 'this' ELSE 'last' END AS week,
+        COUNT(*) AS rides,
+        COALESCE(SUM(CAST(REGEXP_REPLACE(COALESCE(fare,'0'), '[^0-9.]', '', 'g') AS numeric) * 0.85), 0) AS earned
+      FROM rides
+      WHERE driver_id = $1
+        AND payment_status = 'completed'
+        AND created_at > NOW() - INTERVAL '14 days'
+      GROUP BY week
+    `, [driverId]);
+
+    // Build 7-day array filling missing days with 0
+    const days7 = [];
+    for (let i = 6; i >= 0; i--) {
+      const d = new Date();
+      d.setDate(d.getDate() - i);
+      const dayStr = d.toISOString().slice(0, 10);
+      const row = daily.rows.find(r => r.day.toISOString().slice(0, 10) === dayStr);
+      days7.push({
+        date: dayStr,
+        label: i === 0 ? 'Aaj' : i === 1 ? 'Kal' : d.toLocaleDateString('en-IN', { weekday: 'short' }),
+        rides: parseInt(row?.rides) || 0,
+        earned: Math.round(parseFloat(row?.earned) || 0),
+      });
+    }
+
+    // Hourly array 0-23
+    const hours24 = Array.from({ length: 24 }, (_, h) => {
+      const row = hourly.rows.find(r => parseInt(r.hour) === h);
+      return { hour: h, rides: parseInt(row?.rides) || 0, avg_earned: Math.round(parseFloat(row?.avg_earned) || 0) };
+    });
+    const maxEarned = Math.max(...hours24.map(h => h.avg_earned), 1);
+    const hoursWithIntensity = hours24.map(h => ({ ...h, intensity: Math.round((h.avg_earned / maxEarned) * 100) }));
+    const topHours = [...hoursWithIntensity].sort((a, b) => b.avg_earned - a.avg_earned).slice(0, 3).map(h => h.hour);
+
+    const thisWeek = weekly.rows.find(r => r.week === 'this');
+    const lastWeek = weekly.rows.find(r => r.week === 'last');
+
+    res.json({
+      days7,
+      hours24: hoursWithIntensity,
+      top_hours: topHours,
+      this_week: { rides: parseInt(thisWeek?.rides) || 0, earned: Math.round(parseFloat(thisWeek?.earned) || 0) },
+      last_week: { rides: parseInt(lastWeek?.rides) || 0, earned: Math.round(parseFloat(lastWeek?.earned) || 0) },
+    });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
 module.exports = router;

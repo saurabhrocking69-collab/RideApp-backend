@@ -161,6 +161,7 @@ input,select,textarea{outline:none}
     <button class="tab" onclick="showSection('complaints',this);loadComplaints()">⚠️ Complaints</button>
     <button class="tab" onclick="showSection('incidents',this);loadIncidents()">🚨 Incidents</button>
     <button class="tab" onclick="showSection('rewards',this);loadRewards()">💎 Rewards</button>
+    <button class="tab" onclick="showSection('location',this);loadLocationIntel()">🗺️ Location Intel</button>
   </div>
 
   <!-- TRANSACTIONS -->
@@ -536,6 +537,37 @@ input,select,textarea{outline:none}
     </div>
   </div>
 
+  <!-- LOCATION INTELLIGENCE -->
+  <div id="location" class="section">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
+      <h3 style="margin:0;font-size:16px">🗺️ Location Intelligence</h3>
+      <button class="refresh-btn" onclick="loadLocationIntel()">⟳ Refresh</button>
+    </div>
+
+    <!-- Surge + Stats row -->
+    <div class="stats" id="loc-stats" style="margin-bottom:18px"></div>
+
+    <!-- Hot Zones -->
+    <div class="card" style="margin-bottom:16px">
+      <div class="card-title">🔥 Current Hot Zones <span style="font-size:11px;color:#888;font-weight:400">(Last 90 min ride activity)</span></div>
+      <div id="loc-zones">
+        <p style="color:#888;text-align:center;padding:20px">Loading zones...</p>
+      </div>
+    </div>
+
+    <!-- Surge Map by area -->
+    <div class="card" style="margin-bottom:16px">
+      <div class="card-title">⚡ Surge Status</div>
+      <div id="loc-surge" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:10px;margin-top:8px"></div>
+    </div>
+
+    <!-- Hourly demand chart -->
+    <div class="card">
+      <div class="card-title">📊 Today's Demand Prediction <span style="font-size:11px;color:#888;font-weight:400">(based on last 30 days same weekday)</span></div>
+      <div id="loc-prediction" style="margin-top:12px"></div>
+    </div>
+  </div>
+
   <!-- REWARDS -->
   <div id="rewards" class="section">
     <!-- Sub-tabs -->
@@ -670,6 +702,78 @@ function showSection(id,btn){
   if(id==='settings'){loadFares();loadStdFares();loadCancelSettings();}
   if(id==='marketing'){loadCampaigns();loadPromos();loadReferrals();}
   if(id==='payouts'){loadPayouts('pending');}
+  if(id==='location'){loadLocationIntel();}
+}
+
+// ── Location Intelligence ────────────────────────────────────
+async function loadLocationIntel() {
+  try {
+    const [zones, pred] = await Promise.all([
+      aJson('/api/driver/demand-zones'),
+      aJson('/api/driver/demand-prediction'),
+    ]);
+
+    // Stats row
+    const high = (zones.zones||[]).filter(z=>z.heat==='high').length;
+    const med  = (zones.zones||[]).filter(z=>z.heat==='medium').length;
+    const total= (zones.zones||[]).length;
+    const curIntensity = pred.current_intensity || 0;
+    document.getElementById('loc-stats').innerHTML = `
+      <div class="stat-card"><div class="stat-val" style="color:#EF4444">${high}</div><div class="stat-lbl">High Heat Zones</div></div>
+      <div class="stat-card"><div class="stat-val" style="color:#F59E0B">${med}</div><div class="stat-lbl">Medium Zones</div></div>
+      <div class="stat-card"><div class="stat-val">${total}</div><div class="stat-lbl">Total Active Zones</div></div>
+      <div class="stat-card"><div class="stat-val" style="color:#6366F1">${curIntensity}%</div><div class="stat-lbl">Current Demand Intensity</div></div>
+      <div class="stat-card"><div class="stat-val" style="color:#10B981">${pred.next_peak_label||'—'}</div><div class="stat-lbl">Next Peak Hour</div></div>
+    `;
+
+    // Hot zones list
+    const zEl = document.getElementById('loc-zones');
+    if(!(zones.zones||[]).length) { zEl.innerHTML = '<p style="color:#888;text-align:center;padding:20px">Abhi koi active zone nahi</p>'; }
+    else {
+      const colors = { high:'#EF4444', medium:'#F59E0B', low:'#10B981' };
+      zEl.innerHTML = `<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px">` +
+        zones.zones.map(z => `
+          <div style="border:1.5px solid ${colors[z.heat]||'#ccc'}22;border-radius:12px;padding:14px;background:${colors[z.heat]||'#ccc'}08">
+            <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
+              <div style="width:10px;height:10px;border-radius:5px;background:${colors[z.heat]||'#ccc'}"></div>
+              <span style="font-weight:800;font-size:13px">${z.heat.toUpperCase()}</span>
+              <span style="margin-left:auto;background:${colors[z.heat]||'#ccc'};color:#fff;border-radius:6px;padding:2px 8px;font-size:11px;font-weight:700">${z.heat}</span>
+            </div>
+            <div style="font-size:12px;color:#444">${z.dist_km} km from center</div>
+            <div style="font-size:12px;color:#666;margin-top:4px">${z.ride_count} rides · avg ₹${z.avg_fare}</div>
+          </div>
+        `).join('') + `</div>`;
+    }
+
+    // Demand prediction bar chart
+    const pEl = document.getElementById('loc-prediction');
+    const hours = pred.hourly || [];
+    const maxInt = Math.max(...hours.map(h=>h.intensity), 1);
+    const peakHrs = pred.peak_hours || [];
+    const curHr = pred.current_hour;
+    pEl.innerHTML = `
+      <div style="display:flex;align-items:flex-end;height:80px;gap:3px">
+        ${hours.filter((_,i)=>i>=6&&i<=22).map(h=>{
+          const barH = Math.max(3, Math.round((h.intensity/100)*76));
+          const isPeak = peakHrs.includes(h.hour);
+          const isCur = h.hour===curHr;
+          const color = isCur ? '#F59E0B' : isPeak ? '#6366F1' : '#E2E8F0';
+          const label = h.hour===0?'12A':h.hour<12?h.hour+'A':h.hour===12?'12P':(h.hour-12)+'P';
+          return `<div style="flex:1;display:flex;flex-direction:column;align-items:center;gap:2px">
+            <div style="width:100%;height:${barH}px;border-radius:4px;background:${color}"></div>
+            <span style="font-size:8px;color:${isCur?'#F59E0B':'#999'}">${label}</span>
+          </div>`;
+        }).join('')}
+      </div>
+      <div style="display:flex;gap:16px;margin-top:10px;font-size:11px;color:#666">
+        <span><span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:#6366F1;margin-right:4px"></span>Peak hours</span>
+        <span><span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:#F59E0B;margin-right:4px"></span>Abhi</span>
+        <span>Next peak: <strong>${pred.next_peak_label||'—'}</strong></span>
+      </div>
+    `;
+  } catch(e) {
+    document.getElementById('loc-stats').innerHTML = `<p style="color:red">Error: ${e.message}</p>`;
+  }
 }
 
 function openImg(src,label){

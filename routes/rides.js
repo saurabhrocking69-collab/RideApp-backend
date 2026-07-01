@@ -20,6 +20,24 @@ function emitRideUpdate(rideId, data) {
 
 // Ensure arrived_at column exists (idempotent)
 db.query('ALTER TABLE rides ADD COLUMN IF NOT EXISTS arrived_at TIMESTAMP').catch(() => {});
+// Dynamic ETA correction columns + table
+db.query('ALTER TABLE rides ADD COLUMN IF NOT EXISTS driver_matched_at TIMESTAMP').catch(() => {});
+db.query('ALTER TABLE rides ADD COLUMN IF NOT EXISTS eta_estimate_min SMALLINT').catch(() => {});
+db.query(`CREATE TABLE IF NOT EXISTS eta_zone_corrections (
+  geocell        VARCHAR(40) NOT NULL,
+  vehicle_type   VARCHAR(30) NOT NULL,
+  correction_factor NUMERIC(5,3) DEFAULT 1.0,
+  sample_count   INT DEFAULT 0,
+  updated_at     TIMESTAMP DEFAULT NOW(),
+  PRIMARY KEY (geocell, vehicle_type)
+)`).catch(() => {});
+
+function _etaGeoCell(lat, lng) {
+  const zLat = Math.round(parseFloat(lat) / 0.018) * 0.018;
+  const zLng = Math.round(parseFloat(lng) / 0.018) * 0.018;
+  return `${zLat.toFixed(3)}_${zLng.toFixed(3)}`;
+}
+const AVG_SPEED_KMH_ETA = { bike: 20, auto: 16, car: 22, eriksha: 15, green_bike: 18, electric_auto: 16, luxury: 25, ultra_luxury: 25 };
 
 async function addLoyaltyPoints(userId, points) {
   try {
@@ -198,11 +216,30 @@ router.post('/accept', async (req, res) => {
       ? { name: di.name, vehicle_no: di.vehicle_no, vehicle_brand: di.vehicle_brand, vehicle_model: di.vehicle_model, rating: di.rating, verified: di.verification_status === 'approved', photo: di.face_photo || null }
       : null;
 
+    // Compute estimated ETA for dynamic correction tracking
+    const rideForEta = await db.query(`SELECT pickup_lat, pickup_lng, ride_type FROM rides WHERE id=$1`, [ride_id]);
+    let etaEstimateMin = null;
+    if (rideForEta.rows[0]) {
+      const { pickup_lat, pickup_lng, ride_type } = rideForEta.rows[0];
+      const driverLoc = driverLocations[driver_phone];
+      if (driverLoc && pickup_lat && pickup_lng) {
+        const distKm = haversineKm(driverLoc.lat, driverLoc.lng, parseFloat(pickup_lat), parseFloat(pickup_lng));
+        const speed = AVG_SPEED_KMH_ETA[ride_type] || 18;
+        etaEstimateMin = Math.max(1, Math.round((distKm / speed) * 60) + 1);
+      }
+    }
+
     // State machine: validated DB update + socket + FCM
     await transitionRide(ride_id, 'matched', {
       extraFields: { start_otp: otp, driver_id: driver.rows[0].id },
       socketData:  { start_otp: otp, driver: driverCard },
     });
+
+    // Record match time + estimated ETA for dynamic ETA correction
+    await db.query(
+      `UPDATE rides SET driver_matched_at=NOW()${etaEstimateMin ? ', eta_estimate_min=$2' : ''} WHERE id=$1`,
+      etaEstimateMin ? [ride_id, etaEstimateMin] : [ride_id]
+    ).catch(() => {});
 
     await db.query(
       `INSERT INTO driver_metrics (phone, rides_accepted, idle_since) VALUES ($1, 1, NOW())
@@ -264,7 +301,37 @@ router.post('/arrived', async (req, res) => {
       );
       if (!owner.rows[0]) return res.status(403).json({ error: 'Yeh ride tumhari nahi hai' });
     }
+
+    // Fetch ETA data before transitioning so we can compute correction
+    const etaRow = await db.query(
+      `SELECT pickup_lat, pickup_lng, ride_type, driver_matched_at, eta_estimate_min FROM rides WHERE id=$1`, [ride_id]
+    ).catch(() => ({ rows: [] }));
+
     await transitionRide(ride_id, 'arrived');
+
+    // Update dynamic ETA correction — fire and forget
+    (async () => {
+      try {
+        const r = etaRow.rows[0];
+        if (!r || !r.driver_matched_at || !r.eta_estimate_min || !r.pickup_lat) return;
+        const actualMin = (Date.now() - new Date(r.driver_matched_at).getTime()) / 60000;
+        if (actualMin < 0.5 || actualMin > 60) return; // ignore outliers
+        const correction = actualMin / parseFloat(r.eta_estimate_min);
+        if (correction < 0.3 || correction > 4) return; // discard extreme outliers
+        const geocell = _etaGeoCell(r.pickup_lat, r.pickup_lng);
+        const vehicleType = r.ride_type || 'auto';
+        // Rolling weighted average: new = old * (n/(n+1)) + correction * (1/(n+1))
+        await db.query(`
+          INSERT INTO eta_zone_corrections (geocell, vehicle_type, correction_factor, sample_count, updated_at)
+          VALUES ($1, $2, $3, 1, NOW())
+          ON CONFLICT (geocell, vehicle_type) DO UPDATE SET
+            correction_factor = (eta_zone_corrections.correction_factor * LEAST(eta_zone_corrections.sample_count, 19) + $3) / (LEAST(eta_zone_corrections.sample_count, 19) + 1),
+            sample_count      = eta_zone_corrections.sample_count + 1,
+            updated_at        = NOW()
+        `, [geocell, vehicleType, correction.toFixed(3)]);
+      } catch (_e) {}
+    })();
+
     res.json({ success: true, message: 'Pickup pe pahunch gaye!' });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
@@ -868,9 +935,31 @@ router.get('/driver-eta', async (req, res) => {
         nearest[dr.vehicle_type] = {
           dist_km: Math.round(dist * 10) / 10,
           eta_min: Math.max(1, Math.round((dist / speed) * 60) + 1),
+          _rawEta: Math.max(1, Math.round((dist / speed) * 60) + 1),
         };
       }
     }
+
+    // Apply dynamic ETA correction factors per zone
+    const geocell = _etaGeoCell(lat, lng);
+    const vehicleTypes = Object.keys(nearest);
+    if (vehicleTypes.length > 0) {
+      const corrRes = await db.query(
+        `SELECT vehicle_type, correction_factor FROM eta_zone_corrections
+         WHERE geocell=$1 AND vehicle_type = ANY($2::text[]) AND sample_count >= 3`,
+        [geocell, vehicleTypes]
+      ).catch(() => ({ rows: [] }));
+      for (const row of corrRes.rows) {
+        if (nearest[row.vehicle_type]) {
+          const raw = nearest[row.vehicle_type]._rawEta;
+          const factor = parseFloat(row.correction_factor);
+          nearest[row.vehicle_type].eta_min = Math.max(1, Math.round(raw * factor));
+          nearest[row.vehicle_type].eta_corrected = true;
+        }
+      }
+      for (const vt of vehicleTypes) delete nearest[vt]._rawEta;
+    }
+
     res.json({ eta: nearest });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
@@ -1222,6 +1311,42 @@ router.delete('/scheduled/:id', async (req, res) => {
     if (r.rows.length === 0) return res.status(404).json({ error: 'Ride nahi mili ya unauthorized' });
     res.json({ success: true });
   } catch (e) { res.status(500).json({ error: String(e.message) }); }
+});
+
+// ── GET /api/rides/track-info/:rideId — public, no auth, for live tracking page ──
+router.get('/track-info/:rideId', async (req, res) => {
+  try {
+    const { rideId } = req.params;
+    const result = await db.query(
+      `SELECT r.id, r.status, r.pickup, r.drop_location,
+              r.pickup_lat, r.pickup_lng, r.drop_lat, r.drop_lng, r.ride_type,
+              u.name  AS driver_name,
+              d.vehicle_no, d.vehicle_brand, d.vehicle_model, d.vehicle_type
+       FROM rides r
+       LEFT JOIN users   u ON r.driver_id = u.id
+       LEFT JOIN drivers d ON r.driver_id = d.id
+       WHERE r.id = $1`,
+      [rideId]
+    );
+    if (!result.rows[0]) return res.status(404).json({ error: 'Ride not found' });
+    const r = result.rows[0];
+    res.json({
+      rideId:    r.id,
+      status:    r.status,
+      pickup:    r.pickup,
+      drop:      r.drop_location,
+      pickupLat: r.pickup_lat ? parseFloat(r.pickup_lat) : null,
+      pickupLng: r.pickup_lng ? parseFloat(r.pickup_lng) : null,
+      dropLat:   r.drop_lat   ? parseFloat(r.drop_lat)   : null,
+      dropLng:   r.drop_lng   ? parseFloat(r.drop_lng)   : null,
+      rideType:  r.ride_type,
+      driver: r.driver_name ? {
+        name:      r.driver_name,
+        vehicleNo: r.vehicle_no || '',
+        vehicle:   [r.vehicle_brand, r.vehicle_model].filter(Boolean).join(' '),
+      } : null,
+    });
+  } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 module.exports = router;

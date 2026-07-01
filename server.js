@@ -9,7 +9,7 @@ const { createAdapter } = require('@socket.io/redis-adapter');
 require('./config/db');
 const { redis }         = require('./config/redis');
 const socketConfig      = require('./config/socket');
-require('./config/firebase');
+const { sendFCM } = require('./config/firebase');
 require('./config/cloudinary');
 
 // ── Workers (starts BullMQ on import) ────────────
@@ -66,6 +66,15 @@ redis.on('ready', async () => {
 
 // ── Core middleware ──────────────────────────────
 app.use(cors());
+
+// CRITICAL: Razorpay webhook needs raw Buffer for HMAC verification.
+// Must be registered BEFORE express.json() consumes the stream.
+app.post(
+  '/api/payment/razorpay-webhook',
+  express.raw({ type: 'application/json' }),
+  require('./routes/payments').webhookHandler
+);
+
 app.use(express.json({ limit: '12mb' }));
 
 // ── Rate limiting ────────────────────────────────
@@ -82,6 +91,195 @@ app.use('/api/', rateLimit({
 app.get('/health', (_req, res) =>
   res.json({ status: 'ok', uptime: Math.floor(process.uptime()), ts: Date.now() })
 );
+
+// ── Live ride tracking page — shareable link for family/friends ───────────
+app.get('/track/:rideId', (req, res) => {
+  const { rideId } = req.params;
+  const BACKEND = process.env.BACKEND_URL || 'https://rideapp-backend-production-5e1c.up.railway.app';
+  res.type('html').send(`<!DOCTYPE html>
+<html lang="hi">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1"/>
+  <meta name="theme-color" content="#0F172A"/>
+  <title>Sppero Live Tracking</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+  <style>
+    *{margin:0;padding:0;box-sizing:border-box}
+    html,body{height:100%;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#0F172A;color:#fff;overflow:hidden}
+    #app{display:flex;flex-direction:column;height:100vh}
+    /* ── Top bar ── */
+    #topbar{background:linear-gradient(135deg,#E91E63,#9C27B0);padding:14px 16px 12px;display:flex;align-items:center;gap:12;z-index:1000;box-shadow:0 4px 20px rgba(233,30,99,0.35)}
+    #topbar .logo{font-size:20px;font-weight:900;letter-spacing:0.5px}
+    #topbar .logo span{font-size:11px;font-weight:500;opacity:0.8;display:block;margin-top:1px}
+    #status-pill{margin-left:auto;padding:4px 12px;border-radius:20px;font-size:11px;font-weight:800;letter-spacing:0.5px}
+    .pill-searching{background:rgba(255,255,255,0.2);color:#fff}
+    .pill-en-route{background:#16A34A;color:#fff}
+    .pill-arrived{background:#F59E0B;color:#000}
+    .pill-completed{background:#334155;color:#94A3B8}
+    /* ── Map ── */
+    #map{flex:1;z-index:1}
+    /* ── Bottom panel ── */
+    #panel{background:#1E293B;padding:16px;border-top:1px solid rgba(255,255,255,0.06);z-index:1000}
+    #panel .driver-row{display:flex;align-items:center;gap:12;margin-bottom:12px}
+    #panel .avatar{width:44px;height:44px;border-radius:14px;background:linear-gradient(135deg,#E91E63,#9C27B0);display:flex;align-items:center;justify-content:center;font-size:20px;flex-shrink:0}
+    #panel .driver-info{}
+    #panel .driver-name{font-size:15px;font-weight:800;color:#F1F5F9}
+    #panel .vehicle-info{font-size:12px;color:#64748B;margin-top:2px}
+    #panel .route{display:flex;flex-direction:column;gap:6px}
+    .route-item{display:flex;align-items:flex-start;gap:8px;font-size:12px;color:#94A3B8;line-height:1.4}
+    .route-dot{width:8px;height:8px;border-radius:50%;margin-top:3px;flex-shrink:0}
+    .dot-green{background:#4ADE80}
+    .dot-pink{background:#F472B6}
+    #no-driver{color:#64748B;font-size:13px;text-align:center;padding:8px 0}
+    /* ── Loading overlay ── */
+    #loading{position:fixed;inset:0;background:#0F172A;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px;z-index:9999}
+    .spinner{width:40px;height:40px;border:3px solid rgba(233,30,99,0.2);border-top-color:#E91E63;border-radius:50%;animation:spin 0.8s linear infinite}
+    @keyframes spin{to{transform:rotate(360deg)}}
+    #loading p{color:#64748B;font-size:13px}
+    /* ── Driver marker ── */
+    .driver-pin{background:linear-gradient(135deg,#E91E63,#9C27B0);color:#fff;border-radius:12px;padding:5px 10px;font-size:18px;font-weight:900;box-shadow:0 4px 16px rgba(233,30,99,0.5);white-space:nowrap;border:2px solid rgba(255,255,255,0.3)}
+    .pickup-pin,.drop-pin{background:#fff;border-radius:50%;width:14px;height:14px;border:3px solid #E91E63;box-shadow:0 2px 8px rgba(0,0,0,0.3)}
+    .drop-pin{border-color:#16A34A}
+  </style>
+</head>
+<body>
+<div id="loading"><div class="spinner"></div><p>Loading live tracking...</p></div>
+<div id="app" style="display:none">
+  <div id="topbar">
+    <div class="logo">🚖 Sppero<span>Live Tracking</span></div>
+    <div id="status-pill" class="pill-searching">Searching...</div>
+  </div>
+  <div id="map"></div>
+  <div id="panel">
+    <div id="driver-section">
+      <div id="no-driver">Driver assign hone ka wait kar rahe hain...</div>
+    </div>
+    <div class="route" id="route-section" style="display:none">
+      <div class="route-item"><div class="route-dot dot-green"></div><div id="pickup-text"></div></div>
+      <div class="route-item"><div class="route-dot dot-pink"></div><div id="drop-text"></div></div>
+    </div>
+  </div>
+</div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
+<script>
+const RIDE_ID  = ${JSON.stringify(rideId)};
+const API_BASE = ${JSON.stringify(BACKEND)};
+
+const VEHICLE_EMOJI = { bike:'🏍️', auto:'🛺', car:'🚕', eriksha:'🛵', green_bike:'⚡', electric_auto:'🌿', luxury:'🚙', ultra_luxury:'🚙' };
+
+let map, driverMarker, pickupMarker, dropMarker;
+let rideData = null;
+
+// ── Init Leaflet map ──────────────────────────────────────────────────────
+function initMap(lat, lng) {
+  map = L.map('map', { zoomControl: false, attributionControl: false });
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png').addTo(map);
+  L.control.zoom({ position: 'bottomright' }).addTo(map);
+  map.setView([lat || 26.84, lng || 80.94], 14);
+}
+
+// ── Custom map icons ──────────────────────────────────────────────────────
+function driverIcon(emoji) {
+  return L.divIcon({ html: '<div class="driver-pin">' + emoji + '</div>', className: '', iconAnchor: [24, 20] });
+}
+const greenDot = L.divIcon({ html: '<div class="pickup-pin"></div>', className: '', iconAnchor: [7, 7] });
+const pinkDot  = L.divIcon({ html: '<div class="drop-pin"></div>',   className: '', iconAnchor: [7, 7] });
+
+// ── Status pill helper ────────────────────────────────────────────────────
+function setStatus(status) {
+  const pill = document.getElementById('status-pill');
+  const labels = { requested:'🔍 Searching', accepted:'🚗 En Route', arrived:'⏳ Arrived', active:'🛣️ In Ride', completed:'✅ Done', cancelled:'❌ Cancelled' };
+  const classes = { requested:'pill-searching', accepted:'pill-en-route', arrived:'pill-arrived', active:'pill-en-route', completed:'pill-completed', cancelled:'pill-completed' };
+  pill.textContent = labels[status] || status;
+  pill.className = 'status-pill ' + (classes[status] || 'pill-searching');
+}
+
+// ── Update driver info panel ──────────────────────────────────────────────
+function renderDriver(data) {
+  const sec = document.getElementById('driver-section');
+  if (!data.driver) { sec.innerHTML = '<div id="no-driver">Driver assign hone ka wait kar rahe hain...</div>'; return; }
+  const emoji = VEHICLE_EMOJI[data.rideType] || '🚖';
+  sec.innerHTML = \`<div class="driver-row">
+    <div class="avatar">\${emoji}</div>
+    <div class="driver-info">
+      <div class="driver-name">\${data.driver.name}</div>
+      <div class="vehicle-info">\${data.driver.vehicle || ''} • \${data.driver.vehicleNo}</div>
+    </div>
+  </div>\`;
+}
+
+// ── Fetch ride data + init ────────────────────────────────────────────────
+fetch(API_BASE + '/api/rides/track-info/' + RIDE_ID)
+  .then(r => r.json())
+  .then(data => {
+    rideData = data;
+    document.getElementById('loading').style.display = 'none';
+    document.getElementById('app').style.display = 'flex';
+
+    const lat = data.pickupLat || 26.84;
+    const lng = data.pickupLng || 80.94;
+    initMap(lat, lng);
+
+    // Pickup marker
+    if (data.pickupLat && data.pickupLng) {
+      pickupMarker = L.marker([data.pickupLat, data.pickupLng], { icon: greenDot })
+        .addTo(map).bindTooltip('📍 ' + (data.pickup || 'Pickup'), { permanent: false });
+    }
+    // Drop marker
+    if (data.dropLat && data.dropLng) {
+      dropMarker = L.marker([data.dropLat, data.dropLng], { icon: pinkDot })
+        .addTo(map).bindTooltip('🎯 ' + (data.drop || 'Drop'), { permanent: false });
+      // Fit both pins
+      if (pickupMarker) {
+        map.fitBounds([[data.pickupLat, data.pickupLng], [data.dropLat, data.dropLng]], { padding: [40, 40] });
+      }
+    }
+
+    setStatus(data.status);
+    renderDriver(data);
+
+    // Route section
+    if (data.pickup || data.drop) {
+      document.getElementById('route-section').style.display = 'flex';
+      document.getElementById('pickup-text').textContent = data.pickup || '';
+      document.getElementById('drop-text').textContent   = data.drop   || '';
+    }
+
+    connectSocket();
+  })
+  .catch(() => {
+    document.getElementById('loading').innerHTML = '<p style="color:#EF4444;padding:20px;text-align:center">Ride track nahi ho pa rahi. Link expire ho gaya hoga.</p>';
+  });
+
+// ── Socket.io — real-time driver location ─────────────────────────────────
+function connectSocket() {
+  const socket = io(API_BASE, { transports: ['websocket', 'polling'] });
+  socket.on('connect', () => {
+    socket.emit('joinRide', { rideId: RIDE_ID });
+  });
+  socket.on('driverMoved', ({ lat, lng }) => {
+    const latlng = [parseFloat(lat), parseFloat(lng)];
+    const emoji = rideData ? (VEHICLE_EMOJI[rideData.rideType] || '🚖') : '🚖';
+    if (driverMarker) {
+      driverMarker.setLatLng(latlng);
+    } else {
+      driverMarker = L.marker(latlng, { icon: driverIcon(emoji) }).addTo(map);
+    }
+    // Smooth pan toward driver
+    const center = map.getCenter();
+    const dist = map.distance(center, latlng);
+    if (dist > 500) map.panTo(latlng, { animate: true, duration: 1.2 });
+  });
+  // Keep attempting if disconnected
+  socket.on('disconnect', () => setTimeout(() => socket.connect(), 3000));
+}
+</script>
+</body>
+</html>`);
+});
 
 // ── Upload (needs /api/upload, not /api/driver/upload) ──
 const cloudinary = require('./config/cloudinary');
@@ -118,6 +316,12 @@ app.get('/admin', (_req, res) =>
 );
 
 // ── Socket.io events ─────────────────────────────
+function _haversineKm(lat1, lng1, lat2, lng2) {
+  const R = 6371, dLat = (lat2-lat1)*Math.PI/180, dLng = (lng2-lng1)*Math.PI/180;
+  const a = Math.sin(dLat/2)**2 + Math.cos(lat1*Math.PI/180)*Math.cos(lat2*Math.PI/180)*Math.sin(dLng/2)**2;
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+}
+
 io.on('connection', (socket) => {
   socket.on('joinRide',    ({ rideId })    => socket.join('ride_' + rideId));
   socket.on('joinHourly',  ({ bookingId }) => socket.join('hourly_' + bookingId));
@@ -130,6 +334,37 @@ io.on('connection', (socket) => {
     } else {
       socket.broadcast.emit('driverMoved_' + driverId, { lat, lng });
     }
+  });
+
+  // Driver-to-driver zone alerts — broadcast to all drivers within 3 km
+  const _zoneAlertThrottle = new Map(); // phone → last sent timestamp (per-connection)
+  socket.on('driverZoneAlert', ({ phone, lat, lng, alertType, message }) => {
+    if (!phone || lat == null || lng == null || !alertType) return;
+    // Rate-limit: max 1 alert per 30 seconds per driver
+    const now = Date.now();
+    if (now - (_zoneAlertThrottle.get(phone) || 0) < 30_000) {
+      socket.emit('zoneAlertSent', { count: 0, rateLimited: true });
+      return;
+    }
+    _zoneAlertThrottle.set(phone, now);
+    const RADIUS_KM = 3;
+    let count = 0;
+    for (const [driverPhone, loc] of Object.entries(driverLocations)) {
+      if (driverPhone === phone) continue;
+      const dist = _haversineKm(parseFloat(lat), parseFloat(lng), loc.lat, loc.lng);
+      if (dist <= RADIUS_KM) {
+        io.to('driver_' + driverPhone).emit('zoneAlertReceived', {
+          from: '**' + String(phone).slice(-4),
+          alertType,
+          message: (message || '').slice(0, 100),
+          distKm: Math.round(dist * 10) / 10,
+          sentAt: new Date().toISOString(),
+        });
+        count++;
+      }
+    }
+    socket.emit('zoneAlertSent', { count });
+    console.log(`📢 Zone alert "${alertType}" from ${phone} → ${count} nearby drivers`);
   });
 });
 
@@ -548,6 +783,36 @@ setInterval(() => {
     if (driverLocations[phone].updated < cutoff) delete driverLocations[phone];
   }
 }, 5 * 60 * 1000);
+
+// ── Cron: scheduled ride reminders (every 60s) ───
+// Ensure reminder_sent column exists (safe to run at startup)
+db.query(`ALTER TABLE scheduled_rides ADD COLUMN IF NOT EXISTS reminder_sent BOOLEAN DEFAULT FALSE`).catch(() => {});
+
+setInterval(async () => {
+  try {
+    // Find scheduled rides whose time is 14–16 minutes away and haven't been notified yet
+    const due = await db.query(
+      `SELECT * FROM scheduled_rides
+       WHERE status = 'pending'
+         AND reminder_sent = FALSE
+         AND scheduled_at BETWEEN NOW() + INTERVAL '14 minutes' AND NOW() + INTERVAL '16 minutes'`
+    );
+    for (const ride of due.rows) {
+      const timeStr = new Date(ride.scheduled_at).toLocaleTimeString('hi-IN', { hour: '2-digit', minute: '2-digit', hour12: true });
+      // Notify customer
+      await sendFCM(
+        ride.customer_phone,
+        '🚖 Aapki ride 15 minute mein!',
+        `${timeStr} baje ki ride ke liye ready ho jao — ${ride.pickup} se ${ride.drop_location}`,
+        { type: 'scheduled_ride_reminder', rideId: String(ride.id) },
+        { channelId: 'default', role: 'customer' }
+      );
+      // Mark reminder sent so it doesn't fire again
+      await db.query(`UPDATE scheduled_rides SET reminder_sent = TRUE WHERE id = $1`, [ride.id]);
+      console.log(`⏰ Scheduled ride reminder sent → ${ride.customer_phone} (ride #${ride.id} at ${timeStr})`);
+    }
+  } catch (_e) {}
+}, 60_000);
 
 // ── Start server ─────────────────────────────────
 server.listen(process.env.PORT || 3000, '0.0.0.0', () => {
