@@ -177,6 +177,7 @@ router.post('/book', async (req, res) => {
     rideQueue.add('ride-assignment', {
       type: 'assign-next', rideId, pickupLat: pickup_lat, pickupLng: pickup_lng,
       rideType: ride_type, queue: null, radiusKm: 5,
+      wasFavouriteTimeout: true, buddyName: buddy.driver_name,
     }, { delay: 28000 }).catch(() => {});
 
     // Notify driver — FCM + socket with is_favourite_request flag

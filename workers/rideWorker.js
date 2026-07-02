@@ -50,7 +50,7 @@ rideWorker.on('failed', (job, err) => {
   console.error('❌ BullMQ job failed:', job?.id, err.message);
 });
 
-async function _bmqAssignNext({ rideId, pickupLat, pickupLng, rideType, queue, radiusKm = 5, offeredPhones = [] }) {
+async function _bmqAssignNext({ rideId, pickupLat, pickupLng, rideType, queue, radiusKm = 5, offeredPhones = [], wasFavouriteTimeout = false, buddyName = null }) {
   let remaining = queue;
 
   if (remaining === null || remaining === undefined) {
@@ -83,6 +83,15 @@ async function _bmqAssignNext({ rideId, pickupLat, pickupLng, rideType, queue, r
     ]);
     if (!rideCheck.rows[0]) return;
     if (rideCheck.rows[0].ride_type !== rideType) return; // customer switched vehicle — stale job
+
+    // Notify customer that favourite buddy didn't respond before starting normal search
+    if (wasFavouriteTimeout) {
+      const name = buddyName || 'Aapka favourite buddy';
+      emitToRoom('ride_' + rideId, 'rideUpdate', {
+        rideId, status: 'buddy_timeout',
+        message: `${name} ne respond nahi kiya — ab doosre drivers dhundh rahe hain`,
+      });
+    }
 
     // Drivers already offered this ride (timed out / rejected) — skip them on fresh rebuilds
     const alreadyOffered = new Set([
