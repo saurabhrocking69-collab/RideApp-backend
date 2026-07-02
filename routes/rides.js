@@ -799,13 +799,30 @@ router.post('/cash-confirm', async (req, res) => {
   const { ride_id, phone, payment_method } = req.body;
   const method = payment_method === 'upi_direct' ? 'upi' : 'cash';
   try {
-    const rideRes = await db.query('SELECT * FROM rides WHERE id = $1', [ride_id]);
-    if (!rideRes.rows[0]) return res.status(404).json({ error: 'Ride nahi mili' });
+    const rideRes = await db.query(
+      `SELECT r.*, u.phone AS driver_phone FROM rides r
+       JOIN users u ON r.driver_id = u.id
+       WHERE r.id = $1 AND r.status = 'completed'`,
+      [ride_id]
+    );
+    if (!rideRes.rows[0]) return res.status(404).json({ error: 'Ride nahi mili ya completed nahi hai' });
+    if (rideRes.rows[0].driver_phone !== phone)
+      return res.status(403).json({ error: 'Yeh ride tumhari nahi hai' });
+    if (rideRes.rows[0].payment_status === 'completed')
+      return res.json({ success: true, message: 'Payment already confirmed hai' });
     const fare = parseFloat(rideRes.rows[0].fare);
     const commission = Math.round(fare * 0.15 * 100) / 100;
 
     await db.query(`UPDATE rides SET payment_status = 'completed', payment_method = $1, commission_amount = $2 WHERE id = $3`, [method, commission, ride_id]);
     await db.query(`UPDATE driver_commissions SET status = 'cash_owed', payment_method = $1 WHERE ride_id = $2`, [method, ride_id]);
+    // Ensure wallet row exists before updating pending_commission
+    const driverUser = await db.query('SELECT id FROM users WHERE phone=$1', [phone]);
+    if (driverUser.rows[0]) {
+      await db.query(
+        `INSERT INTO driver_wallet (driver_id) VALUES ($1) ON CONFLICT (driver_id) DO NOTHING`,
+        [driverUser.rows[0].id]
+      );
+    }
     const walletRes = await db.query(
       `UPDATE driver_wallet SET pending_commission = COALESCE(pending_commission, 0) + $1
        WHERE driver_id = (SELECT id FROM users WHERE phone = $2) RETURNING pending_commission`,

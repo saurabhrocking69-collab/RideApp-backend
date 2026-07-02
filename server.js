@@ -477,6 +477,8 @@ setTimeout(async () => {
   await db.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS booking_restricted_reason TEXT`).catch(() => {});
   // Driver metrics strike count
   await db.query(`ALTER TABLE driver_metrics ADD COLUMN IF NOT EXISTS strike_count INTEGER DEFAULT 0`).catch(() => {});
+  // driver_wallet: pending_commission was missing from original CREATE TABLE
+  await db.query(`ALTER TABLE driver_wallet ADD COLUMN IF NOT EXISTS pending_commission NUMERIC(10,2) DEFAULT 0`).catch(() => {});
   // Source column on complaints (manual vs system_auto vs driver_report)
   await db.query(`ALTER TABLE complaints ADD COLUMN IF NOT EXISTS source VARCHAR(30) DEFAULT 'manual'`).catch(() => {});
   // Ride incidents table — all system-detected events
