@@ -60,15 +60,21 @@ async function processCashback(userId, phone, rideId, fare, paymentMethod) {
     const rideCount = parseInt(rideCountRes.rows[0].count);
 
     async function tryCashback(ruleType, amount, desc) {
-      const g = await db.query(
-        `INSERT INTO cashback_events (user_id, ride_id, rule_type, amount) VALUES ($1,$2,$3,$4) ON CONFLICT DO NOTHING RETURNING id`,
-        [userId, rideId, ruleType, amount]
-      );
-      if (!g.rows[0]) return; // duplicate guard
-      await db.query(`INSERT INTO customer_wallet (user_id) VALUES ($1) ON CONFLICT (user_id) DO NOTHING`, [userId]);
-      await db.query(`UPDATE customer_wallet SET balance=balance+$1, updated_at=NOW() WHERE user_id=$2`, [amount, userId]);
-      await db.query(`INSERT INTO transactions (user_id,type,amount,description) VALUES ($1,'credit',$2,$3)`, [userId, amount, `🎁 Cashback: ${desc}`]);
-      earned.push({ rule: ruleType, amount, label: desc });
+      const cbClient = await db.connect();
+      try {
+        await cbClient.query('BEGIN');
+        const g = await cbClient.query(
+          `INSERT INTO cashback_events (user_id, ride_id, rule_type, amount) VALUES ($1,$2,$3,$4) ON CONFLICT DO NOTHING RETURNING id`,
+          [userId, rideId, ruleType, amount]
+        );
+        if (!g.rows[0]) { await cbClient.query('ROLLBACK'); return; } // duplicate guard
+        await cbClient.query(`INSERT INTO customer_wallet (user_id) VALUES ($1) ON CONFLICT (user_id) DO NOTHING`, [userId]);
+        await cbClient.query(`UPDATE customer_wallet SET balance=balance+$1, updated_at=NOW() WHERE user_id=$2`, [amount, userId]);
+        await cbClient.query(`INSERT INTO transactions (user_id,type,amount,description) VALUES ($1,'credit',$2,$3)`, [userId, amount, `🎁 Cashback: ${desc}`]);
+        await cbClient.query('COMMIT');
+        earned.push({ rule: ruleType, amount, label: desc });
+      } catch (_e) { await cbClient.query('ROLLBACK').catch(() => {}); }
+      finally { cbClient.release(); }
     }
 
     if (fare > 100) await tryCashback('fare_over_100', 10, '₹100+ ride bonus');
@@ -123,10 +129,9 @@ router.post('/book', async (req, res) => {
 
     const ride = await db.query(
       `INSERT INTO rides (passenger_id, pickup, drop_location, ride_type, fare, status, pickup_lat, pickup_lng, drop_lat, drop_lng, discount, promo_code)
-       VALUES ($1, $2, $3, $4, $5, 'searching', $6, $7, $8, $9, $10, $11) RETURNING *`,
+       VALUES ($1, $2, $3, $4, $5, 'requested', $6, $7, $8, $9, $10, $11) RETURNING *`,
       [passenger.rows[0].id, pickup, drop_location, ride_type, fare, pickup_lat || null, pickup_lng || null, drop_lat || null, drop_lng || null, discount || 0, promo_code || null]
     );
-    await db.query("UPDATE rides SET status = 'requested' WHERE id = $1", [ride.rows[0].id]);
 
     res.json({ message: 'Driver dhundh rahe hain...', fare: '₹' + fare, distance: distance + ' km', ride_id: ride.rows[0].id, status: 'requested', surge_multiplier: surgeMultiplier });
 
@@ -199,11 +204,13 @@ router.post('/accept', async (req, res) => {
 
     const otp = Math.floor(1000 + Math.random() * 9000).toString();
 
-    // Atomically claim the ride — fails if another driver already took it
+    // Atomically claim the ride — only the assigned driver (or one accepting after timeout) may claim
     const claim = await db.query(
       `UPDATE rides SET assigned_to_phone=NULL, assignment_expires_at=NULL, assignment_queue='[]'
-       WHERE id=$1 AND status='requested' AND driver_id IS NULL RETURNING id`,
-      [ride_id]
+       WHERE id=$1 AND status='requested' AND driver_id IS NULL
+         AND (assigned_to_phone=$2 OR assignment_expires_at IS NULL OR assignment_expires_at < NOW())
+       RETURNING id`,
+      [ride_id, driver_phone]
     );
     if (!claim.rows[0]) return res.json({ success: false, message: 'Ride already kisi aur driver ne le li — agli dekho!' });
 
@@ -282,11 +289,16 @@ router.post('/reject-offer', async (req, res) => {
     }
 
     res.json({ success: true });
-    // If this was a direct favourite request, notify customer specifically
-    if (directFavouriteRideIds.has(String(ride_id))) {
-      directFavouriteRideIds.delete(String(ride_id));
-      emitToRoom('ride_' + ride_id, 'rideUpdate', { rideId: ride_id, status: 'buddy_declined' });
-    }
+    // Check via DB whether this was a favourite booking — multi-instance safe (no in-memory Set)
+    db.query(
+      `SELECT 1 FROM favourite_drivers f
+       JOIN rides r ON r.passenger_id = f.customer_id
+       JOIN users d ON f.driver_id = d.id
+       WHERE r.id=$1 AND d.phone=$2 LIMIT 1`,
+      [ride_id, driver_phone]
+    ).then(fav => {
+      if (fav.rows[0]) emitToRoom('ride_' + ride_id, 'rideUpdate', { rideId: ride_id, status: 'buddy_declined' });
+    }).catch(() => {});
     assignRideToNextDriver(ride_id, pickup_lat, pickup_lng, ride_type, nextQueue).catch(() => {});
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
@@ -294,13 +306,12 @@ router.post('/reject-offer', async (req, res) => {
 // POST /api/rides/arrived
 router.post('/arrived', async (req, res) => {
   const { ride_id, driver_phone } = req.body;
+  if (!driver_phone) return res.status(400).json({ error: 'driver_phone required' });
   try {
-    if (driver_phone) {
-      const owner = await db.query(
-        `SELECT 1 FROM rides r JOIN users u ON r.driver_id=u.id WHERE r.id=$1 AND u.phone=$2`, [ride_id, driver_phone]
-      );
-      if (!owner.rows[0]) return res.status(403).json({ error: 'Yeh ride tumhari nahi hai' });
-    }
+    const owner = await db.query(
+      `SELECT 1 FROM rides r JOIN users u ON r.driver_id=u.id WHERE r.id=$1 AND u.phone=$2`, [ride_id, driver_phone]
+    );
+    if (!owner.rows[0]) return res.status(403).json({ error: 'Yeh ride tumhari nahi hai' });
 
     // Fetch ETA data before transitioning so we can compute correction
     const etaRow = await db.query(
@@ -333,22 +344,31 @@ router.post('/arrived', async (req, res) => {
     })();
 
     res.json({ success: true, message: 'Pickup pe pahunch gaye!' });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) {
+    if (err.message?.includes('Invalid transition') || err.message?.includes('Concurrent transition'))
+      return res.status(409).json({ error: 'Ride is state mein arrived nahi ho sakti' });
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // POST /api/rides/start
 router.post('/start', async (req, res) => {
   const { ride_id, otp, driver_phone } = req.body;
+  if (!driver_phone) return res.status(400).json({ success: false, message: 'driver_phone required' });
   try {
     const check = await db.query(`SELECT r.start_otp, u.phone as dr_phone FROM rides r LEFT JOIN users u ON r.driver_id=u.id WHERE r.id=$1`, [ride_id]);
     if (!check.rows[0]) return res.status(404).json({ success: false, message: 'Ride nahi mili' });
     if (check.rows[0]?.start_otp !== otp) return res.status(400).json({ success: false, message: 'Galat OTP!' });
-    if (driver_phone && check.rows[0].dr_phone && check.rows[0].dr_phone !== driver_phone)
+    if (check.rows[0].dr_phone && check.rows[0].dr_phone !== driver_phone)
       return res.status(403).json({ success: false, message: 'Yeh ride tumhari nahi hai' });
 
     await transitionRide(ride_id, 'started');
     res.json({ success: true, message: 'Trip shuru!' });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) {
+    if (err.message?.includes('Invalid transition') || err.message?.includes('Concurrent transition'))
+      return res.status(409).json({ success: false, message: 'Trip abhi start nahi ho sakta — pehle arrived confirm karo' });
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // POST /api/rides/cancel (legacy — prefer cancel-smart)
@@ -360,10 +380,10 @@ router.post('/cancel', async (req, res) => {
       if (!owner.rows[0]) return res.status(403).json({ error: 'Yeh ride tumhari nahi hai' });
     }
     const cancelRes = await db.query(
-      "UPDATE rides SET status = 'cancelled' WHERE id = $1 AND status NOT IN ('completed', 'cancelled') RETURNING id",
+      "UPDATE rides SET status = 'cancelled' WHERE id = $1 AND status IN ('requested', 'matched', 'arrived') RETURNING id",
       [ride_id]
     );
-    if (!cancelRes.rows[0]) return res.json({ success: false, message: 'Ride already completed ya cancelled hai' });
+    if (!cancelRes.rows[0]) return res.json({ success: false, message: 'Ride started, completed ya already cancelled hai' });
     const rideInfo = await db.query('SELECT p.phone AS passenger_phone FROM rides r JOIN users p ON r.passenger_id=p.id WHERE r.id=$1', [ride_id]);
     if (rideInfo.rows[0]) {
       emitRideUpdate(ride_id, { status: 'cancelled' });
@@ -524,10 +544,10 @@ router.post('/cancel-smart', async (req, res) => {
     }
 
     const smartCancelRes = await db.query(
-      `UPDATE rides SET status = 'cancelled' WHERE id = $1 AND status NOT IN ('completed', 'cancelled') RETURNING id`,
+      `UPDATE rides SET status = 'cancelled' WHERE id = $1 AND status IN ('requested', 'matched', 'arrived') RETURNING id`,
       [ride_id]
     );
-    if (!smartCancelRes.rows[0]) return res.json({ success: false, message: 'Ride already completed ya cancelled hai' });
+    if (!smartCancelRes.rows[0]) return res.json({ success: false, message: 'Ride started, completed ya already cancelled hai' });
     await db.query(
       `INSERT INTO cancellations (ride_id, cancelled_by, reason, seconds_after_book, penalty_applied) VALUES ($1, $2, $3, $4, $5)`,
       [ride_id, cancelled_by, reason || '', secondsAfterBook, penalty]
@@ -1100,6 +1120,8 @@ router.post('/switch-vehicle', async (req, res) => {
     const dist = parseFloat(distance || '5');
     let newFare = Math.round(parseFloat(f.base_fare) + dist * parseFloat(f.per_km_rate));
     if (isNight) newFare = Math.round(newFare * parseFloat(f.night_multiplier || '1.3'));
+    const switchSurge = await getSurgeMultiplier(parseFloat(pickup_lat), parseFloat(pickup_lng));
+    if (switchSurge > 1.0) newFare = Math.round(newFare * switchSurge);
 
     // Update ride_type + clear queue (old BullMQ jobs will see mismatched ride_type and bail)
     await db.query(

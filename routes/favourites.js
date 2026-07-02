@@ -3,8 +3,9 @@ const router  = express.Router();
 const db      = require('../config/db');
 const { sendFCM }    = require('../config/firebase');
 const { emitToRoom } = require('../config/socket');
+const { rideQueue }  = require('../workers/rideWorker');
 
-// Ride IDs where favourite buddy was directly assigned — used in reject-offer to send specific customer notification
+// Kept for backwards-compat export — internal Set replaced by DB query in reject-offer (multi-instance safe)
 const directFavouriteRideIds = new Set();
 
 // Auto-create table
@@ -129,6 +130,8 @@ router.post('/book', async (req, res) => {
     const cu = await db.query('SELECT * FROM users WHERE phone=$1', [customer_phone]);
     if (!cu.rows[0]) return res.status(404).json({ error: 'Customer nahi mila' });
     const customer = cu.rows[0];
+    if (customer.booking_restricted)
+      return res.status(403).json({ error: '🚫 Aapka account temporarily hold pe hai. Support se contact karo: help@sppero.in', restricted: true });
 
     const buddy = await getBuddy(customer.id);
     if (!buddy) return res.status(400).json({ error: 'Koi favourite buddy set nahi hai' });
@@ -170,8 +173,11 @@ router.post('/book', async (req, res) => {
       [buddy.driver_phone, rideId]
     );
 
-    // Track so reject-offer can send specific "buddy declined" event
-    directFavouriteRideIds.add(String(rideId));
+    // BullMQ fallback: if buddy ignores the 25s window, escalate to normal driver search after 28s
+    rideQueue.add('ride-assignment', {
+      type: 'assign-next', rideId, pickupLat: pickup_lat, pickupLng: pickup_lng,
+      rideType: ride_type, queue: null, radiusKm: 5,
+    }, { delay: 28000 }).catch(() => {});
 
     // Notify driver — FCM + socket with is_favourite_request flag
     const rideEmoji = { bike:'🏍️', auto:'🛺', car:'🚕', eriksha:'🛵', luxury:'🚙', green_bike:'⚡', electric_auto:'🌿' }[ride_type] || '🚗';

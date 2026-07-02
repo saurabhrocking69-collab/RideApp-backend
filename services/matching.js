@@ -46,16 +46,7 @@ function scoreDriver(driver, distKm, now) {
   return distScore + idleScore + accScore + ratScore;
 }
 
-function calculateDriverScore(driver, distanceKm) {
-  const distScore  = Math.max(0, 1 - distanceKm / 5);
-  const ratingScore = (parseFloat(driver.rating) || 4) / 5;
-  const accScore   = (parseFloat(driver.acceptance_rate) || 100) / 100;
-  const idleMins   = driver.idle_since ? Math.min(30, (Date.now() - new Date(driver.idle_since).getTime()) / 60000) : 0;
-  const idleScore  = idleMins / 30;
-  return (distScore * 0.40) + (ratingScore * 0.20) + (accScore * 0.20) + (idleScore * 0.20);
-}
-
 // In-memory driver locations (supplemental to DB)
 const driverLocations = {};
 
-module.exports = { encodeGeohash, getNearbyCells, haversineKm, scoreDriver, calculateDriverScore, driverLocations };
+module.exports = { encodeGeohash, getNearbyCells, haversineKm, scoreDriver, driverLocations };

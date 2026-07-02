@@ -328,7 +328,7 @@ io.on('connection', (socket) => {
   socket.on('joinRide',    ({ rideId })    => socket.join('ride_' + rideId));
   socket.on('joinHourly',  ({ bookingId }) => socket.join('hourly_' + bookingId));
   socket.on('driverJoin',  ({ phone })     => socket.join('driver_' + phone));
-  socket.on('driverOnline',({ driverId })  => socket.join('driver_' + driverId));
+  socket.on('driverOnline',({ driverId, phone }) => socket.join('driver_' + (phone || driverId)));
 
   socket.on('locationUpdate', ({ driverId, lat, lng, rideId }) => {
     if (rideId) {
@@ -755,7 +755,9 @@ setTimeout(async () => {
 
   try {
     const stuck = await db.query(
-      `SELECT id, pickup_lat, pickup_lng, ride_type FROM rides WHERE status='requested' AND driver_id IS NULL`
+      `SELECT id, pickup_lat, pickup_lng, ride_type FROM rides
+       WHERE status='requested' AND driver_id IS NULL
+         AND (assigned_to_phone IS NULL OR assignment_expires_at < NOW())`
     );
     for (const r of stuck.rows) {
       await rideQueue.add('ride-assignment', {

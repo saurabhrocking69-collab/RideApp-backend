@@ -10,7 +10,6 @@ const TRANSITIONS = {
   matched:    ['arrived', 'cancelled'],
   arrived:    ['started', 'cancelled'],
   started:    ['completed'],
-  completed:  ['payment_complete'],
 };
 
 // FCM payloads per transition — [title, body, data.type, channelId?]

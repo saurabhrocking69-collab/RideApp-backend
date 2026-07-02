@@ -156,10 +156,11 @@ async function _bmqAssignNext({ rideId, pickupLat, pickupLng, rideType, queue, r
          assignment_queue=$2,
          offered_phones = array_append(COALESCE(offered_phones,'{}'), $1::text)
      WHERE id=$3 AND status='requested' AND driver_id IS NULL
+       AND (assigned_to_phone IS NULL OR assignment_expires_at < NOW())
      RETURNING id`,
     [nextPhone, JSON.stringify(newQueue), rideId]
   );
-  if (!upd.rows[0]) return;
+  if (!upd.rows[0]) return; // Race: another worker already assigned this slot — no duplicate notification
 
   // Notify driver immediately — BEFORE any other awaits
   const rideEmoji = { bike: '🏍️', auto: '🛺', car: '🚕', eriksha: '🛵', luxury: '🚙' }[rideType] || '🚗';
