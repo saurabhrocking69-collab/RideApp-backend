@@ -359,7 +359,11 @@ router.post('/cancel', async (req, res) => {
       const owner = await db.query(`SELECT 1 FROM rides r JOIN users u ON r.driver_id=u.id WHERE r.id=$1 AND u.phone=$2`, [ride_id, driver_phone]);
       if (!owner.rows[0]) return res.status(403).json({ error: 'Yeh ride tumhari nahi hai' });
     }
-    await db.query("UPDATE rides SET status = 'cancelled' WHERE id = $1", [ride_id]);
+    const cancelRes = await db.query(
+      "UPDATE rides SET status = 'cancelled' WHERE id = $1 AND status NOT IN ('completed', 'cancelled') RETURNING id",
+      [ride_id]
+    );
+    if (!cancelRes.rows[0]) return res.json({ success: false, message: 'Ride already completed ya cancelled hai' });
     const rideInfo = await db.query('SELECT p.phone AS passenger_phone FROM rides r JOIN users p ON r.passenger_id=p.id WHERE r.id=$1', [ride_id]);
     if (rideInfo.rows[0]) {
       emitRideUpdate(ride_id, { status: 'cancelled' });
@@ -519,7 +523,11 @@ router.post('/cancel-smart', async (req, res) => {
         sendFCM(ride.passenger_phone, '🚫 Driver ne Cancel Kiya', `Reason: ${reason || 'N/A'}. Naya driver dhundh rahe hain...`, { type: 'ride_cancelled' }, { role: 'customer' });
     }
 
-    await db.query(`UPDATE rides SET status = 'cancelled' WHERE id = $1`, [ride_id]);
+    const smartCancelRes = await db.query(
+      `UPDATE rides SET status = 'cancelled' WHERE id = $1 AND status NOT IN ('completed', 'cancelled') RETURNING id`,
+      [ride_id]
+    );
+    if (!smartCancelRes.rows[0]) return res.json({ success: false, message: 'Ride already completed ya cancelled hai' });
     await db.query(
       `INSERT INTO cancellations (ride_id, cancelled_by, reason, seconds_after_book, penalty_applied) VALUES ($1, $2, $3, $4, $5)`,
       [ride_id, cancelled_by, reason || '', secondsAfterBook, penalty]
@@ -682,32 +690,45 @@ router.post('/payment-complete', async (req, res) => {
       return res.json({ success: true, status: 'cash_pending', message: 'Driver ko cash do!' });
     }
 
-    await db.query(
-      `UPDATE rides SET payment_method = $1, payment_status = 'completed', commission_amount = $2, commission_status = 'collected' WHERE id = $3`,
-      [payment_method, commission, ride_id]
-    );
-    const commRow = await db.query(
-      `INSERT INTO driver_commissions (driver_phone, ride_id, fare, commission, payment_method, status)
-       SELECT u.phone, $1, $2, $3, $4, 'collected'
-       FROM rides r JOIN users u ON r.driver_id = u.id WHERE r.id = $1 RETURNING driver_phone`,
-      [ride_id, fare, commission, payment_method]
-    );
-
+    const payClient = await db.connect();
+    let drPhone = null;
+    let driverEarning = 0, autoDeduct = 0, actualCredit = 0;
     try {
-      const drPhone = commRow.rows[0]?.driver_phone;
+      await payClient.query('BEGIN');
+
+      // If switching from cash_pending → digital, remove the pending cash commission
+      if (ride.payment_status === 'cash_pending') {
+        await payClient.query(
+          `DELETE FROM driver_commissions WHERE ride_id=$1 AND status='pending' AND payment_method='cash'`,
+          [ride_id]
+        );
+      }
+
+      await payClient.query(
+        `UPDATE rides SET payment_method = $1, payment_status = 'completed', commission_amount = $2, commission_status = 'collected' WHERE id = $3`,
+        [payment_method, commission, ride_id]
+      );
+      const commRow = await payClient.query(
+        `INSERT INTO driver_commissions (driver_phone, ride_id, fare, commission, payment_method, status)
+         SELECT u.phone, $1, $2, $3, $4, 'collected'
+         FROM rides r JOIN users u ON r.driver_id = u.id WHERE r.id = $1 RETURNING driver_phone`,
+        [ride_id, fare, commission, payment_method]
+      );
+
+      drPhone = commRow.rows[0]?.driver_phone;
       if (drPhone) {
-        const drInfo = await db.query(
+        const drInfo = await payClient.query(
           `SELECT u.id, COALESCE(w.pending_commission, 0) as pending_commission
            FROM users u LEFT JOIN driver_wallet w ON w.driver_id = u.id WHERE u.phone = $1`, [drPhone]
         );
         if (drInfo.rows[0]) {
           const driverId = drInfo.rows[0].id;
           const pendingCashComm = parseFloat(drInfo.rows[0].pending_commission || 0);
-          const driverEarning = Math.round((fare - commission) * 100) / 100;
-          const autoDeduct = Math.min(pendingCashComm, driverEarning);
-          const actualCredit = Math.round((driverEarning - autoDeduct) * 100) / 100;
+          driverEarning = Math.round((fare - commission) * 100) / 100;
+          autoDeduct = Math.min(pendingCashComm, driverEarning);
+          actualCredit = Math.round((driverEarning - autoDeduct) * 100) / 100;
 
-          await db.query(
+          await payClient.query(
             `INSERT INTO driver_wallet (driver_id, balance, total_earned, pending_commission) VALUES ($1, $2, $3, 0)
              ON CONFLICT (driver_id) DO UPDATE SET
                balance = driver_wallet.balance + $2,
@@ -717,14 +738,26 @@ router.post('/payment-complete', async (req, res) => {
           );
 
           if (autoDeduct > 0) {
-            await db.query(`UPDATE driver_commissions SET status = 'auto_settled' WHERE driver_phone = $1 AND status = 'cash_owed'`, [drPhone]).catch(() => {});
-            sendFCM(drPhone, '💰 Earning Credited', `₹${actualCredit.toFixed(0)} wallet mein add hua! (₹${autoDeduct.toFixed(0)} pending commission deduct hua)`, { type: 'earning_credited', amount: String(actualCredit), commission_deducted: String(autoDeduct) }, { role: 'driver' }).catch(() => {});
-          } else {
-            sendFCM(drPhone, '💰 Earning Credited', `₹${driverEarning.toFixed(0)} wallet mein add ho gaya!`, { type: 'earning_credited', amount: String(driverEarning) }, { role: 'driver' }).catch(() => {});
+            await payClient.query(`UPDATE driver_commissions SET status = 'auto_settled' WHERE driver_phone = $1 AND status = 'cash_owed'`, [drPhone]);
           }
         }
       }
-    } catch (_e) {}
+
+      await payClient.query('COMMIT');
+    } catch (_e) {
+      await payClient.query('ROLLBACK').catch(() => {});
+      throw _e;
+    } finally {
+      payClient.release();
+    }
+
+    if (drPhone) {
+      if (autoDeduct > 0) {
+        sendFCM(drPhone, '💰 Earning Credited', `₹${actualCredit.toFixed(0)} wallet mein add hua! (₹${autoDeduct.toFixed(0)} pending commission deduct hua)`, { type: 'earning_credited', amount: String(actualCredit), commission_deducted: String(autoDeduct) }, { role: 'driver' }).catch(() => {});
+      } else {
+        sendFCM(drPhone, '💰 Earning Credited', `₹${driverEarning.toFixed(0)} wallet mein add ho gaya!`, { type: 'earning_credited', amount: String(driverEarning) }, { role: 'driver' }).catch(() => {});
+      }
+    }
 
     let cashbacks = [];
     try {
@@ -1103,7 +1136,7 @@ router.post('/extension-request', async (req, res) => {
     if (minAgo > 15) return res.json({ success: false, expired: true, error: '15-minute window khatam ho gayi — naya ride book karo' });
 
     const busy = await db.query(
-      `SELECT id FROM rides WHERE driver_id = (SELECT id FROM users WHERE phone=$1) AND status IN ('accepted','inride','matched','arrived') LIMIT 1`,
+      `SELECT id FROM rides WHERE driver_id = (SELECT id FROM users WHERE phone=$1) AND status IN ('accepted','inride','matched','arrived','started') LIMIT 1`,
       [ride.driver_phone]
     );
     if (busy.rows[0]) return res.json({ success: false, busy: true, error: 'Driver abhi doosre customer ke saath busy hai' });

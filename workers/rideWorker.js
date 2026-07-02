@@ -136,7 +136,7 @@ async function _bmqAssignNext({ rideId, pickupLat, pickupLng, rideType, queue, r
       const pRes = await db.query(`SELECT u.phone FROM rides r JOIN users u ON r.passenger_id=u.id WHERE r.id=$1`, [rideId]);
       if (pRes.rows[0]) {
         sendFCM(pRes.rows[0].phone, '😔 Driver Nahi Mila', 'Is area mein abhi koi driver available nahi hai. Thodi der baad try karo.', { type: 'no_driver_found', ride_id: String(rideId) });
-        emitToRoom('ride_' + rideId, 'rideUpdate', { rideId, status: 'no_driver', message: 'Koi driver available nahi — baad mein try karo' });
+        emitToRoom('ride_' + rideId, 'rideUpdate', { rideId, status: 'cancelled', reason: 'no_driver', message: 'Koi driver available nahi — baad mein try karo' });
       }
     }
     await db.query(

@@ -80,7 +80,12 @@ async function runPositioningAlerts() {
     JOIN users u ON u.phone = dl.phone
     JOIN drivers d ON d.id = u.id
     WHERE d.is_online = true
-      AND d.status = 'idle'
+      AND d.verification_status = 'approved'
+      AND NOT EXISTS (
+        SELECT 1 FROM rides r
+        WHERE r.driver_id = u.id
+          AND r.status IN ('matched','accepted','arrived','started','inride')
+      )
       AND dl.updated > NOW() - INTERVAL '8 minutes'
   `).catch(() => ({ rows: [] }));
 

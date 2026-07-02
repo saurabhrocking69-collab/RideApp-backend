@@ -770,11 +770,21 @@ setTimeout(async () => {
 // ── Cron: auto-cancel stale rides (every 1 min) ──
 setInterval(async () => {
   try {
-    await db.query(
+    const stale = await db.query(
       `UPDATE rides SET status='cancelled'
        WHERE status='requested' AND driver_id IS NULL
-       AND created_at < NOW() - INTERVAL '15 minutes'`
+       AND created_at < NOW() - INTERVAL '15 minutes'
+       RETURNING id, passenger_id`
     );
+    for (const row of stale.rows) {
+      try {
+        const u = await db.query('SELECT phone FROM users WHERE id=$1', [row.passenger_id]);
+        if (u.rows[0]) {
+          sendFCM(u.rows[0].phone, '😔 Driver Nahi Mila', 'Koi driver available nahi — thodi der baad try karo.', { type: 'no_driver_found', ride_id: String(row.id) }, { role: 'customer' }).catch(() => {});
+          emitToRoom('ride_' + row.id, 'rideUpdate', { rideId: row.id, status: 'cancelled', reason: 'no_driver' });
+        }
+      } catch (_e) {}
+    }
   } catch (_e) {}
 }, 60_000);
 

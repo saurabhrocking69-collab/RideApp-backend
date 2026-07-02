@@ -21,9 +21,14 @@ router.get('/balance', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// POST /api/wallet/add
+// POST /api/wallet/add — internal only (admin/webhook). Must supply x-internal-secret header.
 router.post('/add', async (req, res) => {
+  const secret = process.env.INTERNAL_API_SECRET;
+  if (secret && req.headers['x-internal-secret'] !== secret)
+    return res.status(401).json({ error: 'Unauthorized' });
   const { phone, amount } = req.body;
+  if (!phone || !amount || isNaN(parseFloat(amount)) || parseFloat(amount) <= 0)
+    return res.status(400).json({ error: 'Invalid phone or amount' });
   try {
     const user = await db.query('SELECT id FROM users WHERE phone = $1', [phone]);
     if (user.rows.length === 0) return res.status(404).json({ error: 'User nahi mila' });
@@ -98,24 +103,37 @@ router.post('/topup/order', async (req, res) => {
 
 // POST /api/wallet/topup/verify
 router.post('/topup/verify', async (req, res) => {
-  const { phone, razorpay_order_id, razorpay_payment_id, razorpay_signature, amount } = req.body;
+  const { phone, razorpay_order_id, razorpay_payment_id, razorpay_signature } = req.body;
   if (!razorpay_order_id || !razorpay_payment_id || !razorpay_signature)
     return res.status(400).json({ error: 'Missing payment fields' });
   const expected = crypto.createHmac('sha256', process.env.RAZORPAY_KEY_SECRET).update(`${razorpay_order_id}|${razorpay_payment_id}`).digest('hex');
   if (expected !== razorpay_signature) return res.status(400).json({ error: 'Invalid payment signature' });
+
+  // Fetch authoritative amount from Razorpay — never trust client-supplied amount
+  let rupees;
+  try {
+    if (!razorpay) return res.status(500).json({ error: 'Payment gateway not configured' });
+    const rzpOrder = await razorpay.orders.fetch(razorpay_order_id);
+    rupees = rzpOrder.amount / 100; // Razorpay returns paise
+  } catch (_e) {
+    return res.status(500).json({ error: 'Could not verify payment amount' });
+  }
+
   const client = await db.connect();
   try {
-    const dup = await client.query("SELECT id FROM razorpay_topups WHERE payment_id=$1 AND status='confirmed'", [razorpay_payment_id]);
+    // BEGIN first — dup check inside transaction prevents race condition
+    await client.query('BEGIN');
+    const dup = await client.query("SELECT id, amount FROM razorpay_topups WHERE payment_id=$1 AND status='confirmed'", [razorpay_payment_id]);
     if (dup.rows.length > 0) {
+      await client.query('ROLLBACK');
       // Webhook already credited this payment — return success so app updates balance + history
+      const confirmedAmount = parseFloat(dup.rows[0].amount);
       const user2 = await client.query('SELECT id FROM users WHERE phone=$1', [phone]);
       const w2 = user2.rows[0]
         ? await client.query('SELECT balance FROM customer_wallet WHERE user_id=$1', [user2.rows[0].id])
         : null;
-      return res.json({ success: true, balance: parseFloat(w2?.rows[0]?.balance || 0), message: `₹${amount} wallet mein add ho gaya!` });
+      return res.json({ success: true, balance: parseFloat(w2?.rows[0]?.balance || 0), message: `₹${confirmedAmount} wallet mein add ho gaya!` });
     }
-    const rupees = parseFloat(amount);
-    await client.query('BEGIN');
     const user = await client.query('SELECT id FROM users WHERE phone=$1', [phone]);
     if (!user.rows[0]) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'User nahi mila' }); }
     const userId = user.rows[0].id;
