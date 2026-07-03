@@ -123,17 +123,14 @@ router.post('/book', async (req, res) => {
     let fare = Math.round(parseFloat(f.base_fare) + (distance * parseFloat(f.per_km_rate)));
     if (isNight) fare = Math.round(fare * parseFloat(f.night_multiplier));
 
-    // Surge pricing
-    const surgeMultiplier = await getSurgeMultiplier(pickup_lat, pickup_lng);
-    if (surgeMultiplier > 1.0) fare = Math.round(fare * surgeMultiplier);
-
+    // Surge is NOT applied at booking — it's offered to customer only after no driver accepts
     const ride = await db.query(
       `INSERT INTO rides (passenger_id, pickup, drop_location, ride_type, fare, status, pickup_lat, pickup_lng, drop_lat, drop_lng, discount, promo_code)
        VALUES ($1, $2, $3, $4, $5, 'requested', $6, $7, $8, $9, $10, $11) RETURNING *`,
       [passenger.rows[0].id, pickup, drop_location, ride_type, fare, pickup_lat || null, pickup_lng || null, drop_lat || null, drop_lng || null, discount || 0, promo_code || null]
     );
 
-    res.json({ message: 'Driver dhundh rahe hain...', fare: '₹' + fare, distance: distance + ' km', ride_id: ride.rows[0].id, status: 'requested', surge_multiplier: surgeMultiplier });
+    res.json({ message: 'Driver dhundh rahe hain...', fare: '₹' + fare, distance: distance + ' km', ride_id: ride.rows[0].id, status: 'requested', surge_multiplier: 1.0 });
 
     assignRideToNextDriver(ride.rows[0].id, pickup_lat || null, pickup_lng || null, ride_type).catch(() => {});
   } catch (err) { res.status(500).json({ error: err.message }); }
@@ -248,6 +245,16 @@ router.post('/accept', async (req, res) => {
       etaEstimateMin ? [ride_id, etaEstimateMin] : [ride_id]
     ).catch(() => {});
 
+    // Notify other broadcast drivers that ride is taken (dismiss their request card)
+    db.query(`SELECT COALESCE(offered_phones, '{}') AS offered_phones FROM rides WHERE id=$1`, [ride_id])
+      .then(r => {
+        const phones = r.rows[0]?.offered_phones || [];
+        for (const p of phones) {
+          if (p !== driver_phone) emitToRoom('driver_' + p, 'rideTaken', { rideId: ride_id });
+        }
+      })
+      .catch(() => {});
+
     await db.query(
       `INSERT INTO driver_metrics (phone, rides_accepted, idle_since) VALUES ($1, 1, NOW())
        ON CONFLICT (phone) DO UPDATE SET rides_accepted=driver_metrics.rides_accepted+1, idle_since=NOW()`,
@@ -269,27 +276,44 @@ router.post('/accept', async (req, res) => {
 });
 
 // POST /api/rides/reject-offer
+// In broadcast mode (assigned_to_phone IS NULL) any driver can decline — adds them to offered_phones so they aren't re-notified
 router.post('/reject-offer', async (req, res) => {
   const { ride_id, driver_phone } = req.body;
   try {
     const r = await db.query(
-      `SELECT assigned_to_phone, assignment_queue, pickup_lat, pickup_lng, ride_type
+      `SELECT assigned_to_phone, pickup_lat, pickup_lng, ride_type
        FROM rides WHERE id=$1 AND status='requested' AND driver_id IS NULL`, [ride_id]
     );
-    if (!r.rows[0] || r.rows[0].assigned_to_phone !== driver_phone)
+    if (!r.rows[0]) return res.json({ success: false, error: 'Ride not found' });
+
+    const isBroadcastMode = r.rows[0].assigned_to_phone === null;
+    if (!isBroadcastMode && r.rows[0].assigned_to_phone !== driver_phone)
       return res.json({ success: false, error: 'Not your assignment' });
 
-    const { pickup_lat, pickup_lng, ride_type, assignment_queue } = r.rows[0];
-    const nextQueue = JSON.parse(assignment_queue || '[]');
-
-    const dm = await db.query('SELECT rides_offered, rides_accepted FROM driver_metrics WHERE phone=$1', [driver_phone]);
-    if (dm.rows[0] && parseFloat(dm.rows[0].rides_offered) > 0) {
-      const rate = (parseFloat(dm.rows[0].rides_accepted) / parseFloat(dm.rows[0].rides_offered)) * 100;
-      await db.query('UPDATE driver_metrics SET acceptance_rate=$1 WHERE phone=$2', [Math.min(100, rate).toFixed(2), driver_phone]);
+    // In broadcast mode: just add to offered_phones so driver isn't re-notified on next broadcast
+    if (isBroadcastMode) {
+      await db.query(
+        `UPDATE rides SET offered_phones = array_append(COALESCE(offered_phones,'{}'), $1::text) WHERE id=$2`,
+        [driver_phone, ride_id]
+      ).catch(() => {});
+      db.query(
+        `INSERT INTO driver_metrics (phone, rides_offered) VALUES ($1, 1)
+         ON CONFLICT (phone) DO UPDATE SET rides_offered = driver_metrics.rides_offered + 1`,
+        [driver_phone]
+      ).catch(() => {});
+      return res.json({ success: true });
     }
 
+    // Sequential mode fallback
+    db.query('SELECT rides_offered, rides_accepted FROM driver_metrics WHERE phone=$1', [driver_phone])
+      .then(dm => {
+        if (dm.rows[0] && parseFloat(dm.rows[0].rides_offered) > 0) {
+          const rate = (parseFloat(dm.rows[0].rides_accepted) / parseFloat(dm.rows[0].rides_offered)) * 100;
+          db.query('UPDATE driver_metrics SET acceptance_rate=$1 WHERE phone=$2', [Math.min(100, rate).toFixed(2), driver_phone]).catch(() => {});
+        }
+      }).catch(() => {});
+
     res.json({ success: true });
-    // Check via DB whether this was a favourite booking — multi-instance safe (no in-memory Set)
     db.query(
       `SELECT 1 FROM favourite_drivers f
        JOIN rides r ON r.passenger_id = f.customer_id
@@ -299,7 +323,6 @@ router.post('/reject-offer', async (req, res) => {
     ).then(fav => {
       if (fav.rows[0]) emitToRoom('ride_' + ride_id, 'rideUpdate', { rideId: ride_id, status: 'buddy_declined' });
     }).catch(() => {});
-    assignRideToNextDriver(ride_id, pickup_lat, pickup_lng, ride_type, nextQueue).catch(() => {});
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
@@ -1344,8 +1367,8 @@ router.post('/surge-fare', async (req, res) => {
       [newFare, newSurgeCount, ride_id]
     );
 
-    // Restart driver search from scratch with fresh queue
-    assignRideToNextDriver(ride_id, r.pickup_lat, r.pickup_lng, r.ride_type, null, 5).catch(() => {});
+    // Re-broadcast to all drivers with updated fare (afterSurge=true so final failure → no_driver_final)
+    assignRideToNextDriver(ride_id, r.pickup_lat, r.pickup_lng, r.ride_type, null, 5, true).catch(() => {});
 
     res.json({
       success: true,
