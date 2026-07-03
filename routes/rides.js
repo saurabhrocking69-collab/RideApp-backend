@@ -245,15 +245,6 @@ router.post('/accept', async (req, res) => {
       etaEstimateMin ? [ride_id, etaEstimateMin] : [ride_id]
     ).catch(() => {});
 
-    // Notify other broadcast drivers that ride is taken (dismiss their request card)
-    db.query(`SELECT COALESCE(offered_phones, '{}') AS offered_phones FROM rides WHERE id=$1`, [ride_id])
-      .then(r => {
-        const phones = r.rows[0]?.offered_phones || [];
-        for (const p of phones) {
-          if (p !== driver_phone) emitToRoom('driver_' + p, 'rideTaken', { rideId: ride_id });
-        }
-      })
-      .catch(() => {});
 
     await db.query(
       `INSERT INTO driver_metrics (phone, rides_accepted, idle_since) VALUES ($1, 1, NOW())
@@ -276,35 +267,19 @@ router.post('/accept', async (req, res) => {
 });
 
 // POST /api/rides/reject-offer
-// In broadcast mode (assigned_to_phone IS NULL) any driver can decline — adds them to offered_phones so they aren't re-notified
 router.post('/reject-offer', async (req, res) => {
   const { ride_id, driver_phone } = req.body;
   try {
     const r = await db.query(
-      `SELECT assigned_to_phone, pickup_lat, pickup_lng, ride_type
+      `SELECT assigned_to_phone, assignment_queue, pickup_lat, pickup_lng, ride_type
        FROM rides WHERE id=$1 AND status='requested' AND driver_id IS NULL`, [ride_id]
     );
-    if (!r.rows[0]) return res.json({ success: false, error: 'Ride not found' });
-
-    const isBroadcastMode = r.rows[0].assigned_to_phone === null;
-    if (!isBroadcastMode && r.rows[0].assigned_to_phone !== driver_phone)
+    if (!r.rows[0] || r.rows[0].assigned_to_phone !== driver_phone)
       return res.json({ success: false, error: 'Not your assignment' });
 
-    // In broadcast mode: just add to offered_phones so driver isn't re-notified on next broadcast
-    if (isBroadcastMode) {
-      await db.query(
-        `UPDATE rides SET offered_phones = array_append(COALESCE(offered_phones,'{}'), $1::text) WHERE id=$2`,
-        [driver_phone, ride_id]
-      ).catch(() => {});
-      db.query(
-        `INSERT INTO driver_metrics (phone, rides_offered) VALUES ($1, 1)
-         ON CONFLICT (phone) DO UPDATE SET rides_offered = driver_metrics.rides_offered + 1`,
-        [driver_phone]
-      ).catch(() => {});
-      return res.json({ success: true });
-    }
+    const { pickup_lat, pickup_lng, ride_type, assignment_queue } = r.rows[0];
+    const nextQueue = JSON.parse(assignment_queue || '[]');
 
-    // Sequential mode fallback
     db.query('SELECT rides_offered, rides_accepted FROM driver_metrics WHERE phone=$1', [driver_phone])
       .then(dm => {
         if (dm.rows[0] && parseFloat(dm.rows[0].rides_offered) > 0) {
@@ -323,6 +298,8 @@ router.post('/reject-offer', async (req, res) => {
     ).then(fav => {
       if (fav.rows[0]) emitToRoom('ride_' + ride_id, 'rideUpdate', { rideId: ride_id, status: 'buddy_declined' });
     }).catch(() => {});
+    // Advance to next driver immediately (don't wait for 20s timeout)
+    assignRideToNextDriver(ride_id, pickup_lat, pickup_lng, ride_type, nextQueue).catch(() => {});
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
