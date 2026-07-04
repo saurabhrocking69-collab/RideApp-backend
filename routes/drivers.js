@@ -386,6 +386,39 @@ router.get('/commission-history', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+// GET /api/driver/order-history
+router.get('/order-history', async (req, res) => {
+  const { phone, from, to } = req.query;
+  try {
+    const driverRes = await db.query('SELECT id FROM users WHERE phone = $1', [phone]);
+    if (!driverRes.rows[0]) return res.json({ rides: [], summary: { total: 0, completed: 0, cancelled: 0, earnings: 0 } });
+    const driverId = driverRes.rows[0].id;
+    const fromDate = from || new Date().toISOString().slice(0, 10);
+    const toDate = to || fromDate;
+    const ridesRes = await db.query(`
+      SELECT r.id, r.pickup, r.drop_location, r.fare, r.ride_type, r.status, r.created_at, r.payment_method,
+             u.name AS passenger_name, can.cancelled_by
+      FROM rides r
+      JOIN users u ON r.passenger_id = u.id
+      LEFT JOIN cancellations can ON can.ride_id = r.id
+      WHERE r.driver_id = $1
+        AND r.created_at::date >= $2::date
+        AND r.created_at::date <= $3::date
+        AND r.status IN ('completed', 'cancelled')
+      ORDER BY r.created_at DESC
+      LIMIT 200
+    `, [driverId, fromDate, toDate]);
+    const rides = ridesRes.rows;
+    const completed = rides.filter(r => r.status === 'completed');
+    const cancelled = rides.filter(r => r.status === 'cancelled');
+    const earnings = completed.reduce((s, r) => s + parseFloat(r.fare || 0), 0);
+    res.json({
+      rides,
+      summary: { total: rides.length, completed: completed.length, cancelled: cancelled.length, earnings: Math.round(earnings) }
+    });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
 // POST /api/driver/commission-pay
 router.post('/commission-pay', async (req, res) => {
   const { phone } = req.body;
