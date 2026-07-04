@@ -481,6 +481,18 @@ setTimeout(async () => {
   await db.query(`ALTER TABLE driver_wallet ADD COLUMN IF NOT EXISTS pending_commission NUMERIC(10,2) DEFAULT 0`).catch(() => {});
   // Source column on complaints (manual vs system_auto vs driver_report)
   await db.query(`ALTER TABLE complaints ADD COLUMN IF NOT EXISTS source VARCHAR(30) DEFAULT 'manual'`).catch(() => {});
+  // Hourly booking extension columns (trip extension feature)
+  await db.query(`ALTER TABLE hourly_bookings ADD COLUMN IF NOT EXISTS extend_requested_hours DECIMAL`).catch(() => {});
+  await db.query(`ALTER TABLE hourly_bookings ADD COLUMN IF NOT EXISTS extend_escrow DECIMAL DEFAULT 0`).catch(() => {});
+  await db.query(`ALTER TABLE hourly_bookings ADD COLUMN IF NOT EXISTS extend_total_minutes INTEGER DEFAULT 0`).catch(() => {});
+  await db.query(`ALTER TABLE hourly_bookings ADD COLUMN IF NOT EXISTS extend_total_fare DECIMAL DEFAULT 0`).catch(() => {});
+  await db.query(`ALTER TABLE hourly_bookings ADD COLUMN IF NOT EXISTS pending_customer_confirm BOOLEAN DEFAULT FALSE`).catch(() => {});
+  await db.query(`ALTER TABLE hourly_bookings ADD COLUMN IF NOT EXISTS dispute_raised BOOLEAN DEFAULT FALSE`).catch(() => {});
+  await db.query(`ALTER TABLE hourly_bookings ADD COLUMN IF NOT EXISTS early_end_reject_count INTEGER DEFAULT 0`).catch(() => {});
+  await db.query(`ALTER TABLE hourly_bookings ADD COLUMN IF NOT EXISTS early_end_last_rejected_at TIMESTAMP`).catch(() => {});
+  await db.query(`ALTER TABLE hourly_bookings ADD COLUMN IF NOT EXISTS km_alert_sent BOOLEAN DEFAULT FALSE`).catch(() => {});
+  await db.query(`ALTER TABLE hourly_bookings ADD COLUMN IF NOT EXISTS time_alert_sent BOOLEAN DEFAULT FALSE`).catch(() => {});
+  await db.query(`ALTER TABLE hourly_bookings ADD COLUMN IF NOT EXISTS early_end_requested_by VARCHAR(20)`).catch(() => {});
   // Ride incidents table — all system-detected events
   await db.query(`
     CREATE TABLE IF NOT EXISTS ride_incidents (

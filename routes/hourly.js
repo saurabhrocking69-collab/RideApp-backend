@@ -536,6 +536,8 @@ router.post('/request-extend-v2', async (req, res) => {
     await db.query('UPDATE hourly_bookings SET extend_requested_hours=$1, extend_escrow=$2 WHERE id=$3', [totalExtraDecimalHours, extraFare, booking_id]);
     const label = extraHours >= 1 ? `${extraHours}h${extraMin > 0 ? ` ${extraMin}m` : ''}` : `${extraMin} min`;
     sendFCM(b.driver_phone, `📅 Customer +${label} Extend Chahta Hai`, `₹${extraFare} escrow mein — accept ya reject karo app mein`, { type: 'hourly_extend', booking_id: String(booking_id) }, { role: 'driver' });
+    const io = getIO();
+    if (io) io.to('hourly_' + booking_id).emit('hourlyExtendRequest', { booking_id, extra_hours: totalExtraDecimalHours, extra_fare: extraFare, label });
     res.json({ success: true, extra_fare: extraFare, label, message: `₹${extraFare} hold ho gaye — driver ka intezaar karo` });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
