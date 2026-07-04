@@ -43,11 +43,11 @@ router.post('/apply', async (req, res) => {
       `INSERT INTO referrals (referrer_id, referred_id, referral_code, reward_amount, status) VALUES ($1,$2,$3,$4,'pending')`,
       [referrer.rows[0].id, newUser.rows[0].id, referral_code.toUpperCase(), reward]
     );
-    res.json({ success: true, message: `Referral code apply ho gaya! ₹${reward} reward aapki pehli ride complete hone ke baad milega.` });
+    res.json({ success: true, message: `Referral code apply ho gaya! ₹${reward} reward aapki 3 rides complete hone ke baad milega.` });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// Called after every ride payment finalizes — credits reward if this is referred user's 1st ride
+// Called after every ride payment finalizes — credits reward once referred user completes 3 rides
 async function maybeGrantReferralReward(userId) {
   try {
     // Find a pending referral where this user is the referred person
@@ -61,12 +61,12 @@ async function maybeGrantReferralReward(userId) {
     );
     if (!ref.rows[0]) return false;
 
-    // Count completed rides for this user — must be exactly 1 (this ride, just committed)
+    // Count completed rides for this user — must be exactly 3
     const countRes = await db.query(
       `SELECT COUNT(*) FROM rides WHERE passenger_id = $1 AND payment_status = 'completed'`,
       [userId]
     );
-    if (parseInt(countRes.rows[0].count) !== 1) return false;
+    if (parseInt(countRes.rows[0].count) !== 3) return false;
 
     const refRow = ref.rows[0];
     const reward = parseFloat(refRow.reward_amount);
@@ -83,7 +83,7 @@ async function maybeGrantReferralReward(userId) {
       await db.query('INSERT INTO customer_wallet (user_id) VALUES ($1) ON CONFLICT (user_id) DO NOTHING', [uid]);
       await db.query('UPDATE customer_wallet SET balance = balance + $1 WHERE user_id = $2', [reward, uid]);
       await db.query(
-        `INSERT INTO transactions (user_id, type, amount, description) VALUES ($1,'credit',$2,'Referral reward — pehli ride complete')`,
+        `INSERT INTO transactions (user_id, type, amount, description) VALUES ($1,'credit',$2,'Referral reward — 3 rides complete')`,
         [uid, reward]
       );
     }
@@ -92,7 +92,7 @@ async function maybeGrantReferralReward(userId) {
     sendFCM(
       refRow.referrer_phone,
       '🎉 Referral Reward Mila!',
-      `Aapke dost ne pehli ride complete ki! ₹${reward} aapke wallet mein add ho gaya.`,
+      `Aapke dost ne 3 rides complete ki! ₹${reward} aapke wallet mein add ho gaya.`,
       { type: 'referral_reward', amount: String(reward) },
       { role: 'customer' }
     ).catch(() => {});
@@ -103,7 +103,7 @@ async function maybeGrantReferralReward(userId) {
       sendFCM(
         referredUser.rows[0].phone,
         '🎉 Referral Reward Mila!',
-        `Pehli ride complete! ₹${reward} referral bonus aapke wallet mein add ho gaya.`,
+        `3 rides complete! ₹${reward} referral bonus aapke wallet mein add ho gaya.`,
         { type: 'referral_reward', amount: String(reward) },
         { role: 'customer' }
       ).catch(() => {});
