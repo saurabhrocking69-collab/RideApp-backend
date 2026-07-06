@@ -10,7 +10,8 @@ const rideQueue = new Queue('ride-assignment', { connection: makeBmqConn() });
 
 const ASSIGNMENT_WINDOW_SEC = 20;                         // each driver gets 20s
 const AUTO_ADVANCE_MS       = ASSIGNMENT_WINDOW_SEC * 1000 + 2000; // 22s with grace
-const SURGE_GRACE_MS        = 35_000; // customer has 30s to respond to surge offer
+const SURGE_GRACE_MS        = 20_000; // customer has 20s to respond to surge offer
+const RADIUS_EXPAND_MS      = 1500;   // delay between radius expansions (was 3000)
 
 const VEHICLE_ALTERNATIVES = {
   bike:          ['auto', 'car'],
@@ -137,18 +138,18 @@ async function _bmqAssignNext({ rideId, pickupLat, pickupLng, rideType, queue, r
       }
       await rideQueue.add('ride-assignment',
         { type: 'assign-next', rideId, pickupLat, pickupLng, rideType, queue: null, radiusKm: radiusKm + 5, afterSurge },
-        { delay: 3000 }
+        { delay: RADIUS_EXPAND_MS }
       );
     } else if (!afterSurge && retryRound === 0) {
-      // All drivers tried but all were in offered_phones. Clear the list and try once more —
-      // handles the common "1 driver online, missed 20s window" case without immediately failing.
+      // All drivers timed-out (none explicitly rejected). Clear offered_phones and try once more —
+      // handles the "1 driver online, didn't see notification" case without immediately failing.
       await db.query(
         `UPDATE rides SET offered_phones='{}' WHERE id=$1 AND status='requested' AND driver_id IS NULL`,
         [rideId]
       );
       await rideQueue.add('ride-assignment',
         { type: 'assign-next', rideId, pickupLat, pickupLng, rideType, queue: null, radiusKm: 5, afterSurge: false, retryRound: 1 },
-        { delay: 3000 }
+        { delay: RADIUS_EXPAND_MS }
       );
     } else {
       // All drivers at all radii tried (both rounds) — escalate
@@ -284,10 +285,10 @@ async function _computeSurgeOffer(pickupLat, pickupLng, rideId) {
   }
 }
 
-async function assignRideToNextDriver(rideId, pickupLat, pickupLng, rideType, queue, radiusKm, afterSurge = false) {
+async function assignRideToNextDriver(rideId, pickupLat, pickupLng, rideType, queue, radiusKm, afterSurge = false, retryRound = 0) {
   await rideQueue.add('ride-assignment', {
     type: 'assign-next', rideId, pickupLat, pickupLng, rideType,
-    queue: queue || null, radiusKm: radiusKm || 5, afterSurge: !!afterSurge,
+    queue: queue || null, radiusKm: radiusKm || 5, afterSurge: !!afterSurge, retryRound,
   });
 }
 

@@ -280,6 +280,15 @@ router.post('/reject-offer', async (req, res) => {
     const { pickup_lat, pickup_lng, ride_type, assignment_queue } = r.rows[0];
     const nextQueue = JSON.parse(assignment_queue || '[]');
 
+    // ── CRITICAL: clear the active assignment immediately so the orphan auto-advance job
+    // (still queued in BullMQ from the original 20s window) returns early when it fires
+    // instead of seeing assigned_to_phone===expectedPhone and restarting the cycle.
+    await db.query(
+      `UPDATE rides SET assigned_to_phone=NULL, assignment_expires_at=NULL
+       WHERE id=$1 AND status='requested' AND driver_id IS NULL`,
+      [ride_id]
+    );
+
     db.query('SELECT rides_offered, rides_accepted FROM driver_metrics WHERE phone=$1', [driver_phone])
       .then(dm => {
         if (dm.rows[0] && parseFloat(dm.rows[0].rides_offered) > 0) {
@@ -298,8 +307,14 @@ router.post('/reject-offer', async (req, res) => {
     ).then(fav => {
       if (fav.rows[0]) emitToRoom('ride_' + ride_id, 'rideUpdate', { rideId: ride_id, status: 'buddy_declined' });
     }).catch(() => {});
-    // Advance to next driver immediately (don't wait for 20s timeout)
-    assignRideToNextDriver(ride_id, pickup_lat, pickup_lng, ride_type, nextQueue).catch(() => {});
+
+    // If there are more pre-scored drivers in the queue, offer the next one (retryRound=0 — normal flow).
+    // If the queue is empty (this was the only driver), use retryRound=1 so offered_phones is NEVER
+    // cleared — the driver who explicitly said NO won't be re-offered to the same ride.
+    const retryRound = nextQueue.length > 0 ? 0 : 1;
+    assignRideToNextDriver(ride_id, pickup_lat, pickup_lng, ride_type,
+      nextQueue.length > 0 ? nextQueue : null, 5, false, retryRound
+    ).catch(() => {});
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
