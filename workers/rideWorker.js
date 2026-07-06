@@ -56,7 +56,7 @@ rideWorker.on('failed', (job, err) => {
 });
 
 // ── Send ride request to one driver at a time, 20s per driver ────────────────
-async function _bmqAssignNext({ rideId, pickupLat, pickupLng, rideType, queue, radiusKm = 5, offeredPhones = [], wasFavouriteTimeout = false, buddyName = null, afterSurge = false }) {
+async function _bmqAssignNext({ rideId, pickupLat, pickupLng, rideType, queue, radiusKm = 5, offeredPhones = [], wasFavouriteTimeout = false, buddyName = null, afterSurge = false, retryRound = 0 }) {
   let remaining = queue;
 
   if (remaining === null || remaining === undefined) {
@@ -139,8 +139,19 @@ async function _bmqAssignNext({ rideId, pickupLat, pickupLng, rideType, queue, r
         { type: 'assign-next', rideId, pickupLat, pickupLng, rideType, queue: null, radiusKm: radiusKm + 5, afterSurge },
         { delay: 3000 }
       );
+    } else if (!afterSurge && retryRound === 0) {
+      // All drivers tried but all were in offered_phones. Clear the list and try once more —
+      // handles the common "1 driver online, missed 20s window" case without immediately failing.
+      await db.query(
+        `UPDATE rides SET offered_phones='{}' WHERE id=$1 AND status='requested' AND driver_id IS NULL`,
+        [rideId]
+      );
+      await rideQueue.add('ride-assignment',
+        { type: 'assign-next', rideId, pickupLat, pickupLng, rideType, queue: null, radiusKm: 5, afterSurge: false, retryRound: 1 },
+        { delay: 3000 }
+      );
     } else {
-      // All drivers at all radii tried — escalate
+      // All drivers at all radii tried (both rounds) — escalate
       await _escalate(rideId, rideType, afterSurge, pickupLat, pickupLng);
     }
     await db.query(
@@ -176,13 +187,13 @@ async function _bmqAssignNext({ rideId, pickupLat, pickupLng, rideType, queue, r
     [nextPhone]
   ).catch(() => {});
   rideQueue.add('ride-assignment',
-    { type: 'auto-advance', rideId, expectedPhone: nextPhone, pickupLat, pickupLng, rideType, queue: newQueue, radiusKm, afterSurge },
+    { type: 'auto-advance', rideId, expectedPhone: nextPhone, pickupLat, pickupLng, rideType, queue: newQueue, radiusKm, afterSurge, retryRound },
     { delay: AUTO_ADVANCE_MS }
   ).catch(() => {});
 }
 
 // ── Auto-advance if driver didn't respond within their window ────────────────
-async function _bmqAutoAdvance({ rideId, expectedPhone, pickupLat, pickupLng, rideType, queue, radiusKm = 5, afterSurge = false }) {
+async function _bmqAutoAdvance({ rideId, expectedPhone, pickupLat, pickupLng, rideType, queue, radiusKm = 5, afterSurge = false, retryRound = 0 }) {
   const r = await db.query(
     `SELECT assigned_to_phone, assignment_queue FROM rides
      WHERE id=$1 AND status='requested' AND driver_id IS NULL`, [rideId]
@@ -190,7 +201,7 @@ async function _bmqAutoAdvance({ rideId, expectedPhone, pickupLat, pickupLng, ri
   if (!r.rows[0] || r.rows[0].assigned_to_phone !== expectedPhone) return;
   const nextQueue = JSON.parse(r.rows[0].assignment_queue || '[]');
   await rideQueue.add('ride-assignment',
-    { type: 'assign-next', rideId, pickupLat, pickupLng, rideType, queue: nextQueue, radiusKm, afterSurge }
+    { type: 'assign-next', rideId, pickupLat, pickupLng, rideType, queue: nextQueue, radiusKm, afterSurge, retryRound }
   );
 }
 
