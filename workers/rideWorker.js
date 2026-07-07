@@ -88,8 +88,12 @@ async function _bmqAssignNext({ rideId, pickupLat, pickupLng, rideType, queue, r
         [rideType]
       ),
     ]);
-    if (!rideCheck.rows[0]) return;
-    if (rideCheck.rows[0].ride_type !== rideType) return;
+    if (!rideCheck.rows[0]) { console.log(`[MATCH] ride=${rideId} ABORT — ride not found or already matched`); return; }
+    if (rideCheck.rows[0].ride_type !== rideType) { console.log(`[MATCH] ride=${rideId} ABORT — ride_type mismatch`); return; }
+
+    if (drRes.rows.length === 0) {
+      console.log(`[MATCH] ride=${rideId} type=${rideType} — 0 online+approved drivers with this vehicle type in entire DB`);
+    }
 
     if (wasFavouriteTimeout) {
       const name = buddyName || 'Aapka favourite buddy';
@@ -119,7 +123,8 @@ async function _bmqAssignNext({ rideId, pickupLat, pickupLng, rideType, queue, r
       .filter(dr => radiusKm >= 15 || dr.distKm === null || dr.distKm <= radiusKm)
       .sort((a, b) => b.score - a.score);
     remaining = scored.map(dr => dr.phone);
-    console.log(`[MATCH] ride=${rideId} r=${radiusKm}km driversFound=${drRes.rows.length} afterFilter=${remaining.length}`);
+    const alreadyOfferedCount = drRes.rows.length - drRes.rows.filter(dr => !alreadyOffered.has(dr.phone)).length;
+    console.log(`[MATCH] ride=${rideId} type=${rideType} r=${radiusKm}km total=${drRes.rows.length} alreadyOffered=${alreadyOfferedCount} afterDistFilter=${remaining.length} queue=${JSON.stringify(remaining)}`);
   } else {
     const rideCheck = await db.query(
       `SELECT id, ride_type FROM rides WHERE id=$1 AND status='requested' AND driver_id IS NULL`, [rideId]

@@ -137,6 +137,114 @@ app.get('/debug/match-state', async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// ── Deep-dive: why didn't a specific driver get the last ride? ────────────────
+app.get('/debug/driver/:phone', async (req, res) => {
+  const { phone } = req.params;
+  try {
+    const [driverRes, locRes, activeRideRes, recentOfferedRes] = await Promise.all([
+      db.query(`
+        SELECT u.name, u.phone, u.role,
+               d.vehicle_type, d.is_online, d.verification_status,
+               d.rating, d.admin_message,
+               dm.acceptance_rate, dm.rides_offered, dm.rides_accepted,
+               dm.suspended_until, dm.idle_since
+        FROM users u
+        JOIN drivers d ON u.id = d.id
+        LEFT JOIN driver_metrics dm ON dm.phone = u.phone
+        WHERE u.phone = $1
+      `, [phone]),
+      db.query(`SELECT phone, lat, lng, geocell, updated_at FROM driver_locations WHERE phone=$1`, [phone]),
+      db.query(`
+        SELECT r.id, r.status, r.ride_type, r.created_at
+        FROM rides r JOIN users u ON r.driver_id = u.id
+        WHERE u.phone = $1 AND r.status IN ('matched','arrived','started')
+        LIMIT 5
+      `, [phone]),
+      db.query(`
+        SELECT id, ride_type, status, assigned_to_phone, offered_phones, created_at
+        FROM rides
+        WHERE offered_phones @> ARRAY[$1::text]
+        ORDER BY created_at DESC LIMIT 10
+      `, [phone]),
+    ]);
+
+    if (!driverRes.rows[0]) return res.json({ error: `Driver ${phone} not found in DB — not registered?` });
+    const d = driverRes.rows[0];
+
+    const issues = [];
+    if (d.verification_status !== 'approved') issues.push(`❌ verification_status='${d.verification_status}' — must be 'approved' to receive rides. Approve via admin panel.`);
+    if (!d.is_online) issues.push(`❌ is_online=false — driver must toggle online in app`);
+    if (activeRideRes.rows.length > 0) issues.push(`❌ Has active ride(s) in status '${activeRideRes.rows.map(r => r.status).join(',')}' — blocks new assignments until those complete/cancel`);
+    if (d.suspended_until && new Date(d.suspended_until) > new Date()) issues.push(`❌ Suspended until ${d.suspended_until}`);
+    if (issues.length === 0) issues.push('✅ Driver state looks OK — if still not getting rides, check /debug/worker-query?type=' + d.vehicle_type);
+
+    res.json({
+      DIAGNOSIS: issues,
+      driver: d,
+      location_in_db: locRes.rows[0] || null,
+      active_rides_blocking: activeRideRes.rows,
+      recent_rides_offered: recentOfferedRes.rows,
+    });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ── Dry-run the exact worker matching query for a vehicle type ────────────────
+app.get('/debug/worker-query', async (req, res) => {
+  const rideType = req.query.type || 'bike';
+  try {
+    const drRes = await db.query(`
+      SELECT u.phone,
+             COALESCE(d.rating, 5.0)                                AS rating,
+             COALESCE(dm.acceptance_rate, 100)                      AS acceptance_rate,
+             COALESCE(dm.idle_since, NOW() - INTERVAL '30 minutes') AS idle_since,
+             dl.lat, dl.lng, dl.updated_at AS loc_updated_at,
+             d.vehicle_type, d.is_online, d.verification_status
+      FROM drivers d
+      JOIN users u ON d.id = u.id
+      LEFT JOIN driver_metrics dm ON dm.phone = u.phone
+      LEFT JOIN driver_locations dl ON dl.phone = u.phone
+      WHERE d.verification_status = 'approved'
+        AND d.is_online = true
+        AND (d.vehicle_type = $1 OR (d.vehicle_type = 'ultra_luxury' AND $1 = 'luxury'))
+        AND NOT EXISTS (
+          SELECT 1 FROM rides r2
+          WHERE r2.driver_id = d.id AND r2.status IN ('matched','arrived','started')
+        )
+    `, [rideType]);
+
+    const allOnlineNotApproved = await db.query(`
+      SELECT u.phone, d.vehicle_type, d.is_online, d.verification_status
+      FROM drivers d JOIN users u ON d.id = u.id
+      WHERE d.is_online = true AND d.verification_status != 'approved'
+    `);
+
+    res.json({
+      ride_type_queried: rideType,
+      drivers_worker_would_find: drRes.rows.length,
+      drivers: drRes.rows,
+      online_but_not_approved: allOnlineNotApproved.rows,
+      note: 'drivers_worker_would_find=0 means NO ONE gets this ride type. Check online_but_not_approved.',
+    });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ── Quick admin: force-approve a driver for testing (secret header required) ──
+app.post('/debug/approve-driver', async (req, res) => {
+  if (req.headers['x-debug-secret'] !== (process.env.DEBUG_SECRET || 'sppero-debug-2024')) {
+    return res.status(403).json({ error: 'Forbidden' });
+  }
+  const { phone } = req.body;
+  if (!phone) return res.status(400).json({ error: 'phone required' });
+  try {
+    const r = await db.query(
+      `UPDATE drivers SET verification_status='approved' WHERE id=(SELECT id FROM users WHERE phone=$1) RETURNING id`,
+      [phone]
+    );
+    if (!r.rows[0]) return res.status(404).json({ error: 'Driver not found' });
+    res.json({ success: true, message: `Driver ${phone} approved` });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 // ── Live ride tracking page — shareable link for family/friends ───────────
 app.get('/track/:rideId', (req, res) => {
   const { rideId } = req.params;
