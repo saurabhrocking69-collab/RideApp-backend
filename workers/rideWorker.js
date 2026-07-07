@@ -298,14 +298,21 @@ async function assignRideToNextDriver(rideId, pickupLat, pickupLng, rideType, qu
     type: 'assign-next', rideId, pickupLat, pickupLng, rideType,
     queue: queue || null, radiusKm: radiusKm || 5, afterSurge: !!afterSurge, retryRound,
   };
-  try {
-    await rideQueue.add('ride-assignment', jobData);
-    console.log(`[MATCH] ride=${rideId} job queued in BullMQ (type=${rideType})`);
-  } catch (err) {
-    // BullMQ / Redis unavailable — run the match in-process immediately
-    console.error(`[MATCH] ride=${rideId} BullMQ.add FAILED (${err.message}) — running in-process fallback`);
-    _bmqAssignNext(jobData).catch(e => console.error(`[MATCH] ride=${rideId} in-process fallback error:`, e.message));
-  }
+
+  // ── Always run in-process immediately ───────────────────────────────────────
+  // This guarantees the driver gets the offer with zero Redis dependency.
+  // The atomic UPDATE inside _bmqAssignNext (WHERE assigned_to_phone IS NULL)
+  // prevents double-offering if BullMQ also processes the same job.
+  _bmqAssignNext(jobData).catch(e =>
+    console.error(`[MATCH] ride=${rideId} in-process error:`, e.message)
+  );
+
+  // ── Also queue in BullMQ for auto-advance / radius-expansion ────────────────
+  // BullMQ handles the 22-second timeout → next driver → radius expand chain.
+  // If BullMQ is degraded, the 15-min stale-ride cron is the safety net.
+  rideQueue.add('ride-assignment', jobData).catch(e =>
+    console.error(`[MATCH] ride=${rideId} BullMQ.add failed (${e.message}) — only in-process will run`)
+  );
 }
 
 module.exports = { rideQueue, rideWorker, assignRideToNextDriver, _bmqAssignNext };
