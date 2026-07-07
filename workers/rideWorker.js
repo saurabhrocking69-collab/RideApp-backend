@@ -254,7 +254,7 @@ async function _escalate(rideId, rideType, afterSurge, pickupLat, pickupLng) {
       suggested_surge_amt: surgeInfo.amt,
       surge_label: surgeInfo.label,
       message: `Koi driver nahi mila. ₹${surgeInfo.amt} extra dekar driver attract karein?`,
-      timeout_sec: 30,
+      timeout_sec: Math.round(SURGE_GRACE_MS / 1000),
     });
     // Schedule auto-cancel if customer doesn't respond
     rideQueue.add('ride-assignment',
