@@ -201,15 +201,24 @@ router.post('/accept', async (req, res) => {
 
     const otp = Math.floor(1000 + Math.random() * 9000).toString();
 
-    // Atomically claim the ride — only the assigned driver (or one accepting after timeout) may claim
+    // ── Broadcast system: any driver in offered_phones can claim within the window ──
+    // Fetch offered_phones before claim so we can notify others after success
+    const offerInfo = await db.query(
+      `SELECT offered_phones FROM rides WHERE id=$1 AND status='requested' AND driver_id IS NULL`,
+      [ride_id]
+    );
+    const offeredPhones = offerInfo.rows[0]?.offered_phones || [];
+
+    // Eligibility: driver must be in offered_phones AND window still open
     const claim = await db.query(
-      `UPDATE rides SET assigned_to_phone=NULL, assignment_expires_at=NULL, assignment_queue='[]'
+      `UPDATE rides SET assigned_to_phone=$2, assignment_expires_at=NULL, assignment_queue='[]'
        WHERE id=$1 AND status='requested' AND driver_id IS NULL
-         AND (assigned_to_phone=$2 OR assignment_expires_at IS NULL OR assignment_expires_at < NOW())
+         AND $2 = ANY(COALESCE(offered_phones, '{}'))
+         AND assignment_expires_at > NOW()
        RETURNING id`,
       [ride_id, driver_phone]
     );
-    if (!claim.rows[0]) return res.json({ success: false, message: 'Ride already kisi aur driver ne le li — agli dekho!' });
+    if (!claim.rows[0]) return res.json({ success: false, message: 'Ride window expire ho gayi ya kisi aur ne le li — agli dekho!' });
 
     const dInfo = await db.query(
       `SELECT u.name, d.vehicle_no, d.vehicle_brand, d.vehicle_model, d.rating, d.verification_status, d.face_photo
@@ -245,6 +254,11 @@ router.post('/accept', async (req, res) => {
       etaEstimateMin ? [ride_id, etaEstimateMin] : [ride_id]
     ).catch(() => {});
 
+    // ── Notify all OTHER offered drivers: ride has been taken ─────────────────
+    const otherDrivers = offeredPhones.filter(p => p !== driver_phone);
+    for (const phone of otherDrivers) {
+      emitToRoom('driver_' + phone, 'rideTaken', { rideId: ride_id, message: 'Ride kisi aur driver ne le li' });
+    }
 
     await db.query(
       `INSERT INTO driver_metrics (phone, rides_accepted, idle_since) VALUES ($1, 1, NOW())
@@ -267,28 +281,20 @@ router.post('/accept', async (req, res) => {
 });
 
 // POST /api/rides/reject-offer
+// In broadcast system: driver dismisses the popup. Broadcast window keeps running for other drivers.
+// Just track the rejection so this driver won't see the ride again.
 router.post('/reject-offer', async (req, res) => {
   const { ride_id, driver_phone } = req.body;
   try {
-    const r = await db.query(
-      `SELECT assigned_to_phone, assignment_queue, pickup_lat, pickup_lng, ride_type
-       FROM rides WHERE id=$1 AND status='requested' AND driver_id IS NULL`, [ride_id]
-    );
-    if (!r.rows[0] || r.rows[0].assigned_to_phone !== driver_phone)
-      return res.json({ success: false, error: 'Not your assignment' });
-
-    const { pickup_lat, pickup_lng, ride_type, assignment_queue } = r.rows[0];
-    const nextQueue = Array.isArray(assignment_queue) ? assignment_queue : JSON.parse(assignment_queue || '[]');
-
-    // ── CRITICAL: clear the active assignment immediately so the orphan auto-advance job
-    // (still queued in BullMQ from the original 20s window) returns early when it fires
-    // instead of seeing assigned_to_phone===expectedPhone and restarting the cycle.
+    // Add to rejected_phones so pending-ride won't show it again to this driver
     await db.query(
-      `UPDATE rides SET assigned_to_phone=NULL, assignment_expires_at=NULL
-       WHERE id=$1 AND status='requested' AND driver_id IS NULL`,
-      [ride_id]
-    );
+      `UPDATE rides SET rejected_phones = array_append(COALESCE(rejected_phones, '{}'), $1::text)
+       WHERE id=$2 AND status='requested' AND driver_id IS NULL
+         AND NOT ($1 = ANY(COALESCE(rejected_phones, '{}')))`,
+      [driver_phone, ride_id]
+    ).catch(() => {});
 
+    // Update acceptance rate
     db.query('SELECT rides_offered, rides_accepted FROM driver_metrics WHERE phone=$1', [driver_phone])
       .then(dm => {
         if (dm.rows[0] && parseFloat(dm.rows[0].rides_offered) > 0) {
@@ -297,7 +303,7 @@ router.post('/reject-offer', async (req, res) => {
         }
       }).catch(() => {});
 
-    res.json({ success: true });
+    // Favourite buddy declined notification
     db.query(
       `SELECT 1 FROM favourite_drivers f
        JOIN rides r ON r.passenger_id = f.customer_id
@@ -308,13 +314,7 @@ router.post('/reject-offer', async (req, res) => {
       if (fav.rows[0]) emitToRoom('ride_' + ride_id, 'rideUpdate', { rideId: ride_id, status: 'buddy_declined' });
     }).catch(() => {});
 
-    // If there are more pre-scored drivers in the queue, offer the next one (retryRound=0 — normal flow).
-    // If the queue is empty (this was the only driver), use retryRound=1 so offered_phones is NEVER
-    // cleared — the driver who explicitly said NO won't be re-offered to the same ride.
-    const retryRound = nextQueue.length > 0 ? 0 : 1;
-    assignRideToNextDriver(ride_id, pickup_lat, pickup_lng, ride_type,
-      nextQueue.length > 0 ? nextQueue : null, 5, false, retryRound
-    ).catch(() => {});
+    res.json({ success: true });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 

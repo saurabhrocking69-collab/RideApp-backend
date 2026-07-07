@@ -14,7 +14,7 @@ const { sendFCM } = require('./config/firebase');
 require('./config/cloudinary');
 
 // ── Workers (starts BullMQ on import) ────────────
-const { rideQueue, assignRideToNextDriver, _bmqAssignNext } = require('./workers/rideWorker');
+const { rideQueue, assignRideToNextDriver, broadcastToRadius } = require('./workers/rideWorker');
 
 // ── Services ────────────────────────────────────
 const { driverLocations } = require('./services/matching');
@@ -332,9 +332,9 @@ app.post('/debug/trigger-match', async (req, res) => {
     );
     if (!r.rows[0]) return res.status(404).json({ error: 'Ride not found or already matched' });
     const ride = r.rows[0];
-    res.json({ ok: true, message: `Triggering match for ride ${ride_id} (${ride.ride_type}) in-process` });
-    _bmqAssignNext({ rideId: ride.id, pickupLat: ride.pickup_lat, pickupLng: ride.pickup_lng, rideType: ride.ride_type, queue: null, radiusKm: 5 })
-      .catch(e => console.error('[MATCH] manual trigger error:', e.message));
+    res.json({ ok: true, message: `Triggering broadcast for ride ${ride_id} (${ride.ride_type}) at 500m` });
+    assignRideToNextDriver(ride.id, ride.pickup_lat, ride.pickup_lng, ride.ride_type)
+      .catch(e => console.error('[BROADCAST] manual trigger error:', e.message));
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -579,17 +579,23 @@ io.on('connection', (socket) => {
   async function _redeliverIfPending(phone) {
     if (!phone) return;
     try {
+      // Broadcast system: driver eligible if phone in offered_phones, not rejected, window open
       const r = await db.query(
         `SELECT id, GREATEST(0, EXTRACT(EPOCH FROM (assignment_expires_at - NOW()))::int) AS secs_left
-         FROM rides WHERE assigned_to_phone=$1 AND status='requested' AND driver_id IS NULL
-         AND assignment_expires_at > NOW()`,
+         FROM rides
+         WHERE $1 = ANY(COALESCE(offered_phones, '{}'))
+           AND NOT ($1 = ANY(COALESCE(rejected_phones, '{}')))
+           AND status='requested' AND driver_id IS NULL
+           AND assignment_expires_at > NOW()
+         ORDER BY assignment_expires_at ASC LIMIT 1`,
         [phone]
       );
       if (r.rows[0] && parseInt(r.rows[0].secs_left) > 2) {
         const rideId = r.rows[0].id;
         if (!_deliveredOffers.has(rideId)) {
           _deliveredOffers.add(rideId);
-          socket.emit('newRideAssigned', { rideId, secondsToAccept: parseInt(r.rows[0].secs_left) });
+          socket.emit('newRideRequest', { rideId, secondsToAccept: parseInt(r.rows[0].secs_left) });
+          socket.emit('newRideAssigned', { rideId, secondsToAccept: parseInt(r.rows[0].secs_left) }); // backward compat
         }
       }
     } catch (_e) {}
@@ -750,11 +756,13 @@ setTimeout(async () => {
     `CREATE INDEX IF NOT EXISTS idx_hourly_driver_phone     ON hourly_bookings(driver_phone, status)`,
   ];
   for (const sql of indexes) await db.query(sql).catch(() => {});
-  // ── BullMQ matching columns (were only in server.old.js; now idempotent here too) ─────────
+  // ── Broadcast matching columns ────────────────────────────────────────────────────────────
   await db.query(`ALTER TABLE rides ADD COLUMN IF NOT EXISTS assigned_to_phone VARCHAR(20) DEFAULT NULL`).catch(() => {});
   await db.query(`ALTER TABLE rides ADD COLUMN IF NOT EXISTS assignment_expires_at TIMESTAMP DEFAULT NULL`).catch(() => {});
   await db.query(`ALTER TABLE rides ADD COLUMN IF NOT EXISTS assignment_queue JSONB DEFAULT '[]'`).catch(() => {});
   await db.query(`ALTER TABLE rides ADD COLUMN IF NOT EXISTS offered_phones TEXT[] DEFAULT '{}'`).catch(() => {});
+  await db.query(`ALTER TABLE rides ADD COLUMN IF NOT EXISTS rejected_phones TEXT[] DEFAULT '{}'`).catch(() => {});
+  await db.query(`ALTER TABLE rides ADD COLUMN IF NOT EXISTS current_radius_m INTEGER DEFAULT NULL`).catch(() => {});
   // driver_metrics scoring columns (added by add-cancellation.js; must also exist here)
   await db.query(`ALTER TABLE driver_metrics ADD COLUMN IF NOT EXISTS acceptance_rate DECIMAL(5,2) DEFAULT 100`).catch(() => {});
   await db.query(`ALTER TABLE driver_metrics ADD COLUMN IF NOT EXISTS cancellation_rate DECIMAL(5,2) DEFAULT 0`).catch(() => {});

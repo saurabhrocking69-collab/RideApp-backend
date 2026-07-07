@@ -3,15 +3,16 @@ const db = require('../config/db');
 const { makeBmqConn } = require('../config/redis');
 const { sendFCM } = require('../config/firebase');
 const { emitToRoom } = require('../config/socket');
-const { haversineKm, scoreDriver } = require('../services/matching');
+const { haversineKm } = require('../services/matching');
 const { getSurgeMultiplier } = require('../services/locationIntelligence');
 
 const rideQueue = new Queue('ride-assignment', { connection: makeBmqConn() });
 
-const ASSIGNMENT_WINDOW_SEC = 20;                         // each driver gets 20s
-const AUTO_ADVANCE_MS       = ASSIGNMENT_WINDOW_SEC * 1000 + 2000; // 22s with grace
-const SURGE_GRACE_MS        = 20_000; // customer has 20s to respond to surge offer
-const RADIUS_EXPAND_MS      = 1500;   // delay between radius expansions (was 3000)
+// ── Broadcast radius progression (meters) ───────────────────────────────────
+const RADIUS_LEVELS_M = [500, 1000, 2000, 3000, 4000, 5000, 6000, 7000, 8000, 9000, 10000, 11000];
+const WINDOW_SEC      = 20;   // each radius level gets 20 seconds
+const SURGE_GRACE_SEC = 100;  // customer has 100s to accept surge offer
+const STALE_GPS_MS    = 15 * 60 * 1000; // 15 min — location older than this → include anyway
 
 const VEHICLE_ALTERNATIVES = {
   bike:          ['auto', 'car'],
@@ -24,268 +25,187 @@ const VEHICLE_ALTERNATIVES = {
   electric_auto: ['auto', 'eriksha'],
 };
 
-async function getAvailableAlternatives(rideType) {
-  const alts = VEHICLE_ALTERNATIVES[rideType] || [];
-  if (alts.length === 0) return [];
-  const r = await db.query(
-    `SELECT d.vehicle_type, COUNT(*) AS cnt
-     FROM drivers d
-     JOIN users u ON d.id = u.id
-     WHERE d.vehicle_type = ANY($1)
-       AND d.is_online = true
-       AND d.verification_status = 'approved'
-       AND NOT EXISTS (
-         SELECT 1 FROM rides r2
-         WHERE r2.driver_id = d.id AND r2.status IN ('matched','arrived','started')
-       )
-     GROUP BY d.vehicle_type`,
-    [alts]
-  );
-  const available = new Set(r.rows.filter(row => parseInt(row.cnt) > 0).map(row => row.vehicle_type));
-  return alts.filter(a => available.has(a));
-}
-
 const rideWorker = new Worker('ride-assignment', async (job) => {
   const d = job.data;
-  if (d.type === 'assign-next')        await _bmqAssignNext(d);
-  if (d.type === 'auto-advance')       await _bmqAutoAdvance(d);
-  if (d.type === 'surge-grace-timeout') await _bmqSurgeGraceTimeout(d);
+  if (d.type === 'broadcast-advance')    await _bmqBroadcastAdvance(d).catch(e => console.error('[ADVANCE] error:', e.message));
+  if (d.type === 'surge-grace-timeout')  await _bmqSurgeGraceTimeout(d).catch(e => console.error('[SURGE_TIMEOUT] error:', e.message));
 }, { connection: makeBmqConn(), concurrency: 5 });
 
 rideWorker.on('failed', (job, err) => {
   console.error('❌ BullMQ job failed:', job?.id, err.message);
 });
 
-// ── Send ride request to one driver at a time, 20s per driver ────────────────
-async function _bmqAssignNext({ rideId, pickupLat, pickupLng, rideType, queue, radiusKm = 5, offeredPhones = [], wasFavouriteTimeout = false, buddyName = null, afterSurge = false, retryRound = 0 }) {
-  console.log(`[MATCH] ▶ _bmqAssignNext called ride=${rideId} type=${rideType} r=${radiusKm}km queueIsNull=${queue === null || queue === undefined} queueLen=${Array.isArray(queue) ? queue.length : 'N/A'}`);
-  let remaining = queue;
+// ── Broadcast ride to ALL eligible drivers within radiusM ────────────────────
+// Returns { sent: number, phones: string[] }
+async function broadcastToRadius(rideId, pickupLat, pickupLng, rideType, radiusM, alreadyOfferedPhones) {
+  console.log(`[BROADCAST] ride=${rideId} type=${rideType} radius=${radiusM}m alreadyOffered=${alreadyOfferedPhones.length}`);
 
-  if (remaining === null || remaining === undefined) {
-    // Build a fresh scored queue
-    let rideCheck, drRes;
-    try {
-      [rideCheck, drRes] = await Promise.all([
-        db.query(
-          `SELECT id, ride_type, COALESCE(offered_phones, '{}') AS offered_phones
-           FROM rides WHERE id=$1 AND status='requested' AND driver_id IS NULL`, [rideId]
-        ),
-        db.query(
-          `SELECT u.phone,
-                  COALESCE(d.rating, 5.0)                                AS rating,
-                  COALESCE(dm.acceptance_rate, 100)                      AS acceptance_rate,
-                  COALESCE(dm.idle_since, NOW() - INTERVAL '30 minutes') AS idle_since,
-                  dl.lat, dl.lng,
-                  dl.updated_at AS loc_updated_at
-           FROM drivers d
-           JOIN users u ON d.id = u.id
-           LEFT JOIN driver_metrics dm ON dm.phone = u.phone
-           LEFT JOIN driver_locations dl ON dl.phone = u.phone
-           WHERE d.verification_status = 'approved'
-             AND d.is_online = true
-             AND (d.vehicle_type = $1 OR (d.vehicle_type = 'ultra_luxury' AND $1 = 'luxury'))
-             AND NOT EXISTS (
-               SELECT 1 FROM rides r2
-               WHERE r2.driver_id = d.id AND r2.status IN ('matched','arrived','started')
-             )`,
-          [rideType]
-        ),
-      ]);
-    } catch (dbErr) {
-      console.error(`[MATCH] ❌ ride=${rideId} DB query failed:`, dbErr.message);
-      throw dbErr;
-    }
-    if (!rideCheck.rows[0]) { console.log(`[MATCH] ride=${rideId} ABORT — ride not found or already matched/cancelled`); return; }
-    if (rideCheck.rows[0].ride_type !== rideType) { console.log(`[MATCH] ride=${rideId} ABORT — ride_type mismatch (DB=${rideCheck.rows[0].ride_type} vs ${rideType})`); return; }
+  const [rideCheck, drRes] = await Promise.all([
+    db.query(
+      `SELECT id, ride_type FROM rides WHERE id=$1 AND status='requested' AND driver_id IS NULL`,
+      [rideId]
+    ),
+    db.query(
+      `SELECT u.phone, dl.lat, dl.lng, dl.updated_at AS loc_ts
+       FROM drivers d
+       JOIN users u ON d.id = u.id
+       LEFT JOIN driver_locations dl ON dl.phone = u.phone
+       WHERE d.verification_status = 'approved'
+         AND d.is_online = true
+         AND (d.vehicle_type = $1 OR (d.vehicle_type = 'ultra_luxury' AND $1 = 'luxury'))
+         AND NOT EXISTS (
+           SELECT 1 FROM rides r2
+           WHERE r2.driver_id = d.id AND r2.status IN ('matched','arrived','started')
+         )`,
+      [rideType]
+    ),
+  ]);
 
-    console.log(`[MATCH] ride=${rideId} DB check OK — total online+approved ${rideType} drivers: ${drRes.rows.length}`);
-    if (drRes.rows.length === 0) {
-      console.log(`[MATCH] ride=${rideId} type=${rideType} — 0 online+approved drivers with this vehicle type in entire DB`);
-    }
-
-    if (wasFavouriteTimeout) {
-      const name = buddyName || 'Aapka favourite buddy';
-      emitToRoom('ride_' + rideId, 'rideUpdate', {
-        rideId, status: 'buddy_timeout',
-        message: `${name} ne respond nahi kiya — ab doosre drivers dhundh rahe hain`,
-      });
-    }
-
-    const alreadyOffered = new Set([
-      ...((rideCheck.rows[0].offered_phones) || []),
-      ...offeredPhones,
-    ]);
-
-    const now = Date.now();
-    const STALE_MS = 15 * 60 * 1000;
-    const scored = drRes.rows
-      .filter(dr => !alreadyOffered.has(dr.phone))
-      .map(dr => {
-        let distKm = null;
-        const locAge = dr.loc_updated_at ? (now - new Date(dr.loc_updated_at).getTime()) : Infinity;
-        const locFresh = locAge < STALE_MS;
-        if (pickupLat && pickupLng && dr.lat && dr.lng && locFresh)
-          distKm = haversineKm(parseFloat(pickupLat), parseFloat(pickupLng), parseFloat(dr.lat), parseFloat(dr.lng));
-        return { phone: dr.phone, distKm, score: scoreDriver(dr, distKm, now) };
-      })
-      .filter(dr => radiusKm >= 15 || dr.distKm === null || dr.distKm <= radiusKm)
-      .sort((a, b) => b.score - a.score);
-    remaining = scored.map(dr => dr.phone);
-    const alreadyOfferedCount = drRes.rows.length - drRes.rows.filter(dr => !alreadyOffered.has(dr.phone)).length;
-    console.log(`[MATCH] ride=${rideId} type=${rideType} r=${radiusKm}km total=${drRes.rows.length} alreadyOffered=${alreadyOfferedCount} afterDistFilter=${remaining.length} queue=${JSON.stringify(remaining)}`);
-  } else {
-    const rideCheck = await db.query(
-      `SELECT id, ride_type FROM rides WHERE id=$1 AND status='requested' AND driver_id IS NULL`, [rideId]
-    );
-    if (!rideCheck.rows[0]) return;
-    if (rideCheck.rows[0].ride_type !== rideType) return;
+  if (!rideCheck.rows[0]) {
+    console.log(`[BROADCAST] ride=${rideId} ABORT — not found or already matched/cancelled`);
+    return { sent: 0, phones: [] };
   }
 
-  if (!remaining || remaining.length === 0) {
-    if (radiusKm < 15) {
-      // Suggest alternatives when 5km radius has no drivers
-      if (radiusKm <= 5) {
-        getAvailableAlternatives(rideType).then(alts => {
-          if (alts.length > 0)
-            emitToRoom('ride_' + rideId, 'suggestAlternative', { rideId, current_type: rideType, alternatives: alts });
-        }).catch(() => {});
-      }
-      await rideQueue.add('ride-assignment',
-        { type: 'assign-next', rideId, pickupLat, pickupLng, rideType, queue: null, radiusKm: radiusKm + 5, afterSurge, retryRound },
-        { delay: RADIUS_EXPAND_MS }
-      );
-    } else if (!afterSurge && retryRound === 0) {
-      // All drivers timed-out (none explicitly rejected). Clear offered_phones and try once more —
-      // handles the "1 driver online, didn't see notification" case without immediately failing.
-      await db.query(
-        `UPDATE rides SET offered_phones='{}' WHERE id=$1 AND status='requested' AND driver_id IS NULL`,
-        [rideId]
-      );
-      await rideQueue.add('ride-assignment',
-        { type: 'assign-next', rideId, pickupLat, pickupLng, rideType, queue: null, radiusKm: 5, afterSurge: false, retryRound: 1 },
-        { delay: RADIUS_EXPAND_MS }
-      );
-    } else {
-      // All drivers at all radii tried (both rounds) — escalate
-      await _escalate(rideId, rideType, afterSurge, pickupLat, pickupLng);
-    }
-    await db.query(
-      `UPDATE rides SET assigned_to_phone=NULL, assignment_expires_at=NULL
-       WHERE id=$1 AND status='requested' AND driver_id IS NULL`, [rideId]
-    );
-    return;
+  const alreadySet = new Set(alreadyOfferedPhones);
+  const now = Date.now();
+
+  const eligible = drRes.rows.filter(dr => {
+    if (alreadySet.has(dr.phone)) return false;
+    // No pickup coords or stale GPS → include (benefit of doubt)
+    if (!pickupLat || !pickupLng || !dr.lat || !dr.lng) return true;
+    const locAge = dr.loc_ts ? (now - new Date(dr.loc_ts).getTime()) : Infinity;
+    if (locAge > STALE_GPS_MS) return true;
+    const distKm = haversineKm(parseFloat(pickupLat), parseFloat(pickupLng), parseFloat(dr.lat), parseFloat(dr.lng));
+    return distKm * 1000 <= radiusM;
+  });
+
+  console.log(`[BROADCAST] ride=${rideId} radius=${radiusM}m — total_online=${drRes.rows.length} new_eligible=${eligible.length} phones=${JSON.stringify(eligible.map(d => d.phone))}`);
+
+  if (eligible.length === 0) {
+    return { sent: 0, phones: [] };
   }
 
-  const nextPhone = remaining[0];
-  const newQueue  = remaining.slice(1);
+  const eligiblePhones = eligible.map(d => d.phone);
+  const allOffered = [...alreadyOfferedPhones, ...eligiblePhones];
 
-  console.log(`[MATCH] ride=${rideId} — attempting UPDATE to assign → ${nextPhone} (${remaining.length} candidates, ${newQueue.length} in queue after)`);
-  let upd;
-  try {
-    upd = await db.query(
-      `UPDATE rides
-       SET assigned_to_phone=$1,
-           assignment_expires_at=NOW()+INTERVAL '${ASSIGNMENT_WINDOW_SEC} seconds',
-           assignment_queue=$2,
-           offered_phones = array_append(COALESCE(offered_phones,'{}'), $1::text)
-       WHERE id=$3 AND status='requested' AND driver_id IS NULL
-         AND (assigned_to_phone IS NULL OR assignment_expires_at < NOW())
-       RETURNING id`,
-      [nextPhone, JSON.stringify(newQueue), rideId]
-    );
-  } catch (updErr) {
-    console.error(`[MATCH] ❌ ride=${rideId} UPDATE failed:`, updErr.message);
-    throw updErr;
+  // Update ride: set 20s window, current radius, add to offered_phones
+  await db.query(
+    `UPDATE rides
+     SET assignment_expires_at = NOW() + INTERVAL '${WINDOW_SEC} seconds',
+         current_radius_m = $1,
+         offered_phones = $2::text[],
+         assigned_to_phone = NULL
+     WHERE id = $3 AND status = 'requested' AND driver_id IS NULL`,
+    [radiusM, allOffered, rideId]
+  );
+
+  // Broadcast to all eligible drivers simultaneously
+  const rideEmoji = { bike: '🏍️', auto: '🛺', car: '🚕', eriksha: '🛵', luxury: '🚙', electric_auto: '🌿', green_bike: '⚡' }[rideType] || '🚗';
+  for (const dr of eligible) {
+    emitToRoom('driver_' + dr.phone, 'newRideRequest', { rideId, secondsToAccept: WINDOW_SEC, radiusM });
+    sendFCM(
+      dr.phone,
+      `${rideEmoji} Nayi Ride Request!`,
+      `${rideType.toUpperCase()} ride — ${WINDOW_SEC}s mein accept karo!`,
+      { type: 'new_ride', ride_id: String(rideId) },
+      { channelId: 'ride_requests', role: 'driver' }
+    ).catch(() => {});
+    db.query(
+      `INSERT INTO driver_metrics (phone, rides_offered) VALUES ($1, 1)
+       ON CONFLICT (phone) DO UPDATE SET rides_offered = driver_metrics.rides_offered + 1`,
+      [dr.phone]
+    ).catch(() => {});
   }
-  if (!upd.rows[0]) {
-    console.log(`[MATCH] ride=${rideId} UPDATE returned 0 rows — ride already claimed by another process or status changed`);
-    return;
-  }
 
-  console.log(`[MATCH] ride=${rideId} → offering to ${nextPhone}`);
-  const rideEmoji = { bike: '🏍️', auto: '🛺', car: '🚕', eriksha: '🛵', luxury: '🚙' }[rideType] || '🚗';
-  sendFCM(nextPhone, `${rideEmoji} Naya Ride Request!`, `📍 ${rideType.toUpperCase()} ride nearby — ${ASSIGNMENT_WINDOW_SEC}s mein accept karo!`, { type: 'new_ride', ride_id: String(rideId) }, { channelId: 'ride_requests', role: 'driver' });
-  emitToRoom('driver_' + nextPhone, 'newRideAssigned', { rideId, secondsToAccept: ASSIGNMENT_WINDOW_SEC });
-
-  db.query(
-    `INSERT INTO driver_metrics (phone, rides_offered) VALUES ($1, 1)
-     ON CONFLICT (phone) DO UPDATE SET rides_offered = driver_metrics.rides_offered + 1`,
-    [nextPhone]
-  ).catch(() => {});
-  rideQueue.add('ride-assignment',
-    { type: 'auto-advance', rideId, expectedPhone: nextPhone, pickupLat, pickupLng, rideType, queue: newQueue, radiusKm, afterSurge, retryRound },
-    { delay: AUTO_ADVANCE_MS }
-  ).catch(() => {});
+  return { sent: eligiblePhones.length, phones: eligiblePhones };
 }
 
-// ── Auto-advance if driver didn't respond within their window ────────────────
-async function _bmqAutoAdvance({ rideId, expectedPhone, pickupLat, pickupLng, rideType, queue, radiusKm = 5, afterSurge = false, retryRound = 0 }) {
+// ── Advance to next radius after 20s window expires ──────────────────────────
+async function _bmqBroadcastAdvance({ rideId, pickupLat, pickupLng, rideType, radiusM, afterSurge }) {
   const r = await db.query(
-    `SELECT assigned_to_phone, assignment_queue FROM rides
-     WHERE id=$1 AND status='requested' AND driver_id IS NULL`, [rideId]
+    `SELECT id, current_radius_m, offered_phones FROM rides
+     WHERE id=$1 AND status='requested' AND driver_id IS NULL`,
+    [rideId]
   );
-  if (!r.rows[0] || r.rows[0].assigned_to_phone !== expectedPhone) return;
-  const rawQ = r.rows[0].assignment_queue;
-  const nextQueue = Array.isArray(rawQ) ? rawQ : JSON.parse(rawQ || '[]');
-  await rideQueue.add('ride-assignment',
-    { type: 'assign-next', rideId, pickupLat, pickupLng, rideType, queue: nextQueue, radiusKm, afterSurge, retryRound }
-  );
+  if (!r.rows[0]) { console.log(`[ADVANCE] ride=${rideId} — already matched or cancelled`); return; }
+  if (r.rows[0].current_radius_m !== radiusM) { console.log(`[ADVANCE] ride=${rideId} — radius mismatch (current=${r.rows[0].current_radius_m} expected=${radiusM}), already advanced`); return; }
+
+  const currentIdx = RADIUS_LEVELS_M.indexOf(radiusM);
+  const currentOffered = r.rows[0].offered_phones || [];
+
+  // Clear expired window so drivers can't accept after the window
+  await db.query(
+    `UPDATE rides SET assignment_expires_at=NULL, assigned_to_phone=NULL
+     WHERE id=$1 AND status='requested' AND driver_id IS NULL`,
+    [rideId]
+  ).catch(() => {});
+
+  // Try next radius levels until we find drivers or exhaust all
+  for (let i = currentIdx + 1; i < RADIUS_LEVELS_M.length; i++) {
+    const nextRadius = RADIUS_LEVELS_M[i];
+    const result = await broadcastToRadius(rideId, pickupLat, pickupLng, rideType, nextRadius, currentOffered);
+    if (result.sent > 0) {
+      // Found drivers at this radius — schedule next advance
+      await rideQueue.add('ride-assignment', {
+        type: 'broadcast-advance', rideId, pickupLat, pickupLng, rideType,
+        radiusM: nextRadius, afterSurge: !!afterSurge,
+      }, { delay: WINDOW_SEC * 1000 + 1000 }).catch(e => console.error('[ADVANCE] BullMQ add failed:', e.message));
+      return;
+    }
+    // No drivers at this radius — try next immediately
+    console.log(`[ADVANCE] ride=${rideId} radius=${nextRadius}m — no new drivers, trying next`);
+  }
+
+  // All radii exhausted
+  console.log(`[ADVANCE] ride=${rideId} — all radii exhausted, escalating (afterSurge=${afterSurge})`);
+  await _escalate(rideId, rideType, !!afterSurge, pickupLat, pickupLng);
 }
 
-// ── Grace timer: if customer ignores surge offer within 30s → final failure ──
+// ── Surge grace: customer ignores 100s surge window → final failure ──────────
 async function _bmqSurgeGraceTimeout({ rideId, pickupLat, pickupLng, rideType }) {
   const rideCheck = await db.query(
-    `SELECT id, surge_count FROM rides WHERE id=$1 AND status='requested' AND driver_id IS NULL`, [rideId]
+    `SELECT id, surge_count FROM rides WHERE id=$1 AND status='requested' AND driver_id IS NULL`,
+    [rideId]
   );
-  if (!rideCheck.rows[0]) return; // already matched or cancelled
-  if (parseInt(rideCheck.rows[0].surge_count) > 0) return; // customer accepted surge — new search running
-  // Customer ignored surge offer → final failure
+  if (!rideCheck.rows[0]) return;
+  if (parseInt(rideCheck.rows[0].surge_count) > 0) return; // customer accepted surge
   await _escalate(rideId, rideType, true, pickupLat, pickupLng);
 }
 
-// ── Escalation: first failure → surge offer, second failure → no_driver_final ─
+// ── Escalation: first failure → surge offer, second → no_driver_final ────────
 async function _escalate(rideId, rideType, afterSurge, pickupLat, pickupLng) {
   if (afterSurge) {
-    // Both rounds failed → final no-driver
     const [alts, pRes] = await Promise.all([
       getAvailableAlternatives(rideType).catch(() => []),
-      db.query(`SELECT u.phone FROM rides r JOIN users u ON r.passenger_id=u.id WHERE r.id=$1`, [rideId]),
+      db.query(`SELECT u.phone FROM rides r JOIN users u ON r.passenger_id::text = u.id::text WHERE r.id=$1`, [rideId]),
     ]);
     const customerPhone = pRes.rows[0]?.phone;
     if (customerPhone) {
       sendFCM(
-        customerPhone,
-        '😔 Driver Nahi Mila',
+        customerPhone, '😔 Driver Nahi Mila',
         alts.length ? 'Doosra vehicle try karo ya thodi der baad retry karo.' : 'Is area mein abhi koi driver nahi. 5 min baad try karo.',
-        { type: 'no_driver_found', ride_id: String(rideId) },
-        { role: 'customer' }
+        { type: 'no_driver_found', ride_id: String(rideId) }, { role: 'customer' }
       ).catch(() => {});
     }
     emitToRoom('ride_' + rideId, 'rideUpdate', {
-      rideId,
-      status: 'no_driver_final',
-      alternatives: alts,
-      retry_after_sec: 300,
+      rideId, status: 'no_driver_final', alternatives: alts, retry_after_sec: 300,
       message: 'Abhi koi driver nahi mila.',
     });
     await db.query(
-      `UPDATE rides SET status='cancelled' WHERE id=$1 AND status='requested' AND driver_id IS NULL`, [rideId]
+      `UPDATE rides SET status='cancelled' WHERE id=$1 AND status='requested' AND driver_id IS NULL`,
+      [rideId]
     );
   } else {
-    // First round failed → offer surge
     const surgeInfo = await _computeSurgeOffer(pickupLat, pickupLng, rideId);
     emitToRoom('ride_' + rideId, 'rideUpdate', {
-      rideId,
-      status: 'surge_offer',
-      suggested_surge_amt: surgeInfo.amt,
-      surge_label: surgeInfo.label,
+      rideId, status: 'surge_offer',
+      suggested_surge_amt: surgeInfo.amt, surge_label: surgeInfo.label,
       message: `Koi driver nahi mila. ₹${surgeInfo.amt} extra dekar driver attract karein?`,
-      timeout_sec: Math.round(SURGE_GRACE_MS / 1000),
+      timeout_sec: SURGE_GRACE_SEC,
     });
-    // Schedule auto-cancel if customer doesn't respond
     rideQueue.add('ride-assignment',
       { type: 'surge-grace-timeout', rideId, pickupLat, pickupLng, rideType },
-      { delay: SURGE_GRACE_MS }
+      { delay: SURGE_GRACE_SEC * 1000 }
     ).catch(() => {});
   }
 }
@@ -298,39 +218,60 @@ async function _computeSurgeOffer(pickupLat, pickupLng, rideId) {
     ]);
     const fare = parseInt(rideRes.rows[0]?.fare) || 0;
     let amt = 25;
-    if (multiplier >= 2.0)      amt = 65;
-    else if (multiplier >= 1.5) amt = 40;
-    else if (multiplier >= 1.2) amt = 25;
+    if (multiplier >= 2.0) amt = 65; else if (multiplier >= 1.5) amt = 40;
     const pctAmt = Math.round(fare * 0.25 / 5) * 5;
     if (pctAmt > amt && pctAmt <= 100) amt = pctAmt;
     const VALID = [15, 25, 40, 65, 100];
-    const closest = VALID.reduce((a, b) => Math.abs(b - amt) < Math.abs(a - amt) ? b : a);
-    return { amt: closest, label: `+₹${closest}` };
+    return { amt: VALID.reduce((a, b) => Math.abs(b - amt) < Math.abs(a - amt) ? b : a), label: '+₹' + amt };
   } catch (_e) {
     return { amt: 25, label: '+₹25' };
   }
 }
 
-async function assignRideToNextDriver(rideId, pickupLat, pickupLng, rideType, queue, radiusKm, afterSurge = false, retryRound = 0) {
-  const jobData = {
-    type: 'assign-next', rideId, pickupLat, pickupLng, rideType,
-    queue: queue || null, radiusKm: radiusKm || 5, afterSurge: !!afterSurge, retryRound,
-  };
-
-  // ── Always run in-process immediately ───────────────────────────────────────
-  // This guarantees the driver gets the offer with zero Redis dependency.
-  // The atomic UPDATE inside _bmqAssignNext (WHERE assigned_to_phone IS NULL)
-  // prevents double-offering if BullMQ also processes the same job.
-  _bmqAssignNext(jobData).catch(e =>
-    console.error(`[MATCH] ride=${rideId} in-process error:`, e.message)
+async function getAvailableAlternatives(rideType) {
+  const alts = VEHICLE_ALTERNATIVES[rideType] || [];
+  if (alts.length === 0) return [];
+  const r = await db.query(
+    `SELECT d.vehicle_type, COUNT(*) AS cnt FROM drivers d JOIN users u ON d.id = u.id
+     WHERE d.vehicle_type = ANY($1) AND d.is_online = true AND d.verification_status = 'approved'
+       AND NOT EXISTS (SELECT 1 FROM rides r2 WHERE r2.driver_id = d.id AND r2.status IN ('matched','arrived','started'))
+     GROUP BY d.vehicle_type`,
+    [alts]
   );
-
-  // ── Also queue in BullMQ for auto-advance / radius-expansion ────────────────
-  // BullMQ handles the 22-second timeout → next driver → radius expand chain.
-  // If BullMQ is degraded, the 15-min stale-ride cron is the safety net.
-  rideQueue.add('ride-assignment', jobData).catch(e =>
-    console.error(`[MATCH] ride=${rideId} BullMQ.add failed (${e.message}) — only in-process will run`)
-  );
+  const available = new Set(r.rows.filter(row => parseInt(row.cnt) > 0).map(row => row.vehicle_type));
+  return alts.filter(a => available.has(a));
 }
 
-module.exports = { rideQueue, rideWorker, assignRideToNextDriver, _bmqAssignNext };
+// ── Public entry point: start broadcast from 500m, schedule BullMQ advance ───
+async function assignRideToNextDriver(rideId, pickupLat, pickupLng, rideType, _ignored_queue, _ignored_radius, afterSurge = false) {
+  console.log(`[BROADCAST] ▶ Starting broadcast ride=${rideId} type=${rideType} afterSurge=${afterSurge}`);
+
+  // First wave in-process (zero Redis dependency)
+  let result;
+  try {
+    result = await broadcastToRadius(rideId, pickupLat, pickupLng, rideType, RADIUS_LEVELS_M[0], []);
+  } catch (e) {
+    console.error(`[BROADCAST] ride=${rideId} first wave error:`, e.message);
+    result = { sent: 0, phones: [] };
+  }
+
+  if (result.sent > 0) {
+    // Schedule advance after 20s window
+    rideQueue.add('ride-assignment', {
+      type: 'broadcast-advance', rideId, pickupLat, pickupLng, rideType,
+      radiusM: RADIUS_LEVELS_M[0], afterSurge: !!afterSurge,
+    }, { delay: WINDOW_SEC * 1000 + 1000 }).catch(e =>
+      console.error(`[BROADCAST] ride=${rideId} BullMQ.add failed:`, e.message)
+    );
+  } else {
+    // No drivers at 500m — immediately advance via BullMQ
+    rideQueue.add('ride-assignment', {
+      type: 'broadcast-advance', rideId, pickupLat, pickupLng, rideType,
+      radiusM: RADIUS_LEVELS_M[0], afterSurge: !!afterSurge,
+    }, { delay: 200 }).catch(e =>
+      console.error(`[BROADCAST] ride=${rideId} BullMQ.add failed:`, e.message)
+    );
+  }
+}
+
+module.exports = { rideQueue, rideWorker, assignRideToNextDriver, broadcastToRadius };

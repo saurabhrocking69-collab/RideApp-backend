@@ -111,10 +111,15 @@ router.get('/pending-ride', async (req, res) => {
     if (dr.verification_status !== 'approved') return res.json({ ride: null, not_approved: true });
     if (!dr.is_online) return res.json({ ride: null });
 
+    // Broadcast system: driver sees ride if their phone is in offered_phones, window is open, and they haven't rejected
     const assigned = await db.query(
       `SELECT r.*, p.name AS passenger_name, p.phone AS passenger_phone
        FROM rides r JOIN users p ON r.passenger_id::text = p.id::text
-       WHERE r.assigned_to_phone=$1 AND r.status='requested' AND r.driver_id IS NULL AND r.assignment_expires_at > NOW() LIMIT 1`,
+       WHERE $1 = ANY(COALESCE(r.offered_phones, '{}'))
+         AND NOT ($1 = ANY(COALESCE(r.rejected_phones, '{}')))
+         AND r.status='requested' AND r.driver_id IS NULL
+         AND r.assignment_expires_at > NOW()
+       ORDER BY r.assignment_expires_at ASC LIMIT 1`,
       [phone]
     );
     if (assigned.rows[0]) {
