@@ -14,7 +14,7 @@ const { sendFCM } = require('./config/firebase');
 require('./config/cloudinary');
 
 // ── Workers (starts BullMQ on import) ────────────
-const { rideQueue, assignRideToNextDriver } = require('./workers/rideWorker');
+const { rideQueue, assignRideToNextDriver, _bmqAssignNext } = require('./workers/rideWorker');
 
 // ── Services ────────────────────────────────────
 const { driverLocations } = require('./services/matching');
@@ -242,6 +242,47 @@ app.post('/debug/approve-driver', async (req, res) => {
     );
     if (!r.rows[0]) return res.status(404).json({ error: 'Driver not found' });
     res.json({ success: true, message: `Driver ${phone} approved` });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ── BullMQ queue health + manual trigger ─────────────────────────────────────
+app.get('/debug/bullmq', async (req, res) => {
+  try {
+    const [waiting, active, failed, completed, delayed] = await Promise.all([
+      rideQueue.getWaitingCount(),
+      rideQueue.getActiveCount(),
+      rideQueue.getFailedCount(),
+      rideQueue.getCompletedCount(),
+      rideQueue.getDelayedCount(),
+    ]);
+    const failedJobs = await rideQueue.getFailed(0, 5);
+    res.json({
+      queue_counts: { waiting, active, failed, completed, delayed },
+      last_5_failed_jobs: failedJobs.map(j => ({ id: j.id, data: j.data, failedReason: j.failedReason, attemptsMade: j.attemptsMade })),
+      note: 'waiting>0 = jobs queued but not processed = BullMQ worker likely disconnected from Redis',
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message, note: 'If this errors, BullMQ itself cannot reach Redis' });
+  }
+});
+
+// ── Manually trigger match for a specific ride (bypasses BullMQ entirely) ────
+app.post('/debug/trigger-match', async (req, res) => {
+  if (req.headers['x-debug-secret'] !== (process.env.DEBUG_SECRET || 'sppero-debug-2024')) {
+    return res.status(403).json({ error: 'Forbidden' });
+  }
+  const { ride_id } = req.body;
+  if (!ride_id) return res.status(400).json({ error: 'ride_id required' });
+  try {
+    const r = await db.query(
+      `SELECT id, pickup_lat, pickup_lng, ride_type FROM rides WHERE id=$1 AND status='requested' AND driver_id IS NULL`,
+      [ride_id]
+    );
+    if (!r.rows[0]) return res.status(404).json({ error: 'Ride not found or already matched' });
+    const ride = r.rows[0];
+    res.json({ ok: true, message: `Triggering match for ride ${ride_id} (${ride.ride_type}) in-process` });
+    _bmqAssignNext({ rideId: ride.id, pickupLat: ride.pickup_lat, pickupLng: ride.pickup_lng, rideType: ride.ride_type, queue: null, radiusKm: 5 })
+      .catch(e => console.error('[MATCH] manual trigger error:', e.message));
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 

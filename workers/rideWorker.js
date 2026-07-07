@@ -294,10 +294,18 @@ async function _computeSurgeOffer(pickupLat, pickupLng, rideId) {
 }
 
 async function assignRideToNextDriver(rideId, pickupLat, pickupLng, rideType, queue, radiusKm, afterSurge = false, retryRound = 0) {
-  await rideQueue.add('ride-assignment', {
+  const jobData = {
     type: 'assign-next', rideId, pickupLat, pickupLng, rideType,
     queue: queue || null, radiusKm: radiusKm || 5, afterSurge: !!afterSurge, retryRound,
-  });
+  };
+  try {
+    await rideQueue.add('ride-assignment', jobData);
+    console.log(`[MATCH] ride=${rideId} job queued in BullMQ (type=${rideType})`);
+  } catch (err) {
+    // BullMQ / Redis unavailable — run the match in-process immediately
+    console.error(`[MATCH] ride=${rideId} BullMQ.add FAILED (${err.message}) — running in-process fallback`);
+    _bmqAssignNext(jobData).catch(e => console.error(`[MATCH] ride=${rideId} in-process fallback error:`, e.message));
+  }
 }
 
-module.exports = { rideQueue, rideWorker, assignRideToNextDriver };
+module.exports = { rideQueue, rideWorker, assignRideToNextDriver, _bmqAssignNext };
