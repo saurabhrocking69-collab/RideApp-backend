@@ -111,12 +111,12 @@ app.get('/debug/match-state', async (req, res) => {
       `),
       db.query(`SELECT phone, lat, lng, geocell, updated_at FROM driver_locations ORDER BY updated_at DESC LIMIT 20`).catch(() => ({ rows: [] })),
       db.query(`
-        SELECT r.id, r.status, r.updated_at,
+        SELECT r.id, r.status, r.created_at,
                u.phone AS driver_phone, u.name AS driver_name,
-               NOW() - r.updated_at AS stuck_for
+               NOW() - r.created_at AS stuck_for
         FROM rides r JOIN users u ON r.driver_id = u.id
         WHERE r.status IN ('matched','arrived','started')
-        ORDER BY r.updated_at ASC
+        ORDER BY r.created_at ASC
       `),
     ]);
     const onlineApproved = driversRes.rows.filter(d => d.is_online && d.verification_status === 'approved');
@@ -866,12 +866,12 @@ setTimeout(async () => {
 
   // ── Cancel stuck matched/arrived rides at startup ────────────────────────
   // These hold drivers hostage: worker excludes any driver with an active matched/arrived/started ride.
-  // A ride is "stuck" if it stayed in matched/arrived for 30+ minutes without progressing.
+  // A ride is "stuck" if it was created 30+ minutes ago and never progressed past matched/arrived.
   try {
     const stuckMatched = await db.query(
       `UPDATE rides SET status='cancelled'
        WHERE status IN ('matched','arrived')
-         AND updated_at < NOW() - INTERVAL '30 minutes'
+         AND created_at < NOW() - INTERVAL '30 minutes'
        RETURNING id, passenger_id, driver_id`
     );
     for (const r of stuckMatched.rows) {
@@ -920,7 +920,7 @@ setInterval(async () => {
     const stuckMatched = await db.query(
       `UPDATE rides SET status='cancelled'
        WHERE status IN ('matched','arrived')
-         AND updated_at < NOW() - INTERVAL '30 minutes'
+         AND created_at < NOW() - INTERVAL '30 minutes'
        RETURNING id, passenger_id, driver_id`
     );
     for (const row of stuckMatched.rows) {
