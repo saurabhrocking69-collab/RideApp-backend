@@ -153,7 +153,7 @@ router.post('/:id/driver-location', async (req, res) => {
     // Update driver_locations table
     if (phone) {
       await db.query(`
-        UPDATE driver_locations SET lat=$1, lng=$2, updated=NOW() WHERE phone=$3
+        UPDATE driver_locations SET lat=$1, lng=$2, updated_at=NOW() WHERE phone=$3
       `, [lat, lng, phone]);
     }
     // Emit to customer's socket room
@@ -1002,7 +1002,7 @@ router.get('/driver-eta', async (req, res) => {
        JOIN driver_locations dl ON dl.phone = u.phone
        WHERE d.is_online = true
          AND d.verification_status = 'approved'
-         AND dl.updated_at > NOW() - INTERVAL '2 hours'
+         AND dl.updated_at > NOW() - INTERVAL '15 minutes'
          AND NOT EXISTS (
            SELECT 1 FROM rides r2
            WHERE r2.driver_id = d.id AND r2.status IN ('matched','arrived','started')
@@ -1064,7 +1064,7 @@ router.get('/nearby-drivers', async (req, res) => {
        JOIN driver_locations dl ON dl.phone = u.phone
        WHERE d.is_online = true
          AND d.verification_status = 'approved'
-         AND dl.updated_at > NOW() - INTERVAL '30 minutes'
+         AND dl.updated_at > NOW() - INTERVAL '15 minutes'
          AND NOT EXISTS (
            SELECT 1 FROM rides r2
            WHERE r2.driver_id = d.id AND r2.status IN ('matched','arrived','started')

@@ -105,7 +105,7 @@ async function _bmqAssignNext({ rideId, pickupLat, pickupLng, rideType, queue, r
     ]);
 
     const now = Date.now();
-    const STALE_MS = 10 * 60 * 1000;
+    const STALE_MS = 15 * 60 * 1000;
     const scored = drRes.rows
       .filter(dr => !alreadyOffered.has(dr.phone))
       .map(dr => {
@@ -116,7 +116,7 @@ async function _bmqAssignNext({ rideId, pickupLat, pickupLng, rideType, queue, r
           distKm = haversineKm(parseFloat(pickupLat), parseFloat(pickupLng), parseFloat(dr.lat), parseFloat(dr.lng));
         return { phone: dr.phone, distKm, score: scoreDriver(dr, distKm, now) };
       })
-      .filter(dr => dr.distKm === null || dr.distKm <= radiusKm)
+      .filter(dr => dr.distKm !== null ? dr.distKm <= radiusKm : radiusKm >= 15)
       .sort((a, b) => b.score - a.score);
     remaining = scored.map(dr => dr.phone);
   } else {
@@ -137,7 +137,7 @@ async function _bmqAssignNext({ rideId, pickupLat, pickupLng, rideType, queue, r
         }).catch(() => {});
       }
       await rideQueue.add('ride-assignment',
-        { type: 'assign-next', rideId, pickupLat, pickupLng, rideType, queue: null, radiusKm: radiusKm + 5, afterSurge },
+        { type: 'assign-next', rideId, pickupLat, pickupLng, rideType, queue: null, radiusKm: radiusKm + 5, afterSurge, retryRound },
         { delay: RADIUS_EXPAND_MS }
       );
     } else if (!afterSurge && retryRound === 0) {

@@ -37,7 +37,7 @@ function haversineKm(lat1, lon1, lat2, lon2) {
 }
 
 function scoreDriver(driver, distKm, now) {
-  const idleMs  = now - new Date(driver.idle_since || 0).getTime();
+  const idleMs  = driver.idle_since ? now - new Date(driver.idle_since).getTime() : 0;
   const idleMin = Math.min(idleMs / 60000, 120);
   const distScore = (distKm !== null && distKm !== undefined) ? Math.max(0, (10 - distKm) / 10) * 40 : 0;
   const idleScore = (idleMin / 120) * 40;
