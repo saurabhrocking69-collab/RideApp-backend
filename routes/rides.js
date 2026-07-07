@@ -1327,14 +1327,13 @@ router.post('/rate-customer', async (req, res) => {
 });
 
 // POST /api/rides/surge-fare
-// Customer manually bumps fare after 100s without a driver
+// Customer boosts fare after all radii exhausted — absolute (base_fare + surge_amount)
 router.post('/surge-fare', async (req, res) => {
   const { ride_id, customer_phone, surge_amount } = req.body;
   const amt = parseInt(surge_amount);
   if (!ride_id || !customer_phone) return res.status(400).json({ error: 'ride_id aur customer_phone chahiye' });
-  if (![15, 25, 40, 65, 100].includes(amt)) return res.status(400).json({ error: 'Invalid surge amount (15/25/40/65/100 allowed)' });
+  if (![10, 20, 30, 40, 50, 80, 100, 150].includes(amt)) return res.status(400).json({ error: 'Invalid surge amount (10/20/30/40/50/80/100/150 allowed)' });
   try {
-    // Ensure columns exist (idempotent)
     await db.query('ALTER TABLE rides ADD COLUMN IF NOT EXISTS surge_count INTEGER DEFAULT 0').catch(() => {});
     await db.query('ALTER TABLE rides ADD COLUMN IF NOT EXISTS base_fare INTEGER').catch(() => {});
 
@@ -1342,40 +1341,40 @@ router.post('/surge-fare', async (req, res) => {
     if (!cu.rows[0]) return res.status(404).json({ error: 'Customer nahi mila' });
 
     const rideRes = await db.query(
-      `SELECT id, fare, surge_count, pickup_lat, pickup_lng, ride_type
+      `SELECT id, fare, base_fare, surge_count, pickup_lat, pickup_lng, ride_type
        FROM rides WHERE id=$1 AND passenger_id=$2 AND status='requested' AND driver_id IS NULL`,
       [ride_id, cu.rows[0].id]
     );
     if (!rideRes.rows[0]) return res.status(400).json({ error: 'Ride available nahi hai surge ke liye' });
 
     const r = rideRes.rows[0];
-    const currentSurge = parseInt(r.surge_count) || 0;
-    if (currentSurge >= 3) return res.status(400).json({ error: 'Max 3 surges allowed' });
-
-    const newFare = parseInt(r.fare) + amt;
-    const newSurgeCount = currentSurge + 1;
+    // Absolute fare: always base_fare + selected_amount (prevents cumulative drift)
+    const baseFare = parseInt(r.base_fare) || parseInt(r.fare);
+    const newFare = baseFare + amt;
+    const newSurgeCount = (parseInt(r.surge_count) || 0) + 1;
 
     await db.query(
       `UPDATE rides SET
-         fare              = $1,
-         surge_count       = $2,
-         base_fare         = COALESCE(base_fare, fare),
-         assigned_to_phone = NULL,
+         fare                  = $1,
+         surge_count           = $2,
+         base_fare             = COALESCE(base_fare, fare),
+         assigned_to_phone     = NULL,
          assignment_expires_at = NULL,
-         assignment_queue  = '[]',
-         offered_phones    = '{}'
+         assignment_queue      = '[]',
+         offered_phones        = '{}',
+         rejected_phones       = '{}',
+         current_radius_m      = NULL
        WHERE id = $3`,
       [newFare, newSurgeCount, ride_id]
     );
 
-    // Re-broadcast to all drivers with updated fare (afterSurge=true so final failure → no_driver_final)
+    // Re-broadcast from 500m again (afterSurge=true → final failure → no_driver_final)
     assignRideToNextDriver(ride_id, r.pickup_lat, r.pickup_lng, r.ride_type, null, 5, true).catch(() => {});
 
     res.json({
       success: true,
       new_fare: '₹' + newFare,
       surge_count: newSurgeCount,
-      surges_remaining: 3 - newSurgeCount,
     });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
