@@ -125,16 +125,27 @@ router.get('/pending-ride', async (req, res) => {
     }
 
     const vehicleType = dr.vehicle_type === 'ultra_luxury' ? 'luxury' : dr.vehicle_type;
+    // Fallback: truly orphaned rides (>2 min, no active BullMQ assignment).
+    // MUST exclude this driver if they already rejected — offered_phones tracks rejections.
     const fallback = await db.query(
       `SELECT r.*, p.name AS passenger_name, p.phone AS passenger_phone FROM rides r JOIN users p ON r.passenger_id = p.id
        WHERE r.status='requested' AND r.driver_id IS NULL AND r.ride_type=$1
-         AND (r.assigned_to_phone IS NULL OR r.assignment_expires_at < NOW()) AND r.created_at < NOW() - INTERVAL '2 minutes'
-       ORDER BY r.created_at ASC LIMIT 1`, [vehicleType]
+         AND (r.assigned_to_phone IS NULL OR r.assignment_expires_at < NOW())
+         AND r.created_at < NOW() - INTERVAL '2 minutes'
+         AND NOT (COALESCE(r.offered_phones, '{}') @> ARRAY[$2::text])
+       ORDER BY r.created_at ASC LIMIT 1`, [vehicleType, phone]
     );
     if (fallback.rows[0]) {
       const fb = fallback.rows[0];
+      // Mark this driver as assigned so accept-offer endpoint can verify it
+      await db.query(
+        `UPDATE rides SET assigned_to_phone=$1, assignment_expires_at=NOW()+INTERVAL '25 seconds',
+           offered_phones=array_append(COALESCE(offered_phones,'{}'), $1::text)
+         WHERE id=$2 AND status='requested' AND driver_id IS NULL AND (assigned_to_phone IS NULL OR assignment_expires_at < NOW())`,
+        [phone, fb.id]
+      );
       const fbKm = (fb.pickup_lat && fb.drop_lat) ? haversineKm(parseFloat(fb.pickup_lat), parseFloat(fb.pickup_lng), parseFloat(fb.drop_lat), parseFloat(fb.drop_lng)) : null;
-      return res.json({ ride: { ...fb, seconds_to_accept: 30, distance: fbKm ? fbKm.toFixed(1) : null }, pending_commission: pendingComm });
+      return res.json({ ride: { ...fb, seconds_to_accept: 25, distance: fbKm ? fbKm.toFixed(1) : null }, pending_commission: pendingComm });
     }
     return res.json({ ride: null });
   } catch (err) { res.status(500).json({ error: err.message }); }

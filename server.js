@@ -327,10 +327,13 @@ function _haversineKm(lat1, lng1, lat2, lng2) {
 io.on('connection', (socket) => {
   socket.on('joinRide',    ({ rideId })    => socket.join('ride_' + rideId));
   socket.on('joinHourly',  ({ bookingId }) => socket.join('hourly_' + bookingId));
-  socket.on('driverJoin', async ({ phone }) => {
-    socket.join('driver_' + phone);
+
+  // Per-connection Set: prevents re-delivering the same offer on repeated driverJoin calls
+  // (screen transitions, reconnects) from the same socket. New connection = new Set = clean state.
+  const _deliveredOffers = new Set();
+
+  async function _redeliverIfPending(phone) {
     if (!phone) return;
-    // Re-deliver pending offer that may have been missed (FCM/Doze delay on budget phones)
     try {
       const r = await db.query(
         `SELECT id, GREATEST(0, EXTRACT(EPOCH FROM (assignment_expires_at - NOW()))::int) AS secs_left
@@ -339,26 +342,17 @@ io.on('connection', (socket) => {
         [phone]
       );
       if (r.rows[0] && parseInt(r.rows[0].secs_left) > 2) {
-        socket.emit('newRideAssigned', { rideId: r.rows[0].id, secondsToAccept: parseInt(r.rows[0].secs_left) });
+        const rideId = r.rows[0].id;
+        if (!_deliveredOffers.has(rideId)) {
+          _deliveredOffers.add(rideId);
+          socket.emit('newRideAssigned', { rideId, secondsToAccept: parseInt(r.rows[0].secs_left) });
+        }
       }
     } catch (_e) {}
-  });
-  socket.on('driverOnline', async ({ driverId, phone }) => {
-    const p = phone || driverId;
-    socket.join('driver_' + p);
-    if (!p) return;
-    try {
-      const r = await db.query(
-        `SELECT id, GREATEST(0, EXTRACT(EPOCH FROM (assignment_expires_at - NOW()))::int) AS secs_left
-         FROM rides WHERE assigned_to_phone=$1 AND status='requested' AND driver_id IS NULL
-         AND assignment_expires_at > NOW()`,
-        [p]
-      );
-      if (r.rows[0] && parseInt(r.rows[0].secs_left) > 2) {
-        socket.emit('newRideAssigned', { rideId: r.rows[0].id, secondsToAccept: parseInt(r.rows[0].secs_left) });
-      }
-    } catch (_e) {}
-  });
+  }
+
+  socket.on('driverJoin',   async ({ phone })            => { socket.join('driver_' + phone); await _redeliverIfPending(phone); });
+  socket.on('driverOnline', async ({ driverId, phone })  => { const p = phone || driverId; socket.join('driver_' + p); await _redeliverIfPending(p); });
 
   socket.on('locationUpdate', ({ driverId, lat, lng, rideId }) => {
     if (rideId) {
