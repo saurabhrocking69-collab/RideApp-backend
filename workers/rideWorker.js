@@ -58,39 +58,47 @@ rideWorker.on('failed', (job, err) => {
 
 // ── Send ride request to one driver at a time, 20s per driver ────────────────
 async function _bmqAssignNext({ rideId, pickupLat, pickupLng, rideType, queue, radiusKm = 5, offeredPhones = [], wasFavouriteTimeout = false, buddyName = null, afterSurge = false, retryRound = 0 }) {
+  console.log(`[MATCH] ▶ _bmqAssignNext called ride=${rideId} type=${rideType} r=${radiusKm}km queueIsNull=${queue === null || queue === undefined} queueLen=${Array.isArray(queue) ? queue.length : 'N/A'}`);
   let remaining = queue;
 
   if (remaining === null || remaining === undefined) {
     // Build a fresh scored queue
-    const [rideCheck, drRes] = await Promise.all([
-      db.query(
-        `SELECT id, ride_type, COALESCE(offered_phones, '{}') AS offered_phones
-         FROM rides WHERE id=$1 AND status='requested' AND driver_id IS NULL`, [rideId]
-      ),
-      db.query(
-        `SELECT u.phone,
-                COALESCE(d.rating, 5.0)                                AS rating,
-                COALESCE(dm.acceptance_rate, 100)                      AS acceptance_rate,
-                COALESCE(dm.idle_since, NOW() - INTERVAL '30 minutes') AS idle_since,
-                dl.lat, dl.lng,
-                dl.updated_at AS loc_updated_at
-         FROM drivers d
-         JOIN users u ON d.id = u.id
-         LEFT JOIN driver_metrics dm ON dm.phone = u.phone
-         LEFT JOIN driver_locations dl ON dl.phone = u.phone
-         WHERE d.verification_status = 'approved'
-           AND d.is_online = true
-           AND (d.vehicle_type = $1 OR (d.vehicle_type = 'ultra_luxury' AND $1 = 'luxury'))
-           AND NOT EXISTS (
-             SELECT 1 FROM rides r2
-             WHERE r2.driver_id = d.id AND r2.status IN ('matched','arrived','started')
-           )`,
-        [rideType]
-      ),
-    ]);
-    if (!rideCheck.rows[0]) { console.log(`[MATCH] ride=${rideId} ABORT — ride not found or already matched`); return; }
-    if (rideCheck.rows[0].ride_type !== rideType) { console.log(`[MATCH] ride=${rideId} ABORT — ride_type mismatch`); return; }
+    let rideCheck, drRes;
+    try {
+      [rideCheck, drRes] = await Promise.all([
+        db.query(
+          `SELECT id, ride_type, COALESCE(offered_phones, '{}') AS offered_phones
+           FROM rides WHERE id=$1 AND status='requested' AND driver_id IS NULL`, [rideId]
+        ),
+        db.query(
+          `SELECT u.phone,
+                  COALESCE(d.rating, 5.0)                                AS rating,
+                  COALESCE(dm.acceptance_rate, 100)                      AS acceptance_rate,
+                  COALESCE(dm.idle_since, NOW() - INTERVAL '30 minutes') AS idle_since,
+                  dl.lat, dl.lng,
+                  dl.updated_at AS loc_updated_at
+           FROM drivers d
+           JOIN users u ON d.id = u.id
+           LEFT JOIN driver_metrics dm ON dm.phone = u.phone
+           LEFT JOIN driver_locations dl ON dl.phone = u.phone
+           WHERE d.verification_status = 'approved'
+             AND d.is_online = true
+             AND (d.vehicle_type = $1 OR (d.vehicle_type = 'ultra_luxury' AND $1 = 'luxury'))
+             AND NOT EXISTS (
+               SELECT 1 FROM rides r2
+               WHERE r2.driver_id = d.id AND r2.status IN ('matched','arrived','started')
+             )`,
+          [rideType]
+        ),
+      ]);
+    } catch (dbErr) {
+      console.error(`[MATCH] ❌ ride=${rideId} DB query failed:`, dbErr.message);
+      throw dbErr;
+    }
+    if (!rideCheck.rows[0]) { console.log(`[MATCH] ride=${rideId} ABORT — ride not found or already matched/cancelled`); return; }
+    if (rideCheck.rows[0].ride_type !== rideType) { console.log(`[MATCH] ride=${rideId} ABORT — ride_type mismatch (DB=${rideCheck.rows[0].ride_type} vs ${rideType})`); return; }
 
+    console.log(`[MATCH] ride=${rideId} DB check OK — total online+approved ${rideType} drivers: ${drRes.rows.length}`);
     if (drRes.rows.length === 0) {
       console.log(`[MATCH] ride=${rideId} type=${rideType} — 0 online+approved drivers with this vehicle type in entire DB`);
     }
@@ -171,18 +179,28 @@ async function _bmqAssignNext({ rideId, pickupLat, pickupLng, rideType, queue, r
   const nextPhone = remaining[0];
   const newQueue  = remaining.slice(1);
 
-  const upd = await db.query(
-    `UPDATE rides
-     SET assigned_to_phone=$1,
-         assignment_expires_at=NOW()+INTERVAL '${ASSIGNMENT_WINDOW_SEC} seconds',
-         assignment_queue=$2,
-         offered_phones = array_append(COALESCE(offered_phones,'{}'), $1::text)
-     WHERE id=$3 AND status='requested' AND driver_id IS NULL
-       AND (assigned_to_phone IS NULL OR assignment_expires_at < NOW())
-     RETURNING id`,
-    [nextPhone, JSON.stringify(newQueue), rideId]
-  );
-  if (!upd.rows[0]) { console.log(`[MATCH] ride=${rideId} UPDATE claimed by another worker — skipping`); return; }
+  console.log(`[MATCH] ride=${rideId} — attempting UPDATE to assign → ${nextPhone} (${remaining.length} candidates, ${newQueue.length} in queue after)`);
+  let upd;
+  try {
+    upd = await db.query(
+      `UPDATE rides
+       SET assigned_to_phone=$1,
+           assignment_expires_at=NOW()+INTERVAL '${ASSIGNMENT_WINDOW_SEC} seconds',
+           assignment_queue=$2,
+           offered_phones = array_append(COALESCE(offered_phones,'{}'), $1::text)
+       WHERE id=$3 AND status='requested' AND driver_id IS NULL
+         AND (assigned_to_phone IS NULL OR assignment_expires_at < NOW())
+       RETURNING id`,
+      [nextPhone, JSON.stringify(newQueue), rideId]
+    );
+  } catch (updErr) {
+    console.error(`[MATCH] ❌ ride=${rideId} UPDATE failed:`, updErr.message);
+    throw updErr;
+  }
+  if (!upd.rows[0]) {
+    console.log(`[MATCH] ride=${rideId} UPDATE returned 0 rows — ride already claimed by another process or status changed`);
+    return;
+  }
 
   console.log(`[MATCH] ride=${rideId} → offering to ${nextPhone}`);
   const rideEmoji = { bike: '🏍️', auto: '🛺', car: '🚕', eriksha: '🛵', luxury: '🚙' }[rideType] || '🚗';

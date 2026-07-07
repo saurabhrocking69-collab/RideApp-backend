@@ -266,6 +266,58 @@ app.get('/debug/bullmq', async (req, res) => {
   }
 });
 
+// ── Show all open rides + their assignment state ──────────────────────────────
+app.get('/debug/open-rides', async (req, res) => {
+  try {
+    const [ridesRes, driversRes] = await Promise.all([
+      db.query(`
+        SELECT r.id, r.ride_type, r.status, r.assigned_to_phone,
+               r.assignment_expires_at,
+               CASE WHEN r.assignment_expires_at > NOW()
+                    THEN EXTRACT(EPOCH FROM (r.assignment_expires_at - NOW()))::int
+                    ELSE -1 END AS secs_left,
+               r.offered_phones,
+               r.created_at,
+               EXTRACT(EPOCH FROM (NOW() - r.created_at))::int AS age_sec,
+               u.phone AS customer_phone
+        FROM rides r
+        LEFT JOIN users u ON r.passenger_id::text = u.id::text
+        WHERE r.status IN ('requested','matched')
+        ORDER BY r.created_at DESC LIMIT 20
+      `),
+      db.query(`
+        SELECT u.phone, d.vehicle_type, d.is_online, d.verification_status,
+               dl.lat, dl.lng, dl.updated_at AS loc_ts
+        FROM drivers d
+        JOIN users u ON d.id = u.id
+        LEFT JOIN driver_locations dl ON dl.phone = u.phone
+        WHERE d.is_online = true AND d.verification_status = 'approved'
+        ORDER BY d.vehicle_type
+      `),
+    ]);
+    res.json({
+      timestamp: new Date().toISOString(),
+      open_rides: ridesRes.rows.map(r => ({
+        id: r.id,
+        type: r.ride_type,
+        status: r.status,
+        customer: r.customer_phone,
+        age_sec: r.age_sec,
+        assigned_to: r.assigned_to_phone || null,
+        secs_left: r.secs_left,
+        offered_to: r.offered_phones || [],
+        created: r.created_at,
+      })),
+      online_approved_drivers: driversRes.rows,
+      hint: ridesRes.rows.length === 0
+        ? 'No open rides right now — book a ride then call this immediately'
+        : `${ridesRes.rows.length} open ride(s). Check assigned_to and offered_to fields.`,
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // ── Manually trigger match for a specific ride (bypasses BullMQ entirely) ────
 app.post('/debug/trigger-match', async (req, res) => {
   if (req.headers['x-debug-secret'] !== (process.env.DEBUG_SECRET || 'sppero-debug-2024')) {

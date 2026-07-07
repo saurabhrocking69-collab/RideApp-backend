@@ -113,7 +113,7 @@ router.get('/pending-ride', async (req, res) => {
 
     const assigned = await db.query(
       `SELECT r.*, p.name AS passenger_name, p.phone AS passenger_phone
-       FROM rides r JOIN users p ON r.passenger_id = p.id
+       FROM rides r JOIN users p ON r.passenger_id::text = p.id::text
        WHERE r.assigned_to_phone=$1 AND r.status='requested' AND r.driver_id IS NULL AND r.assignment_expires_at > NOW() LIMIT 1`,
       [phone]
     );
@@ -128,7 +128,7 @@ router.get('/pending-ride', async (req, res) => {
     // Fallback: truly orphaned rides (>2 min, no active BullMQ assignment).
     // MUST exclude this driver if they already rejected — offered_phones tracks rejections.
     const fallback = await db.query(
-      `SELECT r.*, p.name AS passenger_name, p.phone AS passenger_phone FROM rides r JOIN users p ON r.passenger_id = p.id
+      `SELECT r.*, p.name AS passenger_name, p.phone AS passenger_phone FROM rides r JOIN users p ON r.passenger_id::text = p.id::text
        WHERE r.status='requested' AND r.driver_id IS NULL AND r.ride_type=$1
          AND (r.assigned_to_phone IS NULL OR r.assignment_expires_at < NOW())
          AND r.created_at < NOW() - INTERVAL '2 minutes'
