@@ -996,13 +996,12 @@ router.get('/driver-eta', async (req, res) => {
   try {
     const drRes = await db.query(
       `SELECT CASE WHEN d.vehicle_type = 'ultra_luxury' THEN 'luxury' ELSE d.vehicle_type END AS vehicle_type,
-              dl.lat, dl.lng
+              dl.lat, dl.lng, dl.updated_at
        FROM drivers d
        JOIN users u ON d.id = u.id
-       JOIN driver_locations dl ON dl.phone = u.phone
+       LEFT JOIN driver_locations dl ON dl.phone = u.phone
        WHERE d.is_online = true
          AND d.verification_status = 'approved'
-         AND dl.updated_at > NOW() - INTERVAL '15 minutes'
          AND NOT EXISTS (
            SELECT 1 FROM rides r2
            WHERE r2.driver_id = d.id AND r2.status IN ('matched','arrived','started')
@@ -1010,18 +1009,28 @@ router.get('/driver-eta', async (req, res) => {
     );
 
     const nearest = {};
+    const LOC_STALE_MS = 15 * 60 * 1000;
+    const nowMs = Date.now();
     for (const dr of drRes.rows) {
-      if (!dr.lat || !dr.lng) continue;
-      const dist = haversineKm(lat, lng, parseFloat(dr.lat), parseFloat(dr.lng));
-      if (dist > 20) continue;
-      const prev = nearest[dr.vehicle_type];
-      if (!prev || dist < prev.dist_km) {
-        const speed = AVG_SPEED_KMH[dr.vehicle_type] || 20;
-        nearest[dr.vehicle_type] = {
-          dist_km: Math.round(dist * 10) / 10,
-          eta_min: Math.max(1, Math.round((dist / speed) * 60) + 1),
-          _rawEta: Math.max(1, Math.round((dist / speed) * 60) + 1),
-        };
+      const locFresh = dr.lat && dr.lng && dr.updated_at &&
+        (nowMs - new Date(dr.updated_at).getTime()) < LOC_STALE_MS;
+
+      if (locFresh) {
+        const dist = haversineKm(lat, lng, parseFloat(dr.lat), parseFloat(dr.lng));
+        if (dist > 20) continue;
+        const prev = nearest[dr.vehicle_type];
+        // real location always wins over a placeholder
+        if (!prev || prev.dist_km === null || dist < prev.dist_km) {
+          const speed = AVG_SPEED_KMH[dr.vehicle_type] || 20;
+          nearest[dr.vehicle_type] = {
+            dist_km: Math.round(dist * 10) / 10,
+            eta_min: Math.max(1, Math.round((dist / speed) * 60) + 1),
+            _rawEta: Math.max(1, Math.round((dist / speed) * 60) + 1),
+          };
+        }
+      } else if (!nearest[dr.vehicle_type]) {
+        // Driver online but location unknown/stale — mark available without ETA
+        nearest[dr.vehicle_type] = { dist_km: null, eta_min: null };
       }
     }
 
