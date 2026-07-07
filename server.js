@@ -97,7 +97,7 @@ app.get('/health', (_req, res) =>
 // ── Matching diagnostics — shows exactly what the worker sees ────────────────
 app.get('/debug/match-state', async (req, res) => {
   try {
-    const [driversRes, ridesRes, locRes] = await Promise.all([
+    const [driversRes, ridesRes, locRes, stuckRes] = await Promise.all([
       db.query(`
         SELECT u.phone, d.vehicle_type, d.is_online, d.verification_status, d.rating
         FROM drivers d JOIN users u ON d.id = u.id
@@ -109,14 +109,30 @@ app.get('/debug/match-state', async (req, res) => {
         FROM rides WHERE status='requested' AND driver_id IS NULL
         ORDER BY created_at DESC LIMIT 10
       `),
-      db.query(`SELECT phone, lat, lng, geocell, updated_at FROM driver_locations ORDER BY updated_at DESC LIMIT 20`),
+      db.query(`SELECT phone, lat, lng, geocell, updated_at FROM driver_locations ORDER BY updated_at DESC LIMIT 20`).catch(() => ({ rows: [] })),
+      db.query(`
+        SELECT r.id, r.status, r.updated_at,
+               u.phone AS driver_phone, u.name AS driver_name,
+               NOW() - r.updated_at AS stuck_for
+        FROM rides r JOIN users u ON r.driver_id = u.id
+        WHERE r.status IN ('matched','arrived','started')
+        ORDER BY r.updated_at ASC
+      `),
     ]);
+    const onlineApproved = driversRes.rows.filter(d => d.is_online && d.verification_status === 'approved');
+    const blockedDrivers = stuckRes.rows.map(r => r.driver_phone);
     res.json({
-      online_approved_drivers: driversRes.rows.filter(d => d.is_online && d.verification_status === 'approved'),
+      summary: {
+        online_approved_count: onlineApproved.length,
+        stuck_rides_count: stuckRes.rows.length,
+        WARNING: onlineApproved.length === 0 ? '⚠️ NO online approved drivers — no one will receive rides!' :
+                 blockedDrivers.length > 0 ? `⚠️ ${blockedDrivers.length} driver(s) blocked by stuck rides` : '✅ OK',
+      },
+      online_approved_drivers: onlineApproved,
       all_drivers: driversRes.rows,
+      stuck_active_rides: stuckRes.rows,
       pending_rides: ridesRes.rows,
       driver_locations_in_db: locRes.rows,
-      note: 'online_approved_drivers = list the matching engine sees. If empty, no one will get a ride.',
     });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -848,6 +864,22 @@ setTimeout(async () => {
   await db.query(`CREATE INDEX IF NOT EXISTS idx_dcp_payment ON driver_commission_payments(payment_id)`).catch(() => {});
   console.log('✅ driver_commission_payments table ready');
 
+  // ── Cancel stuck matched/arrived rides at startup ────────────────────────
+  // These hold drivers hostage: worker excludes any driver with an active matched/arrived/started ride.
+  // A ride is "stuck" if it stayed in matched/arrived for 30+ minutes without progressing.
+  try {
+    const stuckMatched = await db.query(
+      `UPDATE rides SET status='cancelled'
+       WHERE status IN ('matched','arrived')
+         AND updated_at < NOW() - INTERVAL '30 minutes'
+       RETURNING id, passenger_id, driver_id`
+    );
+    for (const r of stuckMatched.rows) {
+      emitToRoom('ride_' + r.id, 'rideUpdate', { rideId: r.id, status: 'cancelled', reason: 'auto_timeout' });
+    }
+    if (stuckMatched.rows.length) console.log(`✅ Cancelled ${stuckMatched.rows.length} stuck matched/arrived rides`);
+  } catch (_e) {}
+
   try {
     const stuck = await db.query(
       `SELECT id, pickup_lat, pickup_lng, ride_type FROM rides
@@ -867,6 +899,7 @@ setTimeout(async () => {
 // ── Cron: auto-cancel stale rides (every 1 min) ──
 setInterval(async () => {
   try {
+    // 1. Cancel unmatched rides older than 15 min
     const stale = await db.query(
       `UPDATE rides SET status='cancelled'
        WHERE status='requested' AND driver_id IS NULL
@@ -882,6 +915,22 @@ setInterval(async () => {
         }
       } catch (_e) {}
     }
+
+    // 2. Cancel stuck matched/arrived rides older than 30 min — these block drivers from future matches
+    const stuckMatched = await db.query(
+      `UPDATE rides SET status='cancelled'
+       WHERE status IN ('matched','arrived')
+         AND updated_at < NOW() - INTERVAL '30 minutes'
+       RETURNING id, passenger_id, driver_id`
+    );
+    for (const row of stuckMatched.rows) {
+      emitToRoom('ride_' + row.id, 'rideUpdate', { rideId: row.id, status: 'cancelled', reason: 'auto_timeout' });
+      try {
+        const pRes = await db.query('SELECT phone FROM users WHERE id=$1', [row.passenger_id]);
+        if (pRes.rows[0]) sendFCM(pRes.rows[0].phone, '🚫 Ride Cancel Ho Gayi', 'Driver ke saath connection nahi raha. Dobara try karo.', { type: 'ride_cancelled', ride_id: String(row.id) }, { role: 'customer' }).catch(() => {});
+      } catch (_e) {}
+    }
+    if (stuckMatched.rows.length) console.log(`🧹 Auto-cancelled ${stuckMatched.rows.length} stuck matched/arrived rides`);
   } catch (_e) {}
 }, 60_000);
 
