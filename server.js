@@ -94,6 +94,33 @@ app.get('/health', (_req, res) =>
   res.json({ status: 'ok', uptime: Math.floor(process.uptime()), ts: Date.now() })
 );
 
+// ── Matching diagnostics — shows exactly what the worker sees ────────────────
+app.get('/debug/match-state', async (req, res) => {
+  try {
+    const [driversRes, ridesRes, locRes] = await Promise.all([
+      db.query(`
+        SELECT u.phone, d.vehicle_type, d.is_online, d.verification_status, d.rating
+        FROM drivers d JOIN users u ON d.id = u.id
+        ORDER BY d.is_online DESC, d.verification_status
+      `),
+      db.query(`
+        SELECT id, ride_type, status, assigned_to_phone, offered_phones,
+               assignment_expires_at, created_at
+        FROM rides WHERE status='requested' AND driver_id IS NULL
+        ORDER BY created_at DESC LIMIT 10
+      `),
+      db.query(`SELECT phone, lat, lng, geocell, updated_at FROM driver_locations ORDER BY updated_at DESC LIMIT 20`),
+    ]);
+    res.json({
+      online_approved_drivers: driversRes.rows.filter(d => d.is_online && d.verification_status === 'approved'),
+      all_drivers: driversRes.rows,
+      pending_rides: ridesRes.rows,
+      driver_locations_in_db: locRes.rows,
+      note: 'online_approved_drivers = list the matching engine sees. If empty, no one will get a ride.',
+    });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 // ── Live ride tracking page — shareable link for family/friends ───────────
 app.get('/track/:rideId', (req, res) => {
   const { rideId } = req.params;
@@ -471,6 +498,27 @@ io.on('connection', (socket) => {
 
 // ── Startup tasks ────────────────────────────────
 setTimeout(async () => {
+  // ── Matching tables — must exist before indexes below ────────────────────────
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS driver_locations (
+      phone      VARCHAR(15) PRIMARY KEY,
+      lat        DECIMAL(10,7),
+      lng        DECIMAL(10,7),
+      updated_at TIMESTAMP DEFAULT NOW()
+    )
+  `).catch(() => {});
+  await db.query(`ALTER TABLE driver_locations ADD COLUMN IF NOT EXISTS geocell VARCHAR(40)`).catch(() => {});
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS driver_metrics (
+      phone           VARCHAR(15) PRIMARY KEY,
+      rides_offered   INT DEFAULT 0,
+      rides_accepted  INT DEFAULT 0,
+      rides_cancelled INT DEFAULT 0,
+      idle_since      TIMESTAMP DEFAULT NOW()
+    )
+  `).catch(() => {});
+  console.log('✅ Matching tables ready');
+
   const indexes = [
     `CREATE INDEX IF NOT EXISTS idx_rides_status            ON rides(status)`,
     `CREATE INDEX IF NOT EXISTS idx_rides_driver_id         ON rides(driver_id)`,
