@@ -116,9 +116,10 @@ async function _bmqAssignNext({ rideId, pickupLat, pickupLng, rideType, queue, r
           distKm = haversineKm(parseFloat(pickupLat), parseFloat(pickupLng), parseFloat(dr.lat), parseFloat(dr.lng));
         return { phone: dr.phone, distKm, score: scoreDriver(dr, distKm, now) };
       })
-      .filter(dr => dr.distKm !== null ? dr.distKm <= radiusKm : radiusKm >= 15)
+      .filter(dr => radiusKm >= 15 || dr.distKm === null || dr.distKm <= radiusKm)
       .sort((a, b) => b.score - a.score);
     remaining = scored.map(dr => dr.phone);
+    console.log(`[MATCH] ride=${rideId} r=${radiusKm}km driversFound=${drRes.rows.length} afterFilter=${remaining.length}`);
   } else {
     const rideCheck = await db.query(
       `SELECT id, ride_type FROM rides WHERE id=$1 AND status='requested' AND driver_id IS NULL`, [rideId]
@@ -176,8 +177,9 @@ async function _bmqAssignNext({ rideId, pickupLat, pickupLng, rideType, queue, r
      RETURNING id`,
     [nextPhone, JSON.stringify(newQueue), rideId]
   );
-  if (!upd.rows[0]) return; // race: another worker already claimed this slot
+  if (!upd.rows[0]) { console.log(`[MATCH] ride=${rideId} UPDATE claimed by another worker — skipping`); return; }
 
+  console.log(`[MATCH] ride=${rideId} → offering to ${nextPhone}`);
   const rideEmoji = { bike: '🏍️', auto: '🛺', car: '🚕', eriksha: '🛵', luxury: '🚙' }[rideType] || '🚗';
   sendFCM(nextPhone, `${rideEmoji} Naya Ride Request!`, `📍 ${rideType.toUpperCase()} ride nearby — ${ASSIGNMENT_WINDOW_SEC}s mein accept karo!`, { type: 'new_ride', ride_id: String(rideId) }, { channelId: 'ride_requests', role: 'driver' });
   emitToRoom('driver_' + nextPhone, 'newRideAssigned', { rideId, secondsToAccept: ASSIGNMENT_WINDOW_SEC });
@@ -200,7 +202,8 @@ async function _bmqAutoAdvance({ rideId, expectedPhone, pickupLat, pickupLng, ri
      WHERE id=$1 AND status='requested' AND driver_id IS NULL`, [rideId]
   );
   if (!r.rows[0] || r.rows[0].assigned_to_phone !== expectedPhone) return;
-  const nextQueue = JSON.parse(r.rows[0].assignment_queue || '[]');
+  const rawQ = r.rows[0].assignment_queue;
+  const nextQueue = Array.isArray(rawQ) ? rawQ : JSON.parse(rawQ || '[]');
   await rideQueue.add('ride-assignment',
     { type: 'assign-next', rideId, pickupLat, pickupLng, rideType, queue: nextQueue, radiusKm, afterSurge, retryRound }
   );

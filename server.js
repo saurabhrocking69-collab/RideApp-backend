@@ -485,8 +485,17 @@ setTimeout(async () => {
     `CREATE INDEX IF NOT EXISTS idx_hourly_driver_phone     ON hourly_bookings(driver_phone, status)`,
   ];
   for (const sql of indexes) await db.query(sql).catch(() => {});
-  // offered_phones tracks which drivers were already sent this ride request — skip on surge rebuild
+  // ── BullMQ matching columns (were only in server.old.js; now idempotent here too) ─────────
+  await db.query(`ALTER TABLE rides ADD COLUMN IF NOT EXISTS assigned_to_phone VARCHAR(20) DEFAULT NULL`).catch(() => {});
+  await db.query(`ALTER TABLE rides ADD COLUMN IF NOT EXISTS assignment_expires_at TIMESTAMP DEFAULT NULL`).catch(() => {});
+  await db.query(`ALTER TABLE rides ADD COLUMN IF NOT EXISTS assignment_queue JSONB DEFAULT '[]'`).catch(() => {});
   await db.query(`ALTER TABLE rides ADD COLUMN IF NOT EXISTS offered_phones TEXT[] DEFAULT '{}'`).catch(() => {});
+  // driver_metrics scoring columns (added by add-cancellation.js; must also exist here)
+  await db.query(`ALTER TABLE driver_metrics ADD COLUMN IF NOT EXISTS acceptance_rate DECIMAL(5,2) DEFAULT 100`).catch(() => {});
+  await db.query(`ALTER TABLE driver_metrics ADD COLUMN IF NOT EXISTS cancellation_rate DECIMAL(5,2) DEFAULT 0`).catch(() => {});
+  await db.query(`ALTER TABLE driver_metrics ADD COLUMN IF NOT EXISTS suspended_until TIMESTAMP`).catch(() => {});
+  await db.query(`ALTER TABLE driver_metrics ADD COLUMN IF NOT EXISTS cancels_today INT DEFAULT 0`).catch(() => {});
+  await db.query(`ALTER TABLE driver_metrics ADD COLUMN IF NOT EXISTS last_cancel_date DATE`).catch(() => {});
   await db.query(`ALTER TABLE rides ADD COLUMN IF NOT EXISTS customer_rating INT`).catch(() => {});
   await db.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS customer_rating NUMERIC(3,1)`).catch(() => {});
   // Early completion + payment skip tracking columns

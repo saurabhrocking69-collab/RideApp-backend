@@ -278,7 +278,7 @@ router.post('/reject-offer', async (req, res) => {
       return res.json({ success: false, error: 'Not your assignment' });
 
     const { pickup_lat, pickup_lng, ride_type, assignment_queue } = r.rows[0];
-    const nextQueue = JSON.parse(assignment_queue || '[]');
+    const nextQueue = Array.isArray(assignment_queue) ? assignment_queue : JSON.parse(assignment_queue || '[]');
 
     // ── CRITICAL: clear the active assignment immediately so the orphan auto-advance job
     // (still queued in BullMQ from the original 20s window) returns early when it fires
