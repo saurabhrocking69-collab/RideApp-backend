@@ -883,14 +883,37 @@ setTimeout(async () => {
   for (const sql of complaintTables) await db.query(sql).catch((e) => console.error('Complaint table error:', e.message));
   console.log('✅ Complaint tables ready');
 
-  // Ensure green_bike, electric_auto, luxury have fare_settings rows
+  // Ensure all vehicle types have fare_settings rows; also repair NULL per_km_rate (causes NaN fare bug)
   await db.query(`
     INSERT INTO fare_settings (vehicle_type, base_fare, per_km_rate, night_multiplier)
     VALUES
+      ('bike',          15,  8, 1.3),
+      ('auto',          25, 12, 1.5),
+      ('car',           40, 15, 1.8),
+      ('eriksha',       20, 10, 1.4),
       ('green_bike',    12,  6, 1.2),
       ('electric_auto', 20,  9, 1.3),
       ('luxury',        80, 25, 2.0)
     ON CONFLICT (vehicle_type) DO NOTHING
+  `).catch(() => {});
+  // Fix NULL per_km_rate or base_fare that causes NaN → null in fare responses
+  await db.query(`
+    UPDATE fare_settings SET
+      per_km_rate = CASE vehicle_type
+        WHEN 'bike' THEN 8 WHEN 'auto' THEN 12 WHEN 'car' THEN 15
+        WHEN 'eriksha' THEN 10 WHEN 'green_bike' THEN 6
+        WHEN 'electric_auto' THEN 9 WHEN 'luxury' THEN 25
+        ELSE 10 END
+    WHERE per_km_rate IS NULL OR per_km_rate = 0
+  `).catch(() => {});
+  await db.query(`
+    UPDATE fare_settings SET
+      base_fare = CASE vehicle_type
+        WHEN 'bike' THEN 15 WHEN 'auto' THEN 25 WHEN 'car' THEN 40
+        WHEN 'eriksha' THEN 20 WHEN 'green_bike' THEN 12
+        WHEN 'electric_auto' THEN 20 WHEN 'luxury' THEN 80
+        ELSE 20 END
+    WHERE base_fare IS NULL OR base_fare = 0
   `).catch(() => {});
 
   // ── Bonus System Tables ───────────────────────────
