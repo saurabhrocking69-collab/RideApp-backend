@@ -118,9 +118,10 @@ router.get('/driver-pending', async (req, res) => {
     if (!dr.rows[0]) return res.json({ booking: null });
     const r = await db.query(
       `SELECT * FROM hourly_bookings WHERE status='pending' AND driver_phone IS NULL AND vehicle_type=$1
+       AND NOT ($2 = ANY(COALESCE(rejected_drivers, '{}')))
        AND ((scheduled_at IS NULL AND created_at > NOW() - INTERVAL '30 minutes') OR (scheduled_at IS NOT NULL AND scheduled_at BETWEEN NOW() - INTERVAL '15 minutes' AND NOW() + INTERVAL '75 minutes'))
        ORDER BY CASE WHEN scheduled_at IS NULL THEN 0 ELSE 1 END, COALESCE(scheduled_at, created_at) ASC LIMIT 1`,
-      [dr.rows[0].vehicle_type]
+      [dr.rows[0].vehicle_type, phone]
     );
     res.json({ booking: r.rows[0] || null });
   } catch (err) { res.status(500).json({ error: err.message }); }
@@ -146,7 +147,13 @@ router.post('/driver-cancel', async (req, res) => {
     const r = await db.query(`SELECT * FROM hourly_bookings WHERE id=$1 AND driver_phone=$2 AND status='matched'`, [booking_id, driver_phone]);
     if (!r.rows[0]) return res.status(404).json({ error: 'Booking nahi mili ya already start ho gayi' });
     const booking = r.rows[0];
-    await db.query(`UPDATE hourly_bookings SET driver_phone=NULL, status='pending' WHERE id=$1`, [booking_id]);
+    // Reset to pending AND record this driver so they are not re-offered the same booking
+    await db.query(
+      `UPDATE hourly_bookings SET driver_phone=NULL, status='pending',
+       rejected_drivers = array_append(COALESCE(rejected_drivers, '{}'), $2)
+       WHERE id=$1`,
+      [booking_id, driver_phone]
+    );
     sendFCM(booking.customer_phone, '⚠️ Driver Cancel Ho Gaya', 'Driver unavailable ho gaya — naya driver dhundh rahe hain', {}, { role: 'customer' });
     emitToRoom('hourly_' + booking_id, 'hourlyDriverCancelled', { booking_id });
     res.json({ success: true });

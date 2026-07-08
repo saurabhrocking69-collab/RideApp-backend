@@ -763,6 +763,8 @@ setTimeout(async () => {
   await db.query(`ALTER TABLE rides ADD COLUMN IF NOT EXISTS offered_phones TEXT[] DEFAULT '{}'`).catch(() => {});
   await db.query(`ALTER TABLE rides ADD COLUMN IF NOT EXISTS rejected_phones TEXT[] DEFAULT '{}'`).catch(() => {});
   await db.query(`ALTER TABLE rides ADD COLUMN IF NOT EXISTS current_radius_m INTEGER DEFAULT NULL`).catch(() => {});
+  // Hourly booking — track drivers who cancelled so same driver is not re-offered
+  await db.query(`ALTER TABLE hourly_bookings ADD COLUMN IF NOT EXISTS rejected_drivers TEXT[] DEFAULT '{}'`).catch(() => {});
   // driver_metrics scoring columns (added by add-cancellation.js; must also exist here)
   await db.query(`ALTER TABLE driver_metrics ADD COLUMN IF NOT EXISTS acceptance_rate DECIMAL(5,2) DEFAULT 100`).catch(() => {});
   await db.query(`ALTER TABLE driver_metrics ADD COLUMN IF NOT EXISTS cancellation_rate DECIMAL(5,2) DEFAULT 0`).catch(() => {});
