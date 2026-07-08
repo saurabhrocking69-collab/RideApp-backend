@@ -29,6 +29,7 @@ const rideWorker = new Worker('ride-assignment', async (job) => {
   const d = job.data;
   if (d.type === 'broadcast-advance')    await _bmqBroadcastAdvance(d).catch(e => console.error('[ADVANCE] error:', e.message));
   if (d.type === 'surge-grace-timeout')  await _bmqSurgeGraceTimeout(d).catch(e => console.error('[SURGE_TIMEOUT] error:', e.message));
+  if (d.type === 'assign-next')          await _bmqAssignNext(d).catch(e => console.error('[ASSIGN-NEXT] error:', e.message));
 }, { connection: makeBmqConn(), concurrency: 5 });
 
 rideWorker.on('failed', (job, err) => {
@@ -240,6 +241,21 @@ async function getAvailableAlternatives(rideType) {
   );
   const available = new Set(r.rows.filter(row => parseInt(row.cnt) > 0).map(row => row.vehicle_type));
   return alts.filter(a => available.has(a));
+}
+
+// ── Fallback: buddy ignored direct request → start normal broadcast ───────────
+// Also handles the 3-second cron's stuck-ride recovery path.
+async function _bmqAssignNext({ rideId, pickupLat, pickupLng, rideType }) {
+  // Only act if ride is still unmatched AND the assignment window has expired
+  // (prevents duplicate broadcast if another job already started one)
+  const r = await db.query(
+    `SELECT id FROM rides WHERE id=$1 AND status='requested' AND driver_id IS NULL
+     AND (assignment_expires_at IS NULL OR assignment_expires_at < NOW())`,
+    [rideId]
+  );
+  if (!r.rows[0]) { console.log(`[ASSIGN-NEXT] ride=${rideId} — already matched or window still active, skip`); return; }
+  console.log(`[ASSIGN-NEXT] ride=${rideId} type=${rideType} — starting normal broadcast`);
+  await assignRideToNextDriver(rideId, pickupLat, pickupLng, rideType, null, null, false);
 }
 
 // ── Public entry point: start broadcast from 500m, schedule BullMQ advance ───

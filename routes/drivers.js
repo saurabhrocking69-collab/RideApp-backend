@@ -111,11 +111,14 @@ router.get('/pending-ride', async (req, res) => {
     if (dr.verification_status !== 'approved') return res.json({ ride: null, not_approved: true });
     if (!dr.is_online) return res.json({ ride: null });
 
-    // Broadcast system: driver sees ride if their phone is in offered_phones, window is open, and they haven't rejected
+    // Broadcast system: driver sees ride if phone in offered_phones OR directly assigned (favourite buddy)
     const assigned = await db.query(
       `SELECT r.*, p.name AS passenger_name, p.phone AS passenger_phone
        FROM rides r JOIN users p ON r.passenger_id::text = p.id::text
-       WHERE $1 = ANY(COALESCE(r.offered_phones, '{}'))
+       WHERE (
+         $1 = ANY(COALESCE(r.offered_phones, '{}'))
+         OR r.assigned_to_phone = $1
+       )
          AND NOT ($1 = ANY(COALESCE(r.rejected_phones, '{}')))
          AND r.status='requested' AND r.driver_id IS NULL
          AND r.assignment_expires_at > NOW()
@@ -126,7 +129,8 @@ router.get('/pending-ride', async (req, res) => {
       const r = assigned.rows[0];
       const secLeft = Math.max(0, Math.ceil((new Date(r.assignment_expires_at).getTime() - Date.now()) / 1000));
       const tripKm = (r.pickup_lat && r.drop_lat) ? haversineKm(parseFloat(r.pickup_lat), parseFloat(r.pickup_lng), parseFloat(r.drop_lat), parseFloat(r.drop_lng)) : null;
-      return res.json({ ride: { ...r, seconds_to_accept: secLeft, distance: tripKm ? tripKm.toFixed(1) : null, is_favourite_request: directFavouriteRideIds.has(String(r.id)) }, pending_commission: pendingComm });
+      const isFavRequest = r.assigned_to_phone === phone || directFavouriteRideIds.has(String(r.id));
+      return res.json({ ride: { ...r, seconds_to_accept: secLeft, distance: tripKm ? tripKm.toFixed(1) : null, is_favourite_request: isFavRequest }, pending_commission: pendingComm });
     }
 
     const vehicleType = dr.vehicle_type === 'ultra_luxury' ? 'luxury' : dr.vehicle_type;
