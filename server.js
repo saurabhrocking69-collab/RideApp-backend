@@ -40,6 +40,7 @@ const adminRouter      = require('./routes/admin');
 const favouritesRouter = require('./routes/favourites');
 const complaintsRouter = require('./routes/complaints');
 const bonusRouter      = require('./routes/bonus');
+const healthCheck      = require('./services/healthCheck');
 
 // ── App + HTTP + Socket.io ───────────────────────
 const app    = express();
@@ -536,6 +537,21 @@ app.post('/api/upload', async (req, res) => {
     const result = await cloudinary.uploader.upload(image, { folder: 'rideapp_drivers', resource_type: 'image' });
     res.json({ success: true, url: result.secure_url });
   } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ── Health endpoint — public, no auth, used by Railway + UptimeRobot ─────────
+app.get('/api/health', async (req, res) => {
+  try {
+    const results = await healthCheck.getStatus();
+    const allOk   = results.every(r => r.status === 'ok');
+    res.status(allOk ? 200 : 503).json({
+      status:  allOk ? 'ok' : 'degraded',
+      checks:  results,
+      ts:      new Date().toISOString(),
+    });
+  } catch (err) {
+    res.status(503).json({ status: 'error', error: err.message });
+  }
 });
 
 // ── Route mounts ─────────────────────────────────
@@ -1271,6 +1287,7 @@ setInterval(async () => {
 server.listen(process.env.PORT || 3000, '0.0.0.0', () => {
   console.log('🚀 Server running on port ' + (process.env.PORT || 3000));
   startLocationJobs();
+  healthCheck.start();
 });
 
 // ── Graceful shutdown ────────────────────────────
