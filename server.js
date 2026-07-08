@@ -1230,18 +1230,16 @@ setInterval(async () => {
       console.log(`⏰ Reminder sent → ${ride.customer_phone} (scheduled_ride #${ride.id} at ${timeStr} IST)`);
     }
 
-    // ── 2. Dispatch: create ride + broadcast when scheduled time arrives ───
-    // Window: up to 5 min before scheduled_at so driver can arrive on time.
-    // Guard: scheduled_at > NOW() - 30 min avoids re-dispatching very stale
-    // bookings if server was down for a while.
+    // ── 2. Dispatch: send ride request to drivers 12 min before scheduled_at ──
+    // Primary window: 12-14 min early. Extra 2 min (10-14) as catch-up if
+    // server restarted briefly during the window.
     const toDispatch = await db.query(
       `SELECT sr.*, u.id AS passenger_id
        FROM scheduled_rides sr
        JOIN users u ON u.phone = sr.customer_phone
        WHERE sr.status = 'pending'
          AND sr.ride_id IS NULL
-         AND sr.scheduled_at BETWEEN NOW() AND NOW() + INTERVAL '5 minutes'
-         AND sr.scheduled_at > NOW() - INTERVAL '30 minutes'`
+         AND sr.scheduled_at BETWEEN NOW() + INTERVAL '10 minutes' AND NOW() + INTERVAL '14 minutes'`
     );
     for (const sr of toDispatch.rows) {
       // Create the live ride record

@@ -176,16 +176,27 @@ async function _bmqSurgeGraceTimeout({ rideId, pickupLat, pickupLng, rideType })
 // ── Escalation: first failure → surge offer, second → no_driver_final ────────
 async function _escalate(rideId, rideType, afterSurge, pickupLat, pickupLng) {
   if (afterSurge) {
-    const [alts, pRes] = await Promise.all([
+    const [alts, pRes, schedRes] = await Promise.all([
       getAvailableAlternatives(rideType).catch(() => []),
       db.query(`SELECT u.phone FROM rides r JOIN users u ON r.passenger_id::text = u.id::text WHERE r.id=$1`, [rideId]),
+      db.query(`SELECT id FROM scheduled_rides WHERE ride_id=$1`, [rideId]),
     ]);
     const customerPhone = pRes.rows[0]?.phone;
+    const isScheduled   = schedRes.rows.length > 0;
     if (customerPhone) {
+      const noDriverTitle = '😔 Driver Nahi Mila';
+      const noDriverBody  = isScheduled
+        ? 'Aapki scheduled ride ke liye koi driver available nahi hai. Please dobara book karein.'
+        : (alts.length ? 'Doosra vehicle try karo ya thodi der baad retry karo.' : 'Is area mein abhi koi driver nahi. 5 min baad try karo.');
+      // FCM push notification (once)
       sendFCM(
-        customerPhone, '😔 Driver Nahi Mila',
-        alts.length ? 'Doosra vehicle try karo ya thodi der baad retry karo.' : 'Is area mein abhi koi driver nahi. 5 min baad try karo.',
+        customerPhone, noDriverTitle, noDriverBody,
         { type: 'no_driver_found', ride_id: String(rideId) }, { role: 'customer' }
+      ).catch(() => {});
+      // Internal notification (visible in app notification centre)
+      db.query(
+        `INSERT INTO notifications (user_phone, title, body, created_at) VALUES ($1, $2, $3, NOW())`,
+        [customerPhone, noDriverTitle, noDriverBody]
       ).catch(() => {});
     }
     emitToRoom('ride_' + rideId, 'rideUpdate', {
