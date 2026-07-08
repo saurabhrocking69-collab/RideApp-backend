@@ -1153,35 +1153,92 @@ setInterval(() => {
   }
 }, 5 * 60 * 1000);
 
-// ── Cron: scheduled ride reminders (every 60s) ───
-// Ensure reminder_sent column exists (safe to run at startup)
+// ── Cron: scheduled ride reminders + dispatch (every 30s) ───
 db.query(`ALTER TABLE scheduled_rides ADD COLUMN IF NOT EXISTS reminder_sent BOOLEAN DEFAULT FALSE`).catch(() => {});
+db.query(`ALTER TABLE scheduled_rides ADD COLUMN IF NOT EXISTS ride_id INTEGER`).catch(() => {});
+
+// IST formatter — server runs in UTC (Railway), always force Asia/Kolkata
+function toIST(date) {
+  return new Date(date).toLocaleTimeString('hi-IN', {
+    hour: '2-digit', minute: '2-digit', hour12: true,
+    timeZone: 'Asia/Kolkata',
+  });
+}
 
 setInterval(async () => {
   try {
-    // Find scheduled rides whose time is 14–16 minutes away and haven't been notified yet
-    const due = await db.query(
+    // ── 1. Reminder: 14–16 min window (sent once) ──────────────────────────
+    const reminders = await db.query(
       `SELECT * FROM scheduled_rides
        WHERE status = 'pending'
          AND reminder_sent = FALSE
          AND scheduled_at BETWEEN NOW() + INTERVAL '14 minutes' AND NOW() + INTERVAL '16 minutes'`
     );
-    for (const ride of due.rows) {
-      const timeStr = new Date(ride.scheduled_at).toLocaleTimeString('hi-IN', { hour: '2-digit', minute: '2-digit', hour12: true });
-      // Notify customer
+    for (const ride of reminders.rows) {
+      const timeStr = toIST(ride.scheduled_at);
       await sendFCM(
         ride.customer_phone,
         '🚖 Aapki ride 15 minute mein!',
-        `${timeStr} baje ki ride ke liye ready ho jao — ${ride.pickup} se ${ride.drop_location}`,
-        { type: 'scheduled_ride_reminder', rideId: String(ride.id) },
+        `${timeStr} baje ke liye ready ho jao — ${ride.pickup} se ${ride.drop_location}`,
+        { type: 'scheduled_ride_reminder', scheduled_ride_id: String(ride.id) },
         { channelId: 'default', role: 'customer' }
-      );
-      // Mark reminder sent so it doesn't fire again
+      ).catch(() => {});
       await db.query(`UPDATE scheduled_rides SET reminder_sent = TRUE WHERE id = $1`, [ride.id]);
-      console.log(`⏰ Scheduled ride reminder sent → ${ride.customer_phone} (ride #${ride.id} at ${timeStr})`);
+      console.log(`⏰ Reminder sent → ${ride.customer_phone} (scheduled_ride #${ride.id} at ${timeStr} IST)`);
     }
-  } catch (_e) {}
-}, 60_000);
+
+    // ── 2. Dispatch: create ride + broadcast when scheduled time arrives ───
+    // Window: up to 5 min before scheduled_at so driver can arrive on time.
+    // Guard: scheduled_at > NOW() - 30 min avoids re-dispatching very stale
+    // bookings if server was down for a while.
+    const toDispatch = await db.query(
+      `SELECT sr.*, u.id AS passenger_id
+       FROM scheduled_rides sr
+       JOIN users u ON u.phone = sr.customer_phone
+       WHERE sr.status = 'pending'
+         AND sr.ride_id IS NULL
+         AND sr.scheduled_at BETWEEN NOW() AND NOW() + INTERVAL '5 minutes'
+         AND sr.scheduled_at > NOW() - INTERVAL '30 minutes'`
+    );
+    for (const sr of toDispatch.rows) {
+      // Create the live ride record
+      const rideRes = await db.query(
+        `INSERT INTO rides
+           (passenger_id, pickup, drop_location, ride_type, fare, status,
+            pickup_lat, pickup_lng, drop_lat, drop_lng)
+         VALUES ($1,$2,$3,$4,$5,'requested',$6,$7,$8,$9)
+         RETURNING id`,
+        [sr.passenger_id, sr.pickup, sr.drop_location,
+         sr.vehicle_type || 'auto', sr.fare_estimate || 0,
+         sr.pickup_lat || null, sr.pickup_lng || null,
+         sr.drop_lat || null, sr.drop_lng || null]
+      );
+      const rideId = rideRes.rows[0].id;
+
+      // Link + mark dispatched
+      await db.query(
+        `UPDATE scheduled_rides SET status = 'dispatched', ride_id = $1 WHERE id = $2`,
+        [rideId, sr.id]
+      );
+
+      // Broadcast to nearby drivers (non-blocking)
+      assignRideToNextDriver(rideId, sr.pickup_lat, sr.pickup_lng, sr.vehicle_type || 'auto')
+        .catch(e => console.error(`[SCHEDULED] assignRide error ride=${rideId}:`, e.message));
+
+      // Tell customer their ride is being searched
+      const timeStr = toIST(sr.scheduled_at);
+      sendFCM(
+        sr.customer_phone,
+        '🔍 Driver dhundh rahe hain!',
+        `${timeStr} ki scheduled ride ke liye driver search shuru ho gayi`,
+        { type: 'scheduled_ride_dispatched', ride_id: String(rideId), scheduled_ride_id: String(sr.id) },
+        { channelId: 'default', role: 'customer' }
+      ).catch(() => {});
+
+      console.log(`🚖 Scheduled ride #${sr.id} dispatched → live ride #${rideId} (${sr.vehicle_type}, ${sr.customer_phone})`);
+    }
+  } catch (_e) { console.error('[SCHEDULED CRON] error:', _e.message); }
+}, 30_000);
 
 // ── Start server ─────────────────────────────────
 server.listen(process.env.PORT || 3000, '0.0.0.0', () => {
