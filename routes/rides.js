@@ -221,12 +221,12 @@ router.post('/accept', async (req, res) => {
     if (!claim.rows[0]) return res.json({ success: false, message: 'Ride window expire ho gayi ya kisi aur ne le li — agli dekho!' });
 
     const dInfo = await db.query(
-      `SELECT u.name, d.vehicle_no, d.vehicle_brand, d.vehicle_model, d.rating, d.verification_status, d.face_photo
+      `SELECT u.name, d.vehicle_no, d.vehicle_brand, d.vehicle_model, d.rating, d.verification_status, d.face_photo, d.upi_id
        FROM users u JOIN drivers d ON u.id=d.id WHERE u.id=$1`, [driver.rows[0].id]
     );
     const di = dInfo.rows[0];
     const driverCard = di
-      ? { name: di.name, vehicle_no: di.vehicle_no, vehicle_brand: di.vehicle_brand, vehicle_model: di.vehicle_model, rating: di.rating, verified: di.verification_status === 'approved', photo: di.face_photo || null }
+      ? { name: di.name, vehicle_no: di.vehicle_no, vehicle_brand: di.vehicle_brand, vehicle_model: di.vehicle_model, rating: di.rating, verified: di.verification_status === 'approved', photo: di.face_photo || null, upi_id: di.upi_id || null }
       : null;
 
     // Compute estimated ETA for dynamic correction tracking
