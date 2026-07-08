@@ -896,7 +896,7 @@ setTimeout(async () => {
       ('luxury',        80, 25, 2.0)
     ON CONFLICT (vehicle_type) DO NOTHING
   `).catch(() => {});
-  // Fix NULL per_km_rate or base_fare that causes NaN → null in fare responses
+  // Enforce NOT NULL on financial columns — repairs any existing NULLs and locks the column going forward
   await db.query(`
     UPDATE fare_settings SET
       per_km_rate = CASE vehicle_type
@@ -904,7 +904,7 @@ setTimeout(async () => {
         WHEN 'eriksha' THEN 10 WHEN 'green_bike' THEN 6
         WHEN 'electric_auto' THEN 9 WHEN 'luxury' THEN 25
         ELSE 10 END
-    WHERE per_km_rate IS NULL OR per_km_rate = 0
+    WHERE per_km_rate IS NULL
   `).catch(() => {});
   await db.query(`
     UPDATE fare_settings SET
@@ -913,8 +913,12 @@ setTimeout(async () => {
         WHEN 'eriksha' THEN 20 WHEN 'green_bike' THEN 12
         WHEN 'electric_auto' THEN 20 WHEN 'luxury' THEN 80
         ELSE 20 END
-    WHERE base_fare IS NULL OR base_fare = 0
+    WHERE base_fare IS NULL
   `).catch(() => {});
+  // Add NOT NULL constraints — safe after the repair above
+  await db.query(`ALTER TABLE fare_settings ALTER COLUMN base_fare SET NOT NULL`).catch(() => {});
+  await db.query(`ALTER TABLE fare_settings ALTER COLUMN per_km_rate SET NOT NULL`).catch(() => {});
+  await db.query(`ALTER TABLE fare_settings ALTER COLUMN night_multiplier SET NOT NULL`).catch(() => {});
 
   // ── Bonus System Tables ───────────────────────────
   await db.query(`

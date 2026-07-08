@@ -445,11 +445,18 @@ router.get('/referrals', async (req, res) => {
 // POST /api/admin/fare-settings
 router.post('/fare-settings', async (req, res) => {
   const { vehicle_type, base_fare, per_km_rate, night_multiplier, night_start, night_end } = req.body;
+  const bf  = parseFloat(base_fare);
+  const pkr = parseFloat(per_km_rate);
+  const nm  = parseFloat(night_multiplier);
+  if (!vehicle_type)        return res.status(400).json({ error: 'vehicle_type required' });
+  if (isNaN(bf)  || bf  < 0) return res.status(400).json({ error: 'base_fare must be a non-negative number' });
+  if (isNaN(pkr) || pkr < 0) return res.status(400).json({ error: 'per_km_rate must be a non-negative number' });
+  if (isNaN(nm)  || nm  < 1) return res.status(400).json({ error: 'night_multiplier must be >= 1' });
   try {
     await db.query(
       `WITH updated AS (UPDATE fare_settings SET base_fare=$1, per_km_rate=$2, night_multiplier=$3, night_start=$4, night_end=$5, updated_at=NOW() WHERE vehicle_type=$6 RETURNING 1)
        INSERT INTO fare_settings (vehicle_type, base_fare, per_km_rate, night_multiplier, night_start, night_end) SELECT $6, $1, $2, $3, $4, $5 WHERE NOT EXISTS (SELECT 1 FROM updated)`,
-      [base_fare, per_km_rate, night_multiplier, night_start, night_end, vehicle_type]
+      [bf, pkr, nm, night_start || '22:00', night_end || '06:00', vehicle_type]
     );
     res.json({ success: true, message: 'Fare updated!' });
   } catch (err) { res.status(500).json({ error: err.message }); }
