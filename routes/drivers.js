@@ -148,13 +148,13 @@ router.get('/pending-ride', async (req, res) => {
       const fb = fallback.rows[0];
       // Mark this driver as assigned so accept-offer endpoint can verify it
       await db.query(
-        `UPDATE rides SET assigned_to_phone=$1, assignment_expires_at=NOW()+INTERVAL '25 seconds',
+        `UPDATE rides SET assigned_to_phone=$1, assignment_expires_at=NOW()+INTERVAL '30 seconds',
            offered_phones=array_append(COALESCE(offered_phones,'{}'), $1::text)
          WHERE id=$2 AND status='requested' AND driver_id IS NULL AND (assigned_to_phone IS NULL OR assignment_expires_at < NOW())`,
         [phone, fb.id]
       );
       const fbKm = (fb.pickup_lat && fb.drop_lat) ? haversineKm(parseFloat(fb.pickup_lat), parseFloat(fb.pickup_lng), parseFloat(fb.drop_lat), parseFloat(fb.drop_lng)) : null;
-      return res.json({ ride: { ...fb, seconds_to_accept: 25, distance: fbKm ? fbKm.toFixed(1) : null }, pending_commission: pendingComm });
+      return res.json({ ride: { ...fb, seconds_to_accept: 30, distance: fbKm ? fbKm.toFixed(1) : null }, pending_commission: pendingComm });
     }
     return res.json({ ride: null });
   } catch (err) { res.status(500).json({ error: err.message }); }

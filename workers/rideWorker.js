@@ -10,7 +10,7 @@ const rideQueue = new Queue('ride-assignment', { connection: makeBmqConn() });
 
 // ── Broadcast radius progression (meters) ───────────────────────────────────
 const RADIUS_LEVELS_M = [500, 1000, 2000, 3000, 4000, 5000, 6000, 7000, 8000, 9000, 10000, 11000];
-const WINDOW_SEC      = 20;   // each radius level gets 20 seconds
+const WINDOW_SEC      = 30;   // each radius level gets 30 seconds
 const SURGE_GRACE_SEC = 100;  // customer has 100s to accept surge offer
 const STALE_GPS_MS    = 15 * 60 * 1000; // 15 min — location older than this → include anyway
 
