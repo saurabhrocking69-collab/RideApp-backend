@@ -555,7 +555,7 @@ router.post('/cancel-smart', async (req, res) => {
         [totalCancelled, cancelsToday, today, cancelRate.toFixed(2), suspendedUntil, phone]
       );
       if (ride.passenger_phone)
-        sendFCM(ride.passenger_phone, '🚫 Driver ne Cancel Kiya', `Reason: ${reason || 'N/A'}. Naya driver dhundh rahe hain...`, { type: 'ride_cancelled' }, { role: 'customer' });
+        sendFCM(ride.passenger_phone, '🚫 Driver ne Cancel Kiya', `Reason: ${reason || 'N/A'}. App se dobara ride book karein.`, { type: 'ride_cancelled' }, { role: 'customer' });
     }
 
     const smartCancelRes = await db.query(
