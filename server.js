@@ -1036,7 +1036,11 @@ setTimeout(async () => {
       created_at TIMESTAMPTZ DEFAULT NOW()
     )
   `).catch(() => {});
+  // Repair: early migration created ride_id as UUID; cast to TEXT so 'h_55' works
+  await db.query(`ALTER TABLE chat_messages ALTER COLUMN ride_id TYPE TEXT USING ride_id::text`).catch(() => {});
   await db.query(`CREATE INDEX IF NOT EXISTS idx_chat_ride ON chat_messages(ride_id, created_at)`).catch(() => {});
+  // Repair: package_hours was INTEGER; decimal extension hours (e.g. 2.25h) require NUMERIC
+  await db.query(`ALTER TABLE hourly_bookings ALTER COLUMN package_hours TYPE NUMERIC(10,2) USING package_hours::numeric`).catch(() => {});
   console.log('✅ Chat messages table ready');
 
   // ── Reward Settings Table (admin-configurable amounts) ──────────────────────
