@@ -209,7 +209,15 @@ router.get('/active', async (req, res) => {
   const { phone } = req.query;
   if (!phone) return res.status(400).json({ error: 'phone required' });
   try {
-    const r = await db.query(`SELECT * FROM hourly_bookings WHERE customer_phone=$1 AND status IN ('pending','matched','active') ORDER BY created_at DESC LIMIT 1`, [phone]);
+    // Exclude pending bookings older than 30 min — driver was never found, treat as expired
+    const r = await db.query(
+      `SELECT * FROM hourly_bookings
+       WHERE customer_phone=$1
+         AND status IN ('pending','matched','active')
+         AND NOT (status='pending' AND created_at < NOW() - INTERVAL '30 minutes')
+       ORDER BY created_at DESC LIMIT 1`,
+      [phone]
+    );
     if (!r.rows[0]) return res.json({ booking: null, driver: null });
     const b = r.rows[0];
     let driver = null;

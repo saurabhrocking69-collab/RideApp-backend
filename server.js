@@ -1283,6 +1283,32 @@ setInterval(async () => {
   } catch (_e) { console.error('[SCHEDULED CRON] error:', _e.message); }
 }, 30_000);
 
+// ── Hourly booking cleanup — auto-cancel pending bookings older than 30 min ──
+setInterval(async () => {
+  try {
+    const stale = await db.query(
+      `SELECT id, customer_phone, base_fare FROM hourly_bookings
+       WHERE status='pending' AND created_at < NOW() - INTERVAL '30 minutes'`
+    );
+    for (const b of stale.rows) {
+      const client = await db.connect();
+      try {
+        await client.query('BEGIN');
+        await client.query(`UPDATE hourly_bookings SET status='cancelled', payment_status='refunded' WHERE id=$1`, [b.id]);
+        const cu = await client.query('SELECT id FROM users WHERE phone=$1', [b.customer_phone]);
+        if (cu.rows[0] && b.base_fare > 0) {
+          await client.query('UPDATE customer_wallet SET balance=balance+$1 WHERE user_id=$2', [b.base_fare, cu.rows[0].id]);
+          await client.query(`INSERT INTO transactions (user_id,type,amount,description) VALUES ($1,'credit',$2,'Hourly booking expired - auto refund')`, [cu.rows[0].id, b.base_fare]);
+        }
+        await client.query('COMMIT');
+        sendFCM(b.customer_phone, '⏰ Hourly Booking Expired', 'Driver nahi mila — aapka paisa 24 ghante mein wallet mein wapis aa jayega.', { type: 'hourly_expired' }, { channelId: 'default', role: 'customer' }).catch(() => {});
+        console.log(`[HOURLY CLEANUP] Booking #${b.id} auto-cancelled (pending >30min)`);
+      } catch (e) { await client.query('ROLLBACK'); console.error('[HOURLY CLEANUP] error:', e.message); }
+      finally { client.release(); }
+    }
+  } catch (_e) { console.error('[HOURLY CLEANUP] error:', _e.message); }
+}, 5 * 60_000); // every 5 minutes
+
 // ── Start server ─────────────────────────────────
 server.listen(process.env.PORT || 3000, '0.0.0.0', () => {
   console.log('🚀 Server running on port ' + (process.env.PORT || 3000));
