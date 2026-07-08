@@ -176,6 +176,15 @@ async function _bmqSurgeGraceTimeout({ rideId, pickupLat, pickupLng, rideType })
 // ── Escalation: first failure → surge offer, second → no_driver_final ────────
 async function _escalate(rideId, rideType, afterSurge, pickupLat, pickupLng) {
   if (afterSurge) {
+    // Guard: if the stale-ride cron already cancelled this ride (rare but possible
+    // when BullMQ jobs are delayed past the 15-min cleanup window), skip the
+    // duplicate notification — the cron already sent one.
+    const statusRow = await db.query(`SELECT status FROM rides WHERE id=$1`, [rideId]);
+    if (!statusRow.rows[0] || statusRow.rows[0].status !== 'requested') {
+      console.log(`[ESCALATE] ride=${rideId} already ${statusRow.rows[0]?.status || 'gone'} — skipping duplicate no-driver notification`);
+      return;
+    }
+
     const [alts, pRes, schedRes] = await Promise.all([
       getAvailableAlternatives(rideType).catch(() => []),
       db.query(`SELECT u.phone FROM rides r JOIN users u ON r.passenger_id::text = u.id::text WHERE r.id=$1`, [rideId]),
@@ -269,36 +278,40 @@ async function _bmqAssignNext({ rideId, pickupLat, pickupLng, rideType }) {
   await assignRideToNextDriver(rideId, pickupLat, pickupLng, rideType, null, null, false);
 }
 
-// ── Public entry point: start broadcast from 500m, schedule BullMQ advance ───
+// ── Public entry point: walk ALL radii in-process until drivers found ────────
+// BullMQ is only used for the "advance after the acceptance window" step.
+// Walking radii in-process means a Redis/BullMQ hiccup can't silently strand
+// a ride at 500 m — every new booking always finds the nearest available driver.
 async function assignRideToNextDriver(rideId, pickupLat, pickupLng, rideType, _ignored_queue, _ignored_radius, afterSurge = false) {
   console.log(`[BROADCAST] ▶ Starting broadcast ride=${rideId} type=${rideType} afterSurge=${afterSurge}`);
 
-  // First wave in-process (zero Redis dependency)
-  let result;
-  try {
-    result = await broadcastToRadius(rideId, pickupLat, pickupLng, rideType, RADIUS_LEVELS_M[0], []);
-  } catch (e) {
-    console.error(`[BROADCAST] ride=${rideId} first wave error:`, e.message);
-    result = { sent: 0, phones: [] };
+  let offeredPhones = [];
+  for (let i = 0; i < RADIUS_LEVELS_M.length; i++) {
+    let result;
+    try {
+      result = await broadcastToRadius(rideId, pickupLat, pickupLng, rideType, RADIUS_LEVELS_M[i], offeredPhones);
+    } catch (e) {
+      console.error(`[BROADCAST] ride=${rideId} radius=${RADIUS_LEVELS_M[i]}m error:`, e.message);
+      result = { sent: 0, phones: [] };
+    }
+
+    if (result.sent > 0) {
+      offeredPhones = [...offeredPhones, ...result.phones];
+      // Drivers notified — schedule BullMQ advance for after the acceptance window
+      rideQueue.add('ride-assignment', {
+        type: 'broadcast-advance', rideId, pickupLat, pickupLng, rideType,
+        radiusM: RADIUS_LEVELS_M[i], afterSurge: !!afterSurge,
+      }, { delay: WINDOW_SEC * 1000 + 1000 }).catch(e =>
+        console.error(`[BROADCAST] ride=${rideId} BullMQ.add failed:`, e.message)
+      );
+      return;
+    }
+    console.log(`[BROADCAST] ride=${rideId} radius=${RADIUS_LEVELS_M[i]}m — 0 drivers, trying next`);
   }
 
-  if (result.sent > 0) {
-    // Schedule advance after 20s window
-    rideQueue.add('ride-assignment', {
-      type: 'broadcast-advance', rideId, pickupLat, pickupLng, rideType,
-      radiusM: RADIUS_LEVELS_M[0], afterSurge: !!afterSurge,
-    }, { delay: WINDOW_SEC * 1000 + 1000 }).catch(e =>
-      console.error(`[BROADCAST] ride=${rideId} BullMQ.add failed:`, e.message)
-    );
-  } else {
-    // No drivers at 500m — immediately advance via BullMQ
-    rideQueue.add('ride-assignment', {
-      type: 'broadcast-advance', rideId, pickupLat, pickupLng, rideType,
-      radiusM: RADIUS_LEVELS_M[0], afterSurge: !!afterSurge,
-    }, { delay: 200 }).catch(e =>
-      console.error(`[BROADCAST] ride=${rideId} BullMQ.add failed:`, e.message)
-    );
-  }
+  // All 12 radius levels exhausted with zero drivers found → escalate now
+  console.log(`[BROADCAST] ride=${rideId} — all radii exhausted, escalating`);
+  await _escalate(rideId, rideType, !!afterSurge, pickupLat, pickupLng);
 }
 
 module.exports = { rideQueue, rideWorker, assignRideToNextDriver, broadcastToRadius };

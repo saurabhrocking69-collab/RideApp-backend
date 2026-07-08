@@ -1234,53 +1234,66 @@ setInterval(async () => {
       console.log(`⏰ Reminder sent → ${ride.customer_phone} (scheduled_ride #${ride.id} at ${timeStr} IST)`);
     }
 
-    // ── 2. Dispatch: send ride request to drivers 12 min before scheduled_at ──
-    // Primary window: 12-14 min early. Extra 2 min (10-14) as catch-up if
-    // server restarted briefly during the window.
+    // ── 2. Dispatch: send ride request to drivers 10-15 min before scheduled_at ──
+    // Atomic UPDATE claim prevents two Railway instances from double-dispatching
+    // the same scheduled ride during a zero-downtime deploy.
     const toDispatch = await db.query(
-      `SELECT sr.*, u.id AS passenger_id
-       FROM scheduled_rides sr
-       JOIN users u ON u.phone = sr.customer_phone
-       WHERE sr.status = 'pending'
-         AND sr.ride_id IS NULL
-         AND sr.scheduled_at BETWEEN NOW() + INTERVAL '10 minutes' AND NOW() + INTERVAL '14 minutes'`
+      `UPDATE scheduled_rides SET status = 'dispatching'
+       WHERE status = 'pending'
+         AND ride_id IS NULL
+         AND scheduled_at BETWEEN NOW() + INTERVAL '10 minutes' AND NOW() + INTERVAL '15 minutes'
+       RETURNING *`
     );
     for (const sr of toDispatch.rows) {
-      // Create the live ride record
-      const rideRes = await db.query(
-        `INSERT INTO rides
-           (passenger_id, pickup, drop_location, ride_type, fare, status,
-            pickup_lat, pickup_lng, drop_lat, drop_lng)
-         VALUES ($1,$2,$3,$4,$5,'requested',$6,$7,$8,$9)
-         RETURNING id`,
-        [sr.passenger_id, sr.pickup, sr.drop_location,
-         sr.vehicle_type || 'auto', sr.fare_estimate || 0,
-         sr.pickup_lat || null, sr.pickup_lng || null,
-         sr.drop_lat || null, sr.drop_lng || null]
-      );
-      const rideId = rideRes.rows[0].id;
+      try {
+        // Look up passenger_id directly — avoids silent JOIN failures on phone-format edge cases
+        const userRes = await db.query('SELECT id FROM users WHERE phone = $1', [sr.customer_phone]);
+        if (!userRes.rows[0]) {
+          console.error(`[SCHEDULED] No user for phone=${sr.customer_phone} (scheduled_ride #${sr.id}) — reverting`);
+          await db.query(`UPDATE scheduled_rides SET status='pending' WHERE id=$1`, [sr.id]).catch(() => {});
+          continue;
+        }
 
-      // Link + mark dispatched
-      await db.query(
-        `UPDATE scheduled_rides SET status = 'dispatched', ride_id = $1 WHERE id = $2`,
-        [rideId, sr.id]
-      );
+        // Create live ride
+        const rideRes = await db.query(
+          `INSERT INTO rides
+             (passenger_id, pickup, drop_location, ride_type, fare, status,
+              pickup_lat, pickup_lng, drop_lat, drop_lng)
+           VALUES ($1,$2,$3,$4,$5,'requested',$6,$7,$8,$9)
+           RETURNING id`,
+          [userRes.rows[0].id, sr.pickup, sr.drop_location,
+           sr.vehicle_type || 'auto', sr.fare_estimate || 0,
+           sr.pickup_lat || null, sr.pickup_lng || null,
+           sr.drop_lat || null, sr.drop_lng || null]
+        );
+        const rideId = rideRes.rows[0].id;
 
-      // Broadcast to nearby drivers (non-blocking)
-      assignRideToNextDriver(rideId, sr.pickup_lat, sr.pickup_lng, sr.vehicle_type || 'auto')
-        .catch(e => console.error(`[SCHEDULED] assignRide error ride=${rideId}:`, e.message));
+        // Mark fully dispatched
+        await db.query(
+          `UPDATE scheduled_rides SET status = 'dispatched', ride_id = $1 WHERE id = $2`,
+          [rideId, sr.id]
+        );
 
-      // Tell customer their ride is being searched
-      const timeStr = toIST(sr.scheduled_at);
-      sendFCM(
-        sr.customer_phone,
-        '🔍 Driver dhundh rahe hain!',
-        `${timeStr} ki scheduled ride ke liye driver search shuru ho gayi`,
-        { type: 'scheduled_ride_dispatched', ride_id: String(rideId), scheduled_ride_id: String(sr.id) },
-        { channelId: 'default', role: 'customer' }
-      ).catch(() => {});
+        // Broadcast to drivers (in-process loop — does NOT depend on BullMQ for the initial search)
+        assignRideToNextDriver(rideId, sr.pickup_lat, sr.pickup_lng, sr.vehicle_type || 'auto')
+          .catch(e => console.error(`[SCHEDULED] assignRide error ride=${rideId}:`, e.message));
 
-      console.log(`🚖 Scheduled ride #${sr.id} dispatched → live ride #${rideId} (${sr.vehicle_type}, ${sr.customer_phone})`);
+        // Tell customer their ride is being searched
+        const timeStr = toIST(sr.scheduled_at);
+        sendFCM(
+          sr.customer_phone,
+          '🔍 Driver dhundh rahe hain!',
+          `${timeStr} ki scheduled ride ke liye driver search shuru ho gayi`,
+          { type: 'scheduled_ride_dispatched', ride_id: String(rideId), scheduled_ride_id: String(sr.id) },
+          { channelId: 'default', role: 'customer' }
+        ).catch(() => {});
+
+        console.log(`🚖 Scheduled ride #${sr.id} dispatched → live ride #${rideId} (${sr.vehicle_type}, ${sr.customer_phone})`);
+      } catch (e) {
+        console.error(`[SCHEDULED] Dispatch failed for #${sr.id}:`, e.message);
+        // Revert so next cron tick can retry
+        await db.query(`UPDATE scheduled_rides SET status='pending' WHERE id=$1`, [sr.id]).catch(() => {});
+      }
     }
   } catch (_e) { console.error('[SCHEDULED CRON] error:', _e.message); }
 }, 30_000);
