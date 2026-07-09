@@ -166,9 +166,11 @@ router.post('/book', async (req, res) => {
     );
     const rideId = ride.rows[0].id;
 
-    // Assign directly to buddy with 30-second window and empty fallback queue
+    // Assign directly to buddy — also add to offered_phones so the standard accept endpoint can verify them
     await db.query(
-      `UPDATE rides SET assigned_to_phone=$1, assignment_expires_at=NOW()+INTERVAL '25 seconds', assignment_queue='[]', status='requested'
+      `UPDATE rides SET assigned_to_phone=$1, assignment_expires_at=NOW()+INTERVAL '25 seconds',
+         assignment_queue='[]', status='requested',
+         offered_phones=ARRAY[$1::text]
        WHERE id=$2`,
       [buddy.driver_phone, rideId]
     );

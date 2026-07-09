@@ -209,11 +209,14 @@ router.post('/accept', async (req, res) => {
     );
     const offeredPhones = offerInfo.rows[0]?.offered_phones || [];
 
-    // Eligibility: driver must be in offered_phones AND window still open
+    // Eligibility: driver must be in offered_phones OR directly assigned (favourite buddy), AND window still open
     const claim = await db.query(
       `UPDATE rides SET assigned_to_phone=$2, assignment_expires_at=NULL, assignment_queue='[]'
        WHERE id=$1 AND status='requested' AND driver_id IS NULL
-         AND $2 = ANY(COALESCE(offered_phones, '{}'))
+         AND (
+           $2 = ANY(COALESCE(offered_phones, '{}'))
+           OR assigned_to_phone = $2
+         )
          AND assignment_expires_at > NOW()
        RETURNING id`,
       [ride_id, driver_phone]
