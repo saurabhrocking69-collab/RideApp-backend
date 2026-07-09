@@ -32,7 +32,7 @@ router.post('/validate', async (req, res) => {
 router.get('/list', async (req, res) => {
   try {
     const promos = await db.query(
-      `SELECT code, description, discount_type, discount_value, max_discount, min_fare, expires_at
+      `SELECT code, discount_type, discount_value, max_discount, min_fare, expires_at
        FROM promo_codes WHERE active=true AND (expires_at IS NULL OR expires_at > NOW())
          AND (usage_limit IS NULL OR used_count < usage_limit)
        ORDER BY max_discount DESC LIMIT 20`
