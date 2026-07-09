@@ -419,14 +419,24 @@ router.post('/notify-all', async (req, res) => {
     await db.query(`ALTER TABLE notifications ADD COLUMN IF NOT EXISTS target TEXT`).catch(() => {});
     await db.query(`ALTER TABLE notifications ADD COLUMN IF NOT EXISTS message TEXT`).catch(() => {});
 
-    let roleFilter = '';
-    if (target === 'customers') roleFilter = "AND role='passenger'";
-    else if (target === 'drivers') roleFilter = "AND role='driver'";
+    // Distinguish customers vs drivers by which token column is set, NOT by role.
+    // (Driver registration overwrites role to 'driver', so role='passenger' would
+    //  exclude testers who are on both apps.)
+    let usersQuery;
+    let fcmRole;
+    if (target === 'drivers') {
+      usersQuery = `SELECT phone FROM users WHERE driver_fcm_token IS NOT NULL`;
+      fcmRole = 'driver';
+    } else if (target === 'customers') {
+      usersQuery = `SELECT phone FROM users WHERE fcm_token IS NOT NULL`;
+      fcmRole = 'customer';
+    } else {
+      // 'all' — everyone with a customer-app token (driver-app users who also have customer app included)
+      usersQuery = `SELECT phone FROM users WHERE fcm_token IS NOT NULL`;
+      fcmRole = 'customer';
+    }
 
-    // Get all users with FCM tokens matching the target
-    const users = await db.query(
-      `SELECT phone, fcm_token, role FROM users WHERE fcm_token IS NOT NULL ${roleFilter}`
-    );
+    const users = await db.query(usersQuery);
     const count = users.rows.length;
 
     // Insert ONE row with group target — no per-phone loops, no format mismatch issues
@@ -443,7 +453,6 @@ router.post('/notify-all', async (req, res) => {
 
     // Send FCM push in background
     let sent = 0, failed = 0;
-    const fcmRole = target === 'drivers' ? 'driver' : 'customer';
     for (const u of users.rows) {
       try {
         await sendFCM(
