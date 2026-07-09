@@ -1189,6 +1189,18 @@ setInterval(async () => {
       } catch (_e) {}
     }
     if (stuckMatched.rows.length) console.log(`🧹 Auto-cancelled ${stuckMatched.rows.length} stuck matched/arrived rides`);
+
+    // 3. Cancel stuck 'started' rides older than 4 hours — driver vanished mid-trip
+    const stuckStarted = await db.query(
+      `UPDATE rides SET status='cancelled'
+       WHERE status = 'started'
+         AND created_at < NOW() - INTERVAL '4 hours'
+       RETURNING id, passenger_id`
+    );
+    for (const row of stuckStarted.rows) {
+      emitToRoom('ride_' + row.id, 'rideUpdate', { rideId: row.id, status: 'cancelled', reason: 'auto_timeout' });
+    }
+    if (stuckStarted.rows.length) console.log(`🧹 Auto-cancelled ${stuckStarted.rows.length} stuck started rides (>4h)`);
   } catch (_e) {}
 }, 60_000);
 

@@ -293,32 +293,50 @@ async function _bmqAssignNext({ rideId, pickupLat, pickupLng, rideType }) {
 async function assignRideToNextDriver(rideId, pickupLat, pickupLng, rideType, _ignored_queue, _ignored_radius, afterSurge = false) {
   console.log(`[BROADCAST] ▶ Starting broadcast ride=${rideId} type=${rideType} afterSurge=${afterSurge}`);
 
-  let offeredPhones = [];
-  for (let i = 0; i < RADIUS_LEVELS_M.length; i++) {
-    let result;
-    try {
-      result = await broadcastToRadius(rideId, pickupLat, pickupLng, rideType, RADIUS_LEVELS_M[i], offeredPhones);
-    } catch (e) {
-      console.error(`[BROADCAST] ride=${rideId} radius=${RADIUS_LEVELS_M[i]}m error:`, e.message);
-      result = { sent: 0, phones: [] };
+  // Helper: walk all radius levels for a given vehicle type, return true if drivers found
+  async function _walkRadii(searchType, offeredPhones) {
+    for (let i = 0; i < RADIUS_LEVELS_M.length; i++) {
+      let result;
+      try {
+        result = await broadcastToRadius(rideId, pickupLat, pickupLng, searchType, RADIUS_LEVELS_M[i], offeredPhones);
+      } catch (e) {
+        console.error(`[BROADCAST] ride=${rideId} radius=${RADIUS_LEVELS_M[i]}m error:`, e.message);
+        result = { sent: 0, phones: [] };
+      }
+      if (result.sent > 0) {
+        offeredPhones.push(...result.phones);
+        rideQueue.add('ride-assignment', {
+          type: 'broadcast-advance', rideId, pickupLat, pickupLng,
+          rideType: searchType, radiusM: RADIUS_LEVELS_M[i], afterSurge: !!afterSurge,
+        }, { delay: WINDOW_SEC * 1000 + 1000 }).catch(e =>
+          console.error(`[BROADCAST] ride=${rideId} BullMQ.add failed:`, e.message)
+        );
+        return true;
+      }
+      console.log(`[BROADCAST] ride=${rideId} type=${searchType} radius=${RADIUS_LEVELS_M[i]}m — 0 drivers`);
     }
-
-    if (result.sent > 0) {
-      offeredPhones = [...offeredPhones, ...result.phones];
-      // Drivers notified — schedule BullMQ advance for after the acceptance window
-      rideQueue.add('ride-assignment', {
-        type: 'broadcast-advance', rideId, pickupLat, pickupLng, rideType,
-        radiusM: RADIUS_LEVELS_M[i], afterSurge: !!afterSurge,
-      }, { delay: WINDOW_SEC * 1000 + 1000 }).catch(e =>
-        console.error(`[BROADCAST] ride=${rideId} BullMQ.add failed:`, e.message)
-      );
-      return;
-    }
-    console.log(`[BROADCAST] ride=${rideId} radius=${RADIUS_LEVELS_M[i]}m — 0 drivers, trying next`);
+    return false;
   }
 
-  // All 12 radius levels exhausted with zero drivers found → escalate now
-  console.log(`[BROADCAST] ride=${rideId} — all radii exhausted, escalating`);
+  const offeredPhones = [];
+
+  // 1. Try exact vehicle type first
+  if (await _walkRadii(rideType, offeredPhones)) return;
+
+  // 2. Exact type exhausted — try VEHICLE_ALTERNATIVES before giving up
+  const altTypes = VEHICLE_ALTERNATIVES[rideType] || [];
+  if (altTypes.length > 0) {
+    console.log(`[BROADCAST] ride=${rideId} type=${rideType} — 0 exact drivers; trying alternatives: ${altTypes.join(',')}`);
+    for (const alt of altTypes) {
+      if (await _walkRadii(alt, offeredPhones)) {
+        console.log(`[BROADCAST] ride=${rideId} — matched via alt type=${alt}`);
+        return;
+      }
+    }
+  }
+
+  // 3. All radius levels + all alternatives exhausted → escalate now
+  console.log(`[BROADCAST] ride=${rideId} — all radii + alternatives exhausted, escalating`);
   await _escalate(rideId, rideType, !!afterSurge, pickupLat, pickupLng);
 }
 
