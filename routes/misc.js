@@ -238,7 +238,15 @@ router.get('/notifications', async (req, res) => {
   const { target } = req.query;
   try {
     const r = await db.query(
-      `SELECT title, message, created_at FROM notifications WHERE target = 'all' OR target = $1 ORDER BY created_at DESC LIMIT 10`,
+      `SELECT title,
+              COALESCE(message, body) AS message,
+              created_at,
+              type
+       FROM notifications
+       WHERE target = 'all'
+          OR target = $1
+          OR user_phone = $1
+       ORDER BY created_at DESC LIMIT 30`,
       [target || 'all']
     );
     res.json({ notifications: r.rows });

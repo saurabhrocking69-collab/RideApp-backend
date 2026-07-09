@@ -415,16 +415,54 @@ router.post('/notify-all', async (req, res) => {
   const { title, body, target } = req.body;
   if (!title || !body) return res.status(400).json({ error: 'Title aur body zaroori hai' });
   try {
+    // Ensure notifications table has the columns we need
+    await db.query(`ALTER TABLE notifications ADD COLUMN IF NOT EXISTS target TEXT`).catch(() => {});
+    await db.query(`ALTER TABLE notifications ADD COLUMN IF NOT EXISTS message TEXT`).catch(() => {});
+
     let roleFilter = '';
     if (target === 'customers') roleFilter = "AND role='passenger'";
     else if (target === 'drivers') roleFilter = "AND role='driver'";
-    const users = await db.query(`SELECT phone, fcm_token FROM users WHERE fcm_token IS NOT NULL ${roleFilter}`);
-    res.json({ success: true, total_targets: users.rows.length, message: 'Notification bheja ja raha hai...' });
-    let sent = 0, failed = 0;
-    for (const u of users.rows) {
-      try { await sendFCM(u.phone, title, body); sent++; } catch (_e) { failed++; }
+
+    // Get all users with FCM tokens matching the target
+    const users = await db.query(
+      `SELECT phone, fcm_token, role FROM users WHERE fcm_token IS NOT NULL ${roleFilter}`
+    );
+    const count = users.rows.length;
+
+    // Insert into in-app notification center first (persistent, works even if FCM fails)
+    if (target === 'all' || !target) {
+      // One row for everyone
+      await db.query(
+        `INSERT INTO notifications (target, title, message, created_at) VALUES ('all', $1, $2, NOW())`,
+        [title, body]
+      ).catch(() => {});
+    } else {
+      // One row per user phone so their notification center shows it
+      for (const u of users.rows) {
+        await db.query(
+          `INSERT INTO notifications (target, title, message, created_at) VALUES ($1, $2, $3, NOW())`,
+          [u.phone, title, body]
+        ).catch(() => {});
+      }
     }
-    console.log(`📣 Broadcast done: ${sent} sent, ${failed} failed`);
+
+    // Respond immediately (don't block on FCM sends)
+    res.json({ success: true, total_targets: count, message: `${count} users ko bheja ja raha hai...` });
+
+    // Send FCM push in background
+    let sent = 0, failed = 0;
+    const fcmRole = target === 'drivers' ? 'driver' : 'customer';
+    for (const u of users.rows) {
+      try {
+        await sendFCM(
+          u.phone, title, body,
+          { type: 'broadcast' },
+          { role: fcmRole, channelId: 'default' }
+        );
+        sent++;
+      } catch (_e) { failed++; }
+    }
+    console.log(`📣 Broadcast done: ${sent}/${count} FCM sent, ${failed} failed (target=${target || 'all'})`);
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
