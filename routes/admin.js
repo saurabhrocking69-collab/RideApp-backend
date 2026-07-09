@@ -429,22 +429,14 @@ router.post('/notify-all', async (req, res) => {
     );
     const count = users.rows.length;
 
-    // Insert into in-app notification center first (persistent, works even if FCM fails)
-    if (target === 'all' || !target) {
-      // One row for everyone
-      await db.query(
-        `INSERT INTO notifications (target, title, message, created_at) VALUES ('all', $1, $2, NOW())`,
-        [title, body]
-      ).catch(() => {});
-    } else {
-      // One row per user phone so their notification center shows it
-      for (const u of users.rows) {
-        await db.query(
-          `INSERT INTO notifications (target, title, message, created_at) VALUES ($1, $2, $3, NOW())`,
-          [u.phone, title, body]
-        ).catch(() => {});
-      }
-    }
+    // Insert ONE row with group target — no per-phone loops, no format mismatch issues
+    const notifTarget = (target === 'customers') ? 'customers'
+                      : (target === 'drivers')   ? 'drivers'
+                      :                            'all';
+    await db.query(
+      `INSERT INTO notifications (target, title, message, created_at) VALUES ($1, $2, $3, NOW())`,
+      [notifTarget, title, body]
+    ).catch(() => {});
 
     // Respond immediately (don't block on FCM sends)
     res.json({ success: true, total_targets: count, message: `${count} users ko bheja ja raha hai...` });

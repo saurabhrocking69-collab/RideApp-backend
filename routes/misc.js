@@ -234,8 +234,9 @@ router.get('/rewards/dashboard', async (req, res) => {
 });
 
 // GET /api/notifications (in-app notifications)
+// ?target=PHONE&role=customer|driver
 router.get('/notifications', async (req, res) => {
-  const { target } = req.query;
+  const { target, role } = req.query;
   try {
     const r = await db.query(
       `SELECT title,
@@ -246,8 +247,10 @@ router.get('/notifications', async (req, res) => {
        WHERE target = 'all'
           OR target = $1
           OR user_phone = $1
+          OR (target = 'customers' AND $2 = 'customer')
+          OR (target = 'drivers'   AND $2 = 'driver')
        ORDER BY created_at DESC LIMIT 30`,
-      [target || 'all']
+      [target || '', role || 'customer']
     );
     res.json({ notifications: r.rows });
   } catch (err) { res.status(500).json({ error: err.message }); }
