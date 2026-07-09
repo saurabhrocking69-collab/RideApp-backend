@@ -1219,6 +1219,7 @@ db.query(`ALTER TABLE scheduled_rides ADD COLUMN IF NOT EXISTS dispatch_attempts
 db.query(`ALTER TABLE scheduled_rides ADD COLUMN IF NOT EXISTS dispatched_at TIMESTAMP`).catch(() => {});
 db.query(`ALTER TABLE scheduled_rides ADD COLUMN IF NOT EXISTS failed_reason TEXT`).catch(() => {});
 db.query(`ALTER TABLE scheduled_rides ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP DEFAULT NOW()`).catch(() => {});
+db.query(`ALTER TABLE scheduled_rides ADD COLUMN IF NOT EXISTS payment_mode TEXT DEFAULT 'cash'`).catch(() => {});
 db.query(`CREATE INDEX IF NOT EXISTS idx_scheduled_rides_status ON scheduled_rides(status)`).catch(() => {});
 db.query(`CREATE INDEX IF NOT EXISTS idx_scheduled_rides_scheduled_at ON scheduled_rides(scheduled_at)`).catch(() => {});
 
@@ -1250,18 +1251,18 @@ setInterval(async () => {
          AND updated_at < NOW() - INTERVAL '2 minutes'`
     ).catch(() => {});
 
-    // ── 1. Reminder: 14–16 min window (sent once) ─────────────────────────────
+    // ── 1. Reminder: 30–32 min window (sent once, before dispatch window) ─────
     const reminders = await db.query(
       `SELECT * FROM scheduled_rides
        WHERE status = 'pending'
          AND reminder_sent = FALSE
-         AND scheduled_at BETWEEN NOW() + INTERVAL '14 minutes' AND NOW() + INTERVAL '16 minutes'`
+         AND scheduled_at BETWEEN NOW() + INTERVAL '30 minutes' AND NOW() + INTERVAL '32 minutes'`
     );
     for (const ride of reminders.rows) {
       const timeStr = toIST(ride.scheduled_at);
       await sendFCM(
         ride.customer_phone,
-        '🚖 Aapki ride 15 minute mein!',
+        '🚖 Aapki ride 30 minute mein!',
         `${timeStr} baje ke liye ready ho jao — ${ride.pickup} se ${ride.drop_location}`,
         { type: 'scheduled_ride_reminder', scheduled_ride_id: String(ride.id) },
         { channelId: 'default', role: 'customer' }
@@ -1270,14 +1271,14 @@ setInterval(async () => {
       console.log(`⏰ Reminder sent → ${ride.customer_phone} (scheduled_ride #${ride.id} at ${timeStr} IST)`);
     }
 
-    // ── 2. Dispatch: 12–18 min window — wider window gives more retry chances ──
+    // ── 2. Dispatch: 20–28 min window — driver search starts well before ride time ──
     // Atomic UPDATE claim prevents two Railway instances from double-dispatching
     // the same scheduled ride during a zero-downtime deploy.
     const toDispatch = await db.query(
       `UPDATE scheduled_rides SET status = 'dispatching', updated_at = NOW()
        WHERE status = 'pending'
          AND ride_id IS NULL
-         AND scheduled_at BETWEEN NOW() + INTERVAL '12 minutes' AND NOW() + INTERVAL '18 minutes'
+         AND scheduled_at BETWEEN NOW() + INTERVAL '20 minutes' AND NOW() + INTERVAL '28 minutes'
        RETURNING *`
     );
     for (const sr of toDispatch.rows) {
@@ -1303,13 +1304,14 @@ setInterval(async () => {
         const rideRes = await db.query(
           `INSERT INTO rides
              (passenger_id, pickup, drop_location, ride_type, fare, status,
-              pickup_lat, pickup_lng, drop_lat, drop_lng)
-           VALUES ($1,$2,$3,$4,$5,'requested',$6,$7,$8,$9)
+              pickup_lat, pickup_lng, drop_lat, drop_lng, payment_mode)
+           VALUES ($1,$2,$3,$4,$5,'requested',$6,$7,$8,$9,$10)
            RETURNING id`,
           [userRes.rows[0].id, sr.pickup, sr.drop_location,
            sr.vehicle_type || 'auto', sr.fare_estimate || 0,
            sr.pickup_lat || null, sr.pickup_lng || null,
-           sr.drop_lat || null, sr.drop_lng || null]
+           sr.drop_lat || null, sr.drop_lng || null,
+           sr.payment_mode || 'cash']
         );
         const rideId = rideRes.rows[0].id;
 
@@ -1320,8 +1322,8 @@ setInterval(async () => {
           [rideId, sr.id]
         );
 
-        // Broadcast to drivers (in-process loop — does NOT depend on BullMQ for the initial search)
-        assignRideToNextDriver(rideId, sr.pickup_lat, sr.pickup_lng, sr.vehicle_type || 'auto')
+        // Broadcast to drivers — use extended 120s acceptance window for scheduled rides
+        assignRideToNextDriver(rideId, sr.pickup_lat, sr.pickup_lng, sr.vehicle_type || 'auto', null, null, false, true)
           .catch(e => console.error(`[SCHEDULED] assignRide error ride=${rideId}:`, e.message));
 
         // Tell customer their ride is being searched
@@ -1334,7 +1336,7 @@ setInterval(async () => {
           { channelId: 'default', role: 'customer' }
         ).catch(() => {});
 
-        console.log(`🚖 Scheduled ride #${sr.id} dispatched → live ride #${rideId} (${sr.vehicle_type}, ${sr.customer_phone})`);
+        console.log(`🚖 Scheduled ride #${sr.id} dispatched → live ride #${rideId} (${sr.vehicle_type || 'auto'}, ${sr.customer_phone}, window=120s)`);
       } catch (e) {
         console.error(`[SCHEDULED] Dispatch failed for #${sr.id}:`, e.message);
         // Revert so next cron tick can retry

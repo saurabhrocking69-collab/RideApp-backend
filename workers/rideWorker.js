@@ -9,8 +9,9 @@ const { getSurgeMultiplier } = require('../services/locationIntelligence');
 const rideQueue = new Queue('ride-assignment', { connection: makeBmqConn() });
 
 // ── Broadcast radius progression (meters) ───────────────────────────────────
-const RADIUS_LEVELS_M = [500, 1000, 2000, 3000, 4000, 5000, 6000, 7000, 8000, 9000, 10000, 11000];
-const WINDOW_SEC      = 30;   // each radius level gets 30 seconds
+const RADIUS_LEVELS_M       = [500, 1000, 2000, 3000, 4000, 5000, 6000, 7000, 8000, 9000, 10000, 11000];
+const WINDOW_SEC            = 30;   // each radius level gets 30 seconds (real-time rides)
+const SCHEDULED_WINDOW_SEC  = 120;  // 2-minute window for scheduled rides — drivers need time to open app
 const SURGE_GRACE_SEC = 100;  // customer has 100s to accept surge offer
 const STALE_GPS_MS    = 15 * 60 * 1000; // 15 min — location older than this → include anyway
 
@@ -38,8 +39,8 @@ rideWorker.on('failed', (job, err) => {
 
 // ── Broadcast ride to ALL eligible drivers within radiusM ────────────────────
 // Returns { sent: number, phones: string[] }
-async function broadcastToRadius(rideId, pickupLat, pickupLng, rideType, radiusM, alreadyOfferedPhones) {
-  console.log(`[BROADCAST] ride=${rideId} type=${rideType} radius=${radiusM}m alreadyOffered=${alreadyOfferedPhones.length}`);
+async function broadcastToRadius(rideId, pickupLat, pickupLng, rideType, radiusM, alreadyOfferedPhones, windowSec = WINDOW_SEC) {
+  console.log(`[BROADCAST] ride=${rideId} type=${rideType} radius=${radiusM}m window=${windowSec}s alreadyOffered=${alreadyOfferedPhones.length}`);
 
   const [rideCheck, drRes] = await Promise.all([
     db.query(
@@ -89,10 +90,10 @@ async function broadcastToRadius(rideId, pickupLat, pickupLng, rideType, radiusM
   const eligiblePhones = eligible.map(d => d.phone);
   const allOffered = [...alreadyOfferedPhones, ...eligiblePhones];
 
-  // Update ride: set 20s window, current radius, add to offered_phones
+  // Update ride: set acceptance window, current radius, add to offered_phones
   await db.query(
     `UPDATE rides
-     SET assignment_expires_at = NOW() + INTERVAL '${WINDOW_SEC} seconds',
+     SET assignment_expires_at = NOW() + INTERVAL '${windowSec} seconds',
          current_radius_m = $1,
          offered_phones = $2::text[],
          assigned_to_phone = NULL
@@ -103,11 +104,11 @@ async function broadcastToRadius(rideId, pickupLat, pickupLng, rideType, radiusM
   // Broadcast to all eligible drivers simultaneously
   const rideEmoji = { bike: '🏍️', auto: '🛺', car: '🚕', eriksha: '🛵', luxury: '🚙', electric_auto: '🌿', green_bike: '⚡' }[rideType] || '🚗';
   for (const dr of eligible) {
-    emitToRoom('driver_' + dr.phone, 'newRideRequest', { rideId, secondsToAccept: WINDOW_SEC, radiusM });
+    emitToRoom('driver_' + dr.phone, 'newRideRequest', { rideId, secondsToAccept: windowSec, radiusM });
     sendFCM(
       dr.phone,
       `${rideEmoji} Nayi Ride Request!`,
-      `${rideType.toUpperCase()} ride — ${WINDOW_SEC}s mein accept karo!`,
+      `${rideType.toUpperCase()} ride — ${windowSec}s mein accept karo!`,
       { type: 'new_ride', ride_id: String(rideId) },
       { channelId: 'ride_requests', role: 'driver' }
     ).catch(() => {});
@@ -122,7 +123,8 @@ async function broadcastToRadius(rideId, pickupLat, pickupLng, rideType, radiusM
 }
 
 // ── Advance to next radius after 20s window expires ──────────────────────────
-async function _bmqBroadcastAdvance({ rideId, pickupLat, pickupLng, rideType, radiusM, afterSurge }) {
+async function _bmqBroadcastAdvance({ rideId, pickupLat, pickupLng, rideType, radiusM, afterSurge, isScheduled }) {
+  const windowSec = isScheduled ? SCHEDULED_WINDOW_SEC : WINDOW_SEC;
   const r = await db.query(
     `SELECT id, current_radius_m, offered_phones FROM rides
      WHERE id=$1 AND status='requested' AND driver_id IS NULL`,
@@ -144,13 +146,13 @@ async function _bmqBroadcastAdvance({ rideId, pickupLat, pickupLng, rideType, ra
   // Try next radius levels until we find drivers or exhaust all
   for (let i = currentIdx + 1; i < RADIUS_LEVELS_M.length; i++) {
     const nextRadius = RADIUS_LEVELS_M[i];
-    const result = await broadcastToRadius(rideId, pickupLat, pickupLng, rideType, nextRadius, currentOffered);
+    const result = await broadcastToRadius(rideId, pickupLat, pickupLng, rideType, nextRadius, currentOffered, windowSec);
     if (result.sent > 0) {
       // Found drivers at this radius — schedule next advance
       await rideQueue.add('ride-assignment', {
         type: 'broadcast-advance', rideId, pickupLat, pickupLng, rideType,
-        radiusM: nextRadius, afterSurge: !!afterSurge,
-      }, { delay: WINDOW_SEC * 1000 + 1000 }).catch(e => console.error('[ADVANCE] BullMQ add failed:', e.message));
+        radiusM: nextRadius, afterSurge: !!afterSurge, isScheduled: !!isScheduled,
+      }, { delay: windowSec * 1000 + 1000 }).catch(e => console.error('[ADVANCE] BullMQ add failed:', e.message));
       return;
     }
     // No drivers at this radius — try next immediately
@@ -290,15 +292,16 @@ async function _bmqAssignNext({ rideId, pickupLat, pickupLng, rideType }) {
 // BullMQ is only used for the "advance after the acceptance window" step.
 // Walking radii in-process means a Redis/BullMQ hiccup can't silently strand
 // a ride at 500 m — every new booking always finds the nearest available driver.
-async function assignRideToNextDriver(rideId, pickupLat, pickupLng, rideType, _ignored_queue, _ignored_radius, afterSurge = false) {
-  console.log(`[BROADCAST] ▶ Starting broadcast ride=${rideId} type=${rideType} afterSurge=${afterSurge}`);
+async function assignRideToNextDriver(rideId, pickupLat, pickupLng, rideType, _ignored_queue, _ignored_radius, afterSurge = false, isScheduled = false) {
+  const windowSec = isScheduled ? SCHEDULED_WINDOW_SEC : WINDOW_SEC;
+  console.log(`[BROADCAST] ▶ Starting broadcast ride=${rideId} type=${rideType} afterSurge=${afterSurge} isScheduled=${isScheduled} window=${windowSec}s`);
 
   // Helper: walk all radius levels for a given vehicle type, return true if drivers found
   async function _walkRadii(searchType, offeredPhones) {
     for (let i = 0; i < RADIUS_LEVELS_M.length; i++) {
       let result;
       try {
-        result = await broadcastToRadius(rideId, pickupLat, pickupLng, searchType, RADIUS_LEVELS_M[i], offeredPhones);
+        result = await broadcastToRadius(rideId, pickupLat, pickupLng, searchType, RADIUS_LEVELS_M[i], offeredPhones, windowSec);
       } catch (e) {
         console.error(`[BROADCAST] ride=${rideId} radius=${RADIUS_LEVELS_M[i]}m error:`, e.message);
         result = { sent: 0, phones: [] };
@@ -307,8 +310,8 @@ async function assignRideToNextDriver(rideId, pickupLat, pickupLng, rideType, _i
         offeredPhones.push(...result.phones);
         rideQueue.add('ride-assignment', {
           type: 'broadcast-advance', rideId, pickupLat, pickupLng,
-          rideType: searchType, radiusM: RADIUS_LEVELS_M[i], afterSurge: !!afterSurge,
-        }, { delay: WINDOW_SEC * 1000 + 1000 }).catch(e =>
+          rideType: searchType, radiusM: RADIUS_LEVELS_M[i], afterSurge: !!afterSurge, isScheduled: !!isScheduled,
+        }, { delay: windowSec * 1000 + 1000 }).catch(e =>
           console.error(`[BROADCAST] ride=${rideId} BullMQ.add failed:`, e.message)
         );
         return true;
