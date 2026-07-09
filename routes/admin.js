@@ -416,9 +416,9 @@ router.post('/notify-all', async (req, res) => {
   if (!title || !body) return res.status(400).json({ error: 'Title aur body zaroori hai' });
   try {
     let roleFilter = '';
-    if (target === 'customers') roleFilter = "WHERE role='passenger'";
-    else if (target === 'drivers') roleFilter = "WHERE role='driver'";
-    const users = await db.query(`SELECT phone, fcm_token FROM users ${roleFilter} WHERE fcm_token IS NOT NULL`);
+    if (target === 'customers') roleFilter = "AND role='passenger'";
+    else if (target === 'drivers') roleFilter = "AND role='driver'";
+    const users = await db.query(`SELECT phone, fcm_token FROM users WHERE fcm_token IS NOT NULL ${roleFilter}`);
     res.json({ success: true, total_targets: users.rows.length, message: 'Notification bheja ja raha hai...' });
     let sent = 0, failed = 0;
     for (const u of users.rows) {
