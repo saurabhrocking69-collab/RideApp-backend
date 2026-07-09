@@ -1203,6 +1203,21 @@ setInterval(() => {
 // ── Cron: scheduled ride reminders + dispatch (every 30s) ───
 db.query(`ALTER TABLE scheduled_rides ADD COLUMN IF NOT EXISTS reminder_sent BOOLEAN DEFAULT FALSE`).catch(() => {});
 db.query(`ALTER TABLE scheduled_rides ADD COLUMN IF NOT EXISTS ride_id INTEGER`).catch(() => {});
+db.query(`ALTER TABLE scheduled_rides ADD COLUMN IF NOT EXISTS dispatch_attempts INTEGER DEFAULT 0`).catch(() => {});
+db.query(`ALTER TABLE scheduled_rides ADD COLUMN IF NOT EXISTS dispatched_at TIMESTAMP`).catch(() => {});
+db.query(`ALTER TABLE scheduled_rides ADD COLUMN IF NOT EXISTS failed_reason TEXT`).catch(() => {});
+db.query(`ALTER TABLE scheduled_rides ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP DEFAULT NOW()`).catch(() => {});
+db.query(`CREATE INDEX IF NOT EXISTS idx_scheduled_rides_status ON scheduled_rides(status)`).catch(() => {});
+db.query(`CREATE INDEX IF NOT EXISTS idx_scheduled_rides_scheduled_at ON scheduled_rides(scheduled_at)`).catch(() => {});
+
+// Startup recovery: reset any 'dispatching' rides that got stuck during a previous crash
+db.query(
+  `UPDATE scheduled_rides SET status='pending'
+   WHERE status='dispatching' AND scheduled_at > NOW()`
+).then(r => {
+  if (r.rowCount > 0)
+    console.log(`[SCHEDULED] Startup: recovered ${r.rowCount} stuck 'dispatching' ride(s) → pending`);
+}).catch(() => {});
 
 // IST formatter — server runs in UTC (Railway), always force Asia/Kolkata
 function toIST(date) {
@@ -1214,7 +1229,16 @@ function toIST(date) {
 
 setInterval(async () => {
   try {
-    // ── 1. Reminder: 14–16 min window (sent once) ──────────────────────────
+    // ── 0. Recovery: unstick any 'dispatching' rides older than 2 min ─────────
+    // Handles the case where the server crashed between atomic claim and INSERT.
+    await db.query(
+      `UPDATE scheduled_rides SET status='pending'
+       WHERE status='dispatching'
+         AND scheduled_at > NOW()
+         AND updated_at < NOW() - INTERVAL '2 minutes'`
+    ).catch(() => {});
+
+    // ── 1. Reminder: 14–16 min window (sent once) ─────────────────────────────
     const reminders = await db.query(
       `SELECT * FROM scheduled_rides
        WHERE status = 'pending'
@@ -1234,23 +1258,32 @@ setInterval(async () => {
       console.log(`⏰ Reminder sent → ${ride.customer_phone} (scheduled_ride #${ride.id} at ${timeStr} IST)`);
     }
 
-    // ── 2. Dispatch: send ride request to drivers 10-15 min before scheduled_at ──
+    // ── 2. Dispatch: 12–18 min window — wider window gives more retry chances ──
     // Atomic UPDATE claim prevents two Railway instances from double-dispatching
     // the same scheduled ride during a zero-downtime deploy.
     const toDispatch = await db.query(
-      `UPDATE scheduled_rides SET status = 'dispatching'
+      `UPDATE scheduled_rides SET status = 'dispatching', updated_at = NOW()
        WHERE status = 'pending'
          AND ride_id IS NULL
-         AND scheduled_at BETWEEN NOW() + INTERVAL '10 minutes' AND NOW() + INTERVAL '15 minutes'
+         AND scheduled_at BETWEEN NOW() + INTERVAL '12 minutes' AND NOW() + INTERVAL '18 minutes'
        RETURNING *`
     );
     for (const sr of toDispatch.rows) {
       try {
-        // Look up passenger_id directly — avoids silent JOIN failures on phone-format edge cases
-        const userRes = await db.query('SELECT id FROM users WHERE phone = $1', [sr.customer_phone]);
+        // Phone normalization: stored phones may or may not have +91 prefix
+        const rawPhone = sr.customer_phone;
+        const stripped = rawPhone.replace(/^\+91/, '');
+        const withCode = '+91' + stripped;
+        const userRes = await db.query(
+          `SELECT id FROM users WHERE phone = $1 OR phone = $2 LIMIT 1`,
+          [withCode, stripped]
+        );
         if (!userRes.rows[0]) {
-          console.error(`[SCHEDULED] No user for phone=${sr.customer_phone} (scheduled_ride #${sr.id}) — reverting`);
-          await db.query(`UPDATE scheduled_rides SET status='pending' WHERE id=$1`, [sr.id]).catch(() => {});
+          console.error(`[SCHEDULED] No user for phone=${rawPhone} (scheduled_ride #${sr.id}) — reverting`);
+          await db.query(
+            `UPDATE scheduled_rides SET status='pending', failed_reason='user not found', updated_at=NOW() WHERE id=$1`,
+            [sr.id]
+          ).catch(() => {});
           continue;
         }
 
@@ -1270,7 +1303,8 @@ setInterval(async () => {
 
         // Mark fully dispatched
         await db.query(
-          `UPDATE scheduled_rides SET status = 'dispatched', ride_id = $1 WHERE id = $2`,
+          `UPDATE scheduled_rides SET status='dispatched', ride_id=$1, dispatched_at=NOW(),
+           dispatch_attempts=COALESCE(dispatch_attempts,0)+1, updated_at=NOW() WHERE id=$2`,
           [rideId, sr.id]
         );
 
@@ -1292,7 +1326,10 @@ setInterval(async () => {
       } catch (e) {
         console.error(`[SCHEDULED] Dispatch failed for #${sr.id}:`, e.message);
         // Revert so next cron tick can retry
-        await db.query(`UPDATE scheduled_rides SET status='pending' WHERE id=$1`, [sr.id]).catch(() => {});
+        await db.query(
+          `UPDATE scheduled_rides SET status='pending', failed_reason=$1, updated_at=NOW() WHERE id=$2`,
+          [e.message, sr.id]
+        ).catch(() => {});
       }
     }
   } catch (_e) { console.error('[SCHEDULED CRON] error:', _e.message); }

@@ -216,6 +216,14 @@ async function _escalate(rideId, rideType, afterSurge, pickupLat, pickupLng) {
       `UPDATE rides SET status='cancelled' WHERE id=$1 AND status='requested' AND driver_id IS NULL`,
       [rideId]
     );
+    // If this was a scheduled ride, mark it failed so the customer can rebook
+    if (isScheduled && schedRes.rows[0]) {
+      await db.query(
+        `UPDATE scheduled_rides SET status='failed', failed_reason='No driver found after exhausting all radius levels', updated_at=NOW()
+         WHERE id=$1 AND status='dispatched'`,
+        [schedRes.rows[0].id]
+      ).catch(() => {});
+    }
   } else {
     const surgeInfo = await _computeSurgeOffer(pickupLat, pickupLng, rideId);
     emitToRoom('ride_' + rideId, 'rideUpdate', {

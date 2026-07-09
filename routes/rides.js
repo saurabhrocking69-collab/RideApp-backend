@@ -1405,6 +1405,8 @@ router.post('/schedule', async (req, res) => {
   const scheduledDate = new Date(scheduled_at);
   if (isNaN(scheduledDate.getTime()) || scheduledDate <= new Date())
     return res.status(400).json({ error: 'scheduled_at future mein hona chahiye' });
+  if (scheduledDate - new Date() < 20 * 60 * 1000)
+    return res.status(400).json({ error: 'Scheduled ride kam se kam 20 minute pehle book karni chahiye' });
   try {
     const r = await db.query(
       `INSERT INTO scheduled_rides (customer_phone, pickup, drop_location, pickup_lat, pickup_lng, drop_lat, drop_lng, vehicle_type, scheduled_at, fare_estimate, notes)
