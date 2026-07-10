@@ -4,6 +4,7 @@ const path = require('path');
 const db = require('../config/db');
 const { sendFCM } = require('../config/firebase');
 const { HOURLY_FARES, setSurge, getSurge } = require('../services/pricing');
+const { getIO } = require('../config/socket');
 
 // GET /api/admin/stats
 router.get('/stats', async (req, res) => {
@@ -483,20 +484,41 @@ router.get('/referrals', async (req, res) => {
 
 // POST /api/admin/fare-settings
 router.post('/fare-settings', async (req, res) => {
-  const { vehicle_type, base_fare, per_km_rate, night_multiplier, night_start, night_end } = req.body;
+  const { vehicle_type, base_fare, per_km_rate, night_multiplier, night_start, night_end,
+          time_rate, platform_fee, min_fare, per_km_rate_t2, per_km_rate_t3, commission_rate } = req.body;
   const bf  = parseFloat(base_fare);
   const pkr = parseFloat(per_km_rate);
   const nm  = parseFloat(night_multiplier);
-  if (!vehicle_type)        return res.status(400).json({ error: 'vehicle_type required' });
+  if (!vehicle_type)         return res.status(400).json({ error: 'vehicle_type required' });
   if (isNaN(bf)  || bf  < 0) return res.status(400).json({ error: 'base_fare must be a non-negative number' });
   if (isNaN(pkr) || pkr < 0) return res.status(400).json({ error: 'per_km_rate must be a non-negative number' });
   if (isNaN(nm)  || nm  < 1) return res.status(400).json({ error: 'night_multiplier must be >= 1' });
+  const tr   = time_rate       != null ? parseFloat(time_rate)       : null;
+  const pf   = platform_fee    != null ? parseFloat(platform_fee)    : null;
+  const mf   = min_fare        != null ? parseFloat(min_fare)        : null;
+  const pkr2 = per_km_rate_t2  != null ? parseFloat(per_km_rate_t2)  : null;
+  const pkr3 = per_km_rate_t3  != null ? parseFloat(per_km_rate_t3)  : null;
+  const cr   = commission_rate != null ? parseFloat(commission_rate) : null;
   try {
     await db.query(
-      `WITH updated AS (UPDATE fare_settings SET base_fare=$1, per_km_rate=$2, night_multiplier=$3, night_start=$4, night_end=$5, updated_at=NOW() WHERE vehicle_type=$6 RETURNING 1)
-       INSERT INTO fare_settings (vehicle_type, base_fare, per_km_rate, night_multiplier, night_start, night_end) SELECT $6, $1, $2, $3, $4, $5 WHERE NOT EXISTS (SELECT 1 FROM updated)`,
-      [bf, pkr, nm, night_start || '22:00', night_end || '06:00', vehicle_type]
+      `WITH updated AS (
+         UPDATE fare_settings SET
+           base_fare=$1, per_km_rate=$2, night_multiplier=$3, night_start=$4, night_end=$5,
+           time_rate      = COALESCE($7,  time_rate),
+           platform_fee   = COALESCE($8,  platform_fee),
+           min_fare       = COALESCE($9,  min_fare),
+           per_km_rate_t2 = COALESCE($10, per_km_rate_t2),
+           per_km_rate_t3 = COALESCE($11, per_km_rate_t3),
+           commission_rate= COALESCE($12, commission_rate),
+           updated_at=NOW()
+         WHERE vehicle_type=$6 RETURNING 1
+       )
+       INSERT INTO fare_settings (vehicle_type, base_fare, per_km_rate, night_multiplier, night_start, night_end)
+       SELECT $6, $1, $2, $3, $4, $5 WHERE NOT EXISTS (SELECT 1 FROM updated)`,
+      [bf, pkr, nm, night_start || '22:00', night_end || '06:00', vehicle_type, tr, pf, mf, pkr2, pkr3, cr]
     );
+    const io = getIO();
+    if (io) io.emit('fareSettingsUpdated', { vehicle_type, base_fare: bf, per_km_rate: pkr, night_multiplier: nm, time_rate: tr, platform_fee: pf, min_fare: mf });
     res.json({ success: true, message: 'Fare updated!' });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });

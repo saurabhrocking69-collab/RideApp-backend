@@ -422,12 +422,24 @@ input,select,textarea{outline:none}
         </select>
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px">
           <input id="std-base-fare" type="number" placeholder="Base fare (₹)" class="input-sm">
-          <input id="std-per-km" type="number" placeholder="Per KM rate (₹)" class="input-sm">
+          <input id="std-per-km" type="number" step="0.5" placeholder="0–8km rate (₹/km)" class="input-sm">
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px">
+          <input id="std-per-km-t2" type="number" step="0.5" placeholder="8–20km rate (₹/km)" class="input-sm">
+          <input id="std-per-km-t3" type="number" step="0.5" placeholder="20km+ rate (₹/km)" class="input-sm">
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-bottom:8px">
+          <input id="std-time-rate" type="number" step="0.05" placeholder="Time (₹/min)" class="input-sm">
+          <input id="std-platform-fee" type="number" step="0.5" placeholder="Platform fee (₹)" class="input-sm">
+          <input id="std-min-fare" type="number" placeholder="Min fare (₹)" class="input-sm">
         </div>
         <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-bottom:10px">
           <input id="std-night-mult" type="number" step="0.1" min="1" max="3" placeholder="Night ×" class="input-sm">
           <input id="std-night-start" type="text" placeholder="Night start" class="input-sm">
           <input id="std-night-end" type="text" placeholder="Night end" class="input-sm">
+        </div>
+        <div style="display:grid;grid-template-columns:1fr;gap:8px;margin-bottom:10px">
+          <input id="std-commission-rate" type="number" step="0.5" min="0" max="30" placeholder="Commission % (e.g. 15 for fuel, 12 for electric)" class="input-sm">
         </div>
         <button onclick="saveStdFare()" style="width:100%;background:#1a1a2e;color:#fff;border:none;border-radius:8px;padding:10px;cursor:pointer;font-weight:700;font-size:13px">💾 Save Standard Fare</button>
         <div id="std-fare-status" style="font-size:12px;color:#4CAF50;margin-top:8px"></div>
@@ -1331,18 +1343,26 @@ async function loadStdFares(){
     stdFaresCache={};
     if(d.fares) d.fares.forEach(f=>{stdFaresCache[f.vehicle_type]=f;});
     const types=[{id:'bike',icon:'🏍️',label:'Bike'},{id:'auto',icon:'🛺',label:'Auto'},{id:'car',icon:'🚕',label:'Car'},{id:'eriksha',icon:'🛵',label:'E-Riksha'},{id:'luxury',icon:'🚙',label:'Ultra Luxury'},{id:'green_bike',icon:'⚡🏍️',label:'Green Bike'},{id:'electric_auto',icon:'⚡🛺',label:'Electric Auto'}];
-    let html='<div style="overflow-x:auto"><table style="font-size:11px;width:100%"><thead><tr><th>Vehicle</th><th>Base Fare</th><th>Per KM</th><th>Night ×</th><th>Night Hrs</th></tr></thead><tbody>';
+    let html='<div style="overflow-x:auto"><table style="font-size:11px;width:100%"><thead><tr><th>Vehicle</th><th>Base</th><th>0–8km</th><th>8–20km</th><th>20km+</th><th>₹/min</th><th>PF</th><th>Min</th><th>Night×</th><th>Comm%</th></tr></thead><tbody>';
     types.forEach(function(t){
       var f=stdFaresCache[t.id];
       if(f){
+        var r1=parseFloat(f.per_km_rate)||0;
+        var r2=f.per_km_rate_t2!=null?parseFloat(f.per_km_rate_t2):r1;
+        var r3=f.per_km_rate_t3!=null?parseFloat(f.per_km_rate_t3):r2;
         html+='<tr'+(t.id==='luxury'?' style="background:#f3e5f5;font-weight:600"':'')+'>'+
           '<td>'+t.icon+' '+t.label+'</td>'+
           '<td>₹'+parseFloat(f.base_fare).toFixed(0)+'</td>'+
-          '<td>₹'+parseFloat(f.per_km_rate).toFixed(0)+'/km</td>'+
+          '<td>₹'+r1.toFixed(0)+'/km</td>'+
+          '<td>₹'+r2.toFixed(0)+'/km</td>'+
+          '<td>₹'+r3.toFixed(0)+'/km</td>'+
+          '<td>₹'+(parseFloat(f.time_rate)||0).toFixed(2)+'/m</td>'+
+          '<td>₹'+(parseFloat(f.platform_fee)||2).toFixed(1)+'</td>'+
+          '<td>₹'+(parseFloat(f.min_fare)||0).toFixed(0)+'</td>'+
           '<td>'+parseFloat(f.night_multiplier).toFixed(1)+'×</td>'+
-          '<td style="font-size:10px;color:#888">'+(f.night_start||'22:00')+'–'+(f.night_end||'06:00')+'</td></tr>';
+          '<td>'+(parseFloat(f.commission_rate)||15).toFixed(0)+'%</td></tr>';
       } else {
-        html+='<tr><td>'+t.icon+' '+t.label+'</td><td colspan="4" style="color:#bbb;text-align:center;font-size:10px">Default (not yet saved)</td></tr>';
+        html+='<tr><td>'+t.icon+' '+t.label+'</td><td colspan="9" style="color:#bbb;text-align:center;font-size:10px">Default (not yet saved)</td></tr>';
       }
     });
     html+='</tbody></table></div>';
@@ -1353,26 +1373,49 @@ async function loadStdFares(){
 function loadStdFare(){
   var v=document.getElementById('std-fare-vehicle').value;
   var f=stdFaresCache[v];
-  var defs={bike:{b:15,k:8,n:1.5},auto:{b:25,k:12,n:1.5},car:{b:40,k:15,n:1.5},eriksha:{b:20,k:10,n:1.5},luxury:{b:80,k:25,n:1.8},green_bike:{b:12,k:6,n:1.2},electric_auto:{b:20,k:9,n:1.3}};
-  var def=defs[v]||{b:25,k:12,n:1.5};
+  var defs={
+    bike:{b:15,k:8,k2:9,k3:10,tr:0.5,pf:2,mf:30,n:1.3,cr:15},
+    auto:{b:25,k:12,k2:14,k3:15,tr:0.75,pf:2,mf:45,n:1.5,cr:15},
+    car:{b:40,k:15,k2:17,k3:18,tr:1.0,pf:2.5,mf:65,n:1.5,cr:15},
+    eriksha:{b:20,k:10,k2:11,k3:12,tr:0.65,pf:2,mf:35,n:1.3,cr:15},
+    luxury:{b:80,k:25,k2:28,k3:30,tr:1.5,pf:3,mf:120,n:1.8,cr:15},
+    green_bike:{b:12,k:6,k2:7,k3:8,tr:0.4,pf:2,mf:25,n:1.2,cr:12},
+    electric_auto:{b:20,k:9,k2:11,k3:12,tr:0.6,pf:2,mf:38,n:1.3,cr:12}
+  };
+  var def=defs[v]||{b:25,k:12,k2:14,k3:15,tr:0.75,pf:2,mf:45,n:1.5,cr:15};
+  var r1=f?parseFloat(f.per_km_rate):def.k;
+  var r2=f&&f.per_km_rate_t2!=null?parseFloat(f.per_km_rate_t2):def.k2;
+  var r3=f&&f.per_km_rate_t3!=null?parseFloat(f.per_km_rate_t3):def.k3;
   document.getElementById('std-base-fare').value=f?parseFloat(f.base_fare):def.b;
-  document.getElementById('std-per-km').value=f?parseFloat(f.per_km_rate):def.k;
+  document.getElementById('std-per-km').value=r1;
+  document.getElementById('std-per-km-t2').value=r2;
+  document.getElementById('std-per-km-t3').value=r3;
+  document.getElementById('std-time-rate').value=f&&f.time_rate!=null?parseFloat(f.time_rate):def.tr;
+  document.getElementById('std-platform-fee').value=f&&f.platform_fee!=null?parseFloat(f.platform_fee):def.pf;
+  document.getElementById('std-min-fare').value=f&&f.min_fare!=null?parseFloat(f.min_fare):def.mf;
   document.getElementById('std-night-mult').value=f?parseFloat(f.night_multiplier):def.n;
   document.getElementById('std-night-start').value=f?(f.night_start||'22:00'):'22:00';
   document.getElementById('std-night-end').value=f?(f.night_end||'06:00'):'06:00';
+  document.getElementById('std-commission-rate').value=f&&f.commission_rate!=null?parseFloat(f.commission_rate):def.cr;
 }
 async function saveStdFare(){
   var vehicle_type=document.getElementById('std-fare-vehicle').value;
   var base_fare=parseFloat(document.getElementById('std-base-fare').value);
   var per_km_rate=parseFloat(document.getElementById('std-per-km').value);
+  var per_km_rate_t2=parseFloat(document.getElementById('std-per-km-t2').value)||null;
+  var per_km_rate_t3=parseFloat(document.getElementById('std-per-km-t3').value)||null;
+  var time_rate=parseFloat(document.getElementById('std-time-rate').value)||0;
+  var platform_fee=parseFloat(document.getElementById('std-platform-fee').value)||2;
+  var min_fare=parseFloat(document.getElementById('std-min-fare').value)||0;
   var night_multiplier=parseFloat(document.getElementById('std-night-mult').value)||1.5;
   var night_start=document.getElementById('std-night-start').value||'22:00';
   var night_end=document.getElementById('std-night-end').value||'06:00';
+  var commission_rate=parseFloat(document.getElementById('std-commission-rate').value)||15;
   var el=document.getElementById('std-fare-status');
   if(!base_fare||!per_km_rate){el.style.color='#c62828';el.textContent='❌ Base fare aur Per KM rate required';return;}
-  var d=await aJson('/api/admin/fare-settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({vehicle_type,base_fare,per_km_rate,night_multiplier,night_start,night_end})});
+  var d=await aJson('/api/admin/fare-settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({vehicle_type,base_fare,per_km_rate,per_km_rate_t2,per_km_rate_t3,time_rate,platform_fee,min_fare,night_multiplier,night_start,night_end,commission_rate})});
   el.style.color=d.success?'#2e7d32':'#c62828';
-  el.textContent=d.success?'✅ '+vehicle_type+' fare saved! Base ₹'+base_fare+', ₹'+per_km_rate+'/km':'❌ '+(d.error||'Error');
+  el.textContent=d.success?'✅ '+vehicle_type+' saved! Base ₹'+base_fare+' | ₹'+per_km_rate+'/km | ₹'+time_rate+'/min | PF ₹'+platform_fee:'❌ '+(d.error||'Error');
   if(d.success) loadStdFares();
 }
 

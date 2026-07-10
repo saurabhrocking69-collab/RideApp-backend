@@ -18,9 +18,18 @@ router.get('/app/config', async (req, res) => {
     const faresResult = await db.query('SELECT * FROM fare_settings ORDER BY vehicle_type');
     const faresMap = {};
     for (const row of faresResult.rows) {
+      const r1 = parseFloat(row.per_km_rate);
+      const r2 = row.per_km_rate_t2 != null ? parseFloat(row.per_km_rate_t2) : r1;
+      const r3 = row.per_km_rate_t3 != null ? parseFloat(row.per_km_rate_t3) : r2;
       faresMap[row.vehicle_type] = {
         base_fare:        parseFloat(row.base_fare),
-        per_km_rate:      parseFloat(row.per_km_rate),
+        per_km_rate:      r1,
+        per_km_rate_t2:   r2,
+        per_km_rate_t3:   r3,
+        time_rate:        parseFloat(row.time_rate    || 0),
+        platform_fee:     parseFloat(row.platform_fee || 2),
+        min_fare:         parseFloat(row.min_fare     || 0),
+        commission_rate:  parseFloat(row.commission_rate || 15),
         night_multiplier: parseFloat(row.night_multiplier || 1.3),
         night_start:      row.night_start || '22:00',
         night_end:        row.night_end   || '06:00',
@@ -38,10 +47,11 @@ router.get('/app/config', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// POST /api/fare-estimate — accepts either pre-calculated `distance` km OR lat/lng coords
+// POST /api/fare-estimate — accepts distance km (preferred) OR lat/lng coords + optional duration_min
 router.post('/fare-estimate', async (req, res) => {
-  const { pickup_lat, pickup_lng, drop_lat, drop_lng, ride_type, distance } = req.body;
+  const { pickup_lat, pickup_lng, drop_lat, drop_lng, ride_type, distance, duration_min } = req.body;
   try {
+    const { calculateFare } = require('../services/pricing');
     const fares = await db.query('SELECT * FROM fare_settings WHERE vehicle_type = $1', [ride_type]);
     if (!fares.rows[0]) return res.json({ error: 'Ride type nahi mila' });
     const f = fares.rows[0];
@@ -53,14 +63,13 @@ router.post('/fare-estimate', async (req, res) => {
       const a = Math.sin(dLat/2)**2 + Math.cos(parseFloat(pickup_lat)*Math.PI/180)*Math.cos(parseFloat(drop_lat)*Math.PI/180)*Math.sin(dLon/2)**2;
       distKm = R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
     }
+    // If duration not provided, estimate from distance at 20 km/h city average
+    const durMin = duration_min != null ? parseFloat(duration_min) : (distKm / 20) * 60;
     const hour = new Date().getHours();
-    const isNight = hour >= parseInt(f.night_start || 22) || hour < parseInt(f.night_end || 6);
-    const nightMult = isNight ? parseFloat(f.night_multiplier || 1.2) : 1;
-    const base_fare = parseFloat(f.base_fare) || 0;
-    const per_km_rate = parseFloat(f.per_km_rate) || 0;
-    const fare = Math.round((base_fare + distKm * per_km_rate) * nightMult);
-    if (isNaN(fare)) return res.status(500).json({ error: 'Fare calculation failed — invalid DB values' });
-    res.json({ fare, base_fare, per_km_rate, night_multiplier: nightMult, distance_km: Math.round(distKm * 10) / 10, is_night: isNight });
+    const isNight = hour >= parseInt(String(f.night_start || '22').split(':')[0]) || hour < parseInt(String(f.night_end || '6').split(':')[0]);
+    const result = calculateFare(f, distKm, durMin, isNight);
+    if (isNaN(result.fare)) return res.status(500).json({ error: 'Fare calculation failed — invalid DB values' });
+    res.json(result);
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 

@@ -63,7 +63,7 @@ async function broadcastToRadius(rideId, pickupLat, pickupLng, rideType, radiusM
          AND (d.vehicle_type = $1 OR (d.vehicle_type = 'ultra_luxury' AND $1 = 'luxury'))
          AND NOT EXISTS (
            SELECT 1 FROM rides r2
-           WHERE r2.driver_id = d.id AND r2.status IN ('matched','arrived','started','completed')
+           WHERE r2.driver_id = d.id AND r2.status IN ('matched','arrived','started')
          )`,
       [rideType]
     ),
@@ -193,7 +193,7 @@ async function findPreAssignableDriver(pickupLat, pickupLng, rideType, excludePh
      JOIN users u ON r.driver_id = u.id
      JOIN drivers d ON d.id = u.id
      LEFT JOIN driver_locations dl ON dl.phone = u.phone
-     WHERE r.status IN ('matched','arrived','started','completed')
+     WHERE r.status IN ('matched','arrived','started')
        AND d.vehicle_type = $1
        AND d.is_online = true
        AND d.verification_status = 'approved'
@@ -479,7 +479,7 @@ async function getAvailableAlternatives(rideType) {
   const r = await db.query(
     `SELECT d.vehicle_type, COUNT(*) AS cnt FROM drivers d JOIN users u ON d.id = u.id
      WHERE d.vehicle_type = ANY($1) AND d.is_online = true AND d.verification_status = 'approved'
-       AND NOT EXISTS (SELECT 1 FROM rides r2 WHERE r2.driver_id = d.id AND r2.status IN ('matched','arrived','started','completed'))
+       AND NOT EXISTS (SELECT 1 FROM rides r2 WHERE r2.driver_id = d.id AND r2.status IN ('matched','arrived','started'))
      GROUP BY d.vehicle_type`,
     [alts]
   );

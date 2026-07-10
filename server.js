@@ -937,6 +937,48 @@ setTimeout(async () => {
   await db.query(`ALTER TABLE fare_settings ALTER COLUMN per_km_rate SET NOT NULL`).catch(() => {});
   await db.query(`ALTER TABLE fare_settings ALTER COLUMN night_multiplier SET NOT NULL`).catch(() => {});
 
+  // ── Phase 2 fare system: new fare_settings columns ──────────────────────────
+  await db.query(`ALTER TABLE fare_settings ADD COLUMN IF NOT EXISTS time_rate      NUMERIC NOT NULL DEFAULT 0`).catch(() => {});
+  await db.query(`ALTER TABLE fare_settings ADD COLUMN IF NOT EXISTS platform_fee   NUMERIC NOT NULL DEFAULT 2`).catch(() => {});
+  await db.query(`ALTER TABLE fare_settings ADD COLUMN IF NOT EXISTS min_fare       NUMERIC NOT NULL DEFAULT 0`).catch(() => {});
+  await db.query(`ALTER TABLE fare_settings ADD COLUMN IF NOT EXISTS per_km_rate_t2 NUMERIC`).catch(() => {});
+  await db.query(`ALTER TABLE fare_settings ADD COLUMN IF NOT EXISTS per_km_rate_t3 NUMERIC`).catch(() => {});
+  await db.query(`ALTER TABLE fare_settings ADD COLUMN IF NOT EXISTS commission_rate NUMERIC NOT NULL DEFAULT 15`).catch(() => {});
+  // Seed proposed defaults for new columns (WHERE time_rate=0 ensures first-run only; admin edits are preserved)
+  await db.query(`
+    UPDATE fare_settings SET
+      time_rate = CASE vehicle_type
+        WHEN 'bike'          THEN 0.5  WHEN 'green_bike'    THEN 0.4
+        WHEN 'auto'          THEN 0.75 WHEN 'electric_auto' THEN 0.6
+        WHEN 'eriksha'       THEN 0.65 WHEN 'car'           THEN 1.0
+        WHEN 'luxury'        THEN 1.5  ELSE 0.5 END,
+      platform_fee = CASE vehicle_type
+        WHEN 'car'    THEN 2.5 WHEN 'luxury' THEN 3.0 ELSE 2.0 END,
+      min_fare = CASE vehicle_type
+        WHEN 'bike'          THEN 30  WHEN 'green_bike'    THEN 25
+        WHEN 'auto'          THEN 45  WHEN 'electric_auto' THEN 38
+        WHEN 'eriksha'       THEN 35  WHEN 'car'           THEN 65
+        WHEN 'luxury'        THEN 120 ELSE 30 END,
+      per_km_rate_t2 = CASE vehicle_type
+        WHEN 'bike'          THEN 9   WHEN 'green_bike'    THEN 7
+        WHEN 'auto'          THEN 14  WHEN 'electric_auto' THEN 11
+        WHEN 'eriksha'       THEN 11  WHEN 'car'           THEN 17
+        WHEN 'luxury'        THEN 28  ELSE per_km_rate END,
+      per_km_rate_t3 = CASE vehicle_type
+        WHEN 'bike'          THEN 10  WHEN 'green_bike'    THEN 8
+        WHEN 'auto'          THEN 15  WHEN 'electric_auto' THEN 12
+        WHEN 'eriksha'       THEN 12  WHEN 'car'           THEN 18
+        WHEN 'luxury'        THEN 30  ELSE per_km_rate END,
+      commission_rate = CASE vehicle_type
+        WHEN 'green_bike' THEN 12 WHEN 'electric_auto' THEN 12 ELSE 15 END
+    WHERE time_rate = 0
+  `).catch(() => {});
+
+  // ── New rides columns for phase 2 fare system ────────────────────────────────
+  await db.query(`ALTER TABLE rides ADD COLUMN IF NOT EXISTS trip_started_at TIMESTAMP`).catch(() => {});
+  await db.query(`ALTER TABLE rides ADD COLUMN IF NOT EXISTS distance_km     NUMERIC`).catch(() => {});
+  await db.query(`ALTER TABLE rides ADD COLUMN IF NOT EXISTS platform_fee    NUMERIC DEFAULT 0`).catch(() => {});
+
   // ── Bonus System Tables ───────────────────────────
   await db.query(`
     CREATE TABLE IF NOT EXISTS bonus_rules (
@@ -1175,7 +1217,27 @@ setInterval(async () => {
       } catch (_e) {}
     }
 
-    // 2. Cancel stuck matched/arrived rides older than 30 min — these block drivers from future matches
+    // 2. Cancel pre_assigned rides stuck >15 min (BullMQ timeout job may have failed)
+    const stalePreAssignedRows = await db.query(
+      `SELECT id, passenger_id, pre_accepted_driver_phone FROM rides
+       WHERE status='pre_assigned' AND pre_accepted_at < NOW() - INTERVAL '15 minutes'`
+    );
+    if (stalePreAssignedRows.rows.length) {
+      const ids = stalePreAssignedRows.rows.map(r => r.id);
+      await db.query(
+        `UPDATE rides SET status='cancelled', pre_accepted_driver_phone=NULL, pre_accepted_at=NULL WHERE id = ANY($1)`,
+        [ids]
+      );
+      for (const row of stalePreAssignedRows.rows) {
+        emitToRoom('ride_' + row.id, 'rideUpdate', { rideId: row.id, status: 'cancelled', reason: 'no_driver' });
+        if (row.pre_accepted_driver_phone) {
+          emitToRoom('driver_' + row.pre_accepted_driver_phone, 'preRideCancelled', { rideId: row.id });
+        }
+      }
+      console.log(`🧹 Auto-cancelled ${stalePreAssignedRows.rows.length} stuck pre_assigned rides`);
+    }
+
+    // 3. Cancel stuck matched/arrived rides older than 30 min — these block drivers from future matches
     const stuckMatched = await db.query(
       `UPDATE rides SET status='cancelled'
        WHERE status IN ('matched','arrived')

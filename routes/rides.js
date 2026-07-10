@@ -13,6 +13,7 @@ const { getRideStatus, getDriverLoc, setRideStatus, clearRide: clearRideCache } 
 const { creditPeakBonusIfApplicable } = require('./bonus');
 const { maybeGrantReferralReward } = require('./referral');
 const { getSurgeMultiplier } = require('../services/locationIntelligence');
+const { calculateFare } = require('../services/pricing');
 
 function emitRideUpdate(rideId, data) {
   emitToRoom('ride_' + rideId, 'rideUpdate', { rideId, ...data });
@@ -104,33 +105,37 @@ router.post('/book', async (req, res) => {
     if (passenger.rows[0].booking_restricted)
       return res.status(403).json({ error: '🚫 Aapka account temporarily hold pe hai. Kisi pichli ride ka payment issue hai. Support se contact karo: help@sppero.in', restricted: true });
 
-    const distance = req.body.distance || 5;
+    const distance = parseFloat(req.body.distance) || 5;
+    const durationMin = parseFloat(req.body.duration_min) || (distance / 20) * 60;
     const fareRes = await db.query('SELECT * FROM fare_settings WHERE vehicle_type = $1', [ride_type]);
     const defaultFares = {
-      luxury:        { base_fare: 80,  per_km_rate: 25, night_multiplier: 1.8, night_start: '22:00', night_end: '06:00' },
-      car:           { base_fare: 40,  per_km_rate: 15, night_multiplier: 1.5, night_start: '22:00', night_end: '06:00' },
-      auto:          { base_fare: 25,  per_km_rate: 12, night_multiplier: 1.5, night_start: '22:00', night_end: '06:00' },
-      eriksha:       { base_fare: 20,  per_km_rate: 10, night_multiplier: 1.3, night_start: '22:00', night_end: '06:00' },
-      bike:          { base_fare: 15,  per_km_rate: 8,  night_multiplier: 1.3, night_start: '22:00', night_end: '06:00' },
-      green_bike:    { base_fare: 12,  per_km_rate: 6,  night_multiplier: 1.2, night_start: '22:00', night_end: '06:00' },
-      electric_auto: { base_fare: 20,  per_km_rate: 9,  night_multiplier: 1.3, night_start: '22:00', night_end: '06:00' },
+      luxury:        { base_fare: 80,  per_km_rate: 25, per_km_rate_t2: 28, per_km_rate_t3: 30, time_rate: 1.5,  platform_fee: 3.0, min_fare: 120, night_multiplier: 1.8, night_start: '22:00', night_end: '06:00' },
+      car:           { base_fare: 40,  per_km_rate: 15, per_km_rate_t2: 17, per_km_rate_t3: 18, time_rate: 1.0,  platform_fee: 2.5, min_fare: 65,  night_multiplier: 1.5, night_start: '22:00', night_end: '06:00' },
+      auto:          { base_fare: 25,  per_km_rate: 12, per_km_rate_t2: 14, per_km_rate_t3: 15, time_rate: 0.75, platform_fee: 2.0, min_fare: 45,  night_multiplier: 1.5, night_start: '22:00', night_end: '06:00' },
+      eriksha:       { base_fare: 20,  per_km_rate: 10, per_km_rate_t2: 11, per_km_rate_t3: 12, time_rate: 0.65, platform_fee: 2.0, min_fare: 35,  night_multiplier: 1.3, night_start: '22:00', night_end: '06:00' },
+      bike:          { base_fare: 15,  per_km_rate: 8,  per_km_rate_t2: 9,  per_km_rate_t3: 10, time_rate: 0.5,  platform_fee: 2.0, min_fare: 30,  night_multiplier: 1.3, night_start: '22:00', night_end: '06:00' },
+      green_bike:    { base_fare: 12,  per_km_rate: 6,  per_km_rate_t2: 7,  per_km_rate_t3: 8,  time_rate: 0.4,  platform_fee: 2.0, min_fare: 25,  night_multiplier: 1.2, night_start: '22:00', night_end: '06:00' },
+      electric_auto: { base_fare: 20,  per_km_rate: 9,  per_km_rate_t2: 11, per_km_rate_t3: 12, time_rate: 0.6,  platform_fee: 2.0, min_fare: 38,  night_multiplier: 1.3, night_start: '22:00', night_end: '06:00' },
     };
     const f = fareRes.rows[0] || defaultFares[ride_type] || defaultFares.auto;
     const hour = new Date().getHours();
-    const nightStart = parseInt(String(f.night_start).split(':')[0]);
-    const nightEnd = parseInt(String(f.night_end).split(':')[0]);
+    const nightStart = parseInt(String(f.night_start || '22').split(':')[0]);
+    const nightEnd   = parseInt(String(f.night_end   || '6').split(':')[0]);
     const isNight = hour >= nightStart || hour < nightEnd;
-    let fare = Math.round(parseFloat(f.base_fare) + (distance * parseFloat(f.per_km_rate)));
-    if (isNight) fare = Math.round(fare * parseFloat(f.night_multiplier));
+    const fareCalc = calculateFare(f, distance, durationMin, isNight);
+    const fare = fareCalc.fare;
+    const platFee = fareCalc.platform_fee;
 
     // Surge is NOT applied at booking — it's offered to customer only after no driver accepts
     const ride = await db.query(
-      `INSERT INTO rides (passenger_id, pickup, drop_location, ride_type, fare, status, pickup_lat, pickup_lng, drop_lat, drop_lng, discount, promo_code)
-       VALUES ($1, $2, $3, $4, $5, 'requested', $6, $7, $8, $9, $10, $11) RETURNING *`,
-      [passenger.rows[0].id, pickup, drop_location, ride_type, fare, pickup_lat || null, pickup_lng || null, drop_lat || null, drop_lng || null, discount || 0, promo_code || null]
+      `INSERT INTO rides (passenger_id, pickup, drop_location, ride_type, fare, status, pickup_lat, pickup_lng, drop_lat, drop_lng, discount, promo_code, distance_km, platform_fee)
+       VALUES ($1, $2, $3, $4, $5, 'requested', $6, $7, $8, $9, $10, $11, $12, $13) RETURNING *`,
+      [passenger.rows[0].id, pickup, drop_location, ride_type, fare, pickup_lat || null, pickup_lng || null, drop_lat || null, drop_lng || null, discount || 0, promo_code || null, distance, platFee]
     );
 
-    res.json({ message: 'Driver dhundh rahe hain...', fare: '₹' + fare, distance: distance + ' km', ride_id: ride.rows[0].id, status: 'requested', surge_multiplier: 1.0 });
+    const disc = discount || 0;
+    const netFare = Math.max(0, fare - disc);
+    res.json({ message: 'Driver dhundh rahe hain...', fare: '₹' + fare, net_fare: netFare, discount: disc, distance: distance + ' km', ride_id: ride.rows[0].id, status: 'requested', surge_multiplier: 1.0, platform_fee: platFee, dist_fare: fareCalc.dist_fare, time_fare: fareCalc.time_fare, base_fare: fareCalc.base_fare, is_night: fareCalc.is_night });
 
     assignRideToNextDriver(ride.rows[0].id, pickup_lat || null, pickup_lng || null, ride_type).catch(() => {});
   } catch (err) { res.status(500).json({ error: err.message }); }
@@ -187,6 +192,7 @@ router.get('/status/:rideId', async (req, res) => {
       ride.driver_phone_masked = maskPhone(ride.driver_phone);
       delete ride.driver_phone;
     }
+    ride.net_fare = Math.max(0, parseFloat(ride.fare || 0) - parseFloat(ride.discount || 0));
     res.json({ ride });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
@@ -381,6 +387,8 @@ router.post('/start', async (req, res) => {
       return res.status(403).json({ success: false, message: 'Yeh ride tumhari nahi hai' });
 
     await transitionRide(ride_id, 'started');
+    // Record actual trip start time so /complete can calculate real time fare
+    db.query(`UPDATE rides SET trip_started_at = NOW() WHERE id = $1`, [ride_id]).catch(() => {});
     res.json({ success: true, message: 'Trip shuru!' });
   } catch (err) {
     if (err.message?.includes('Invalid transition') || err.message?.includes('Concurrent transition'))
@@ -459,7 +467,7 @@ router.get('/cancel-info/:ride_id', async (req, res) => {
     const waitFareMin = Math.floor(secDriverWaited / 60);
     const waitFareBillableMin = Math.max(0, waitFareMin - WAIT_FARE_FREE_MIN);
     const waitFareAdd = waitFareBillableMin * WAIT_FARE_PER_MIN;
-    const origFare = parseFloat(String(ride.fare || '0').replace(/[^0-9.]/g, '')) || 0;
+    const origFare = Math.max(0, parseFloat(String(ride.fare || '0').replace(/[^0-9.]/g, '')) || 0) - parseFloat(ride.discount || 0);
 
     res.json({
       // cancel fee (existing)
@@ -593,10 +601,14 @@ router.post('/complete', async (req, res) => {
   const { ride_id, driver_phone, driver_lat, driver_lng } = req.body;
   try {
     const rideRow = await db.query(
-      `SELECT r.*, u.phone AS passenger_phone, d.phone AS dphone
+      `SELECT r.*, u.phone AS passenger_phone, d.phone AS dphone,
+              fs.base_fare AS fs_base, fs.per_km_rate AS fs_pkr, fs.per_km_rate_t2 AS fs_pkr2,
+              fs.per_km_rate_t3 AS fs_pkr3, fs.time_rate AS fs_time, fs.platform_fee AS fs_platfee,
+              fs.min_fare AS fs_min, fs.night_multiplier AS fs_night, fs.night_start AS fs_ns, fs.night_end AS fs_ne
        FROM rides r
        JOIN users u ON r.passenger_id = u.id
        LEFT JOIN users d ON r.driver_id = d.id
+       LEFT JOIN fare_settings fs ON fs.vehicle_type = r.ride_type
        WHERE r.id=$1 AND r.status='started'`, [ride_id]
     );
     if (!rideRow.rows[0]) return res.status(404).json({ error: 'Ride nahi mili ya started nahi hai' });
@@ -604,6 +616,24 @@ router.post('/complete', async (req, res) => {
 
     if (driver_phone && ride.dphone !== driver_phone)
       return res.status(403).json({ error: 'Yeh ride tumhari nahi hai' });
+
+    // ── Recalculate actual fare using real trip duration ───────────────────────
+    let finalFare = parseFloat(ride.fare);
+    let finalPlatFee = parseFloat(ride.platform_fee || 0);
+    if (ride.trip_started_at && ride.fs_time != null) {
+      const actualDurMin = (Date.now() - new Date(ride.trip_started_at).getTime()) / 60000;
+      const distKm = parseFloat(ride.distance_km) || 5;
+      const hourNow = new Date().getHours();
+      const isNightNow = hourNow >= parseInt(String(ride.fs_ns || '22').split(':')[0]) || hourNow < parseInt(String(ride.fs_ne || '6').split(':')[0]);
+      const fsRow = {
+        base_fare: ride.fs_base, per_km_rate: ride.fs_pkr, per_km_rate_t2: ride.fs_pkr2,
+        per_km_rate_t3: ride.fs_pkr3, time_rate: ride.fs_time, platform_fee: ride.fs_platfee,
+        min_fare: ride.fs_min, night_multiplier: ride.fs_night,
+      };
+      const recalc = calculateFare(fsRow, distKm, actualDurMin, isNightNow);
+      finalFare    = recalc.fare;
+      finalPlatFee = recalc.platform_fee;
+    }
 
     // ── Early completion detection ───────────────────────────
     let earlyCompletion = false;
@@ -618,6 +648,8 @@ router.post('/complete', async (req, res) => {
       if (distFromDrop > EARLY_THRESHOLD_KM) earlyCompletion = true;
     }
 
+    const netFareSocket = Math.max(0, finalFare - parseFloat(ride.discount || 0));
+
     // State machine: DB update + socket + FCM for both parties
     await transitionRide(ride_id, 'completed', {
       extraFields: {
@@ -626,13 +658,15 @@ router.post('/complete', async (req, res) => {
         driver_lat_at_complete: driver_lat || null,
         driver_lng_at_complete: driver_lng || null,
         completion_dist_from_drop: distFromDrop,
+        fare: finalFare,
+        platform_fee: finalPlatFee,
       },
-      socketData: { fare: ride.fare, early_completion: earlyCompletion },
+      socketData: { fare: netFareSocket, discount: parseFloat(ride.discount || 0), early_completion: earlyCompletion, platform_fee: finalPlatFee },
       custPhone:  ride.passenger_phone,
       drvPhone:   ride.dphone,
     });
 
-    const fare = ride.fare;
+    const fare = netFareSocket;
     const paymentMethod = ride.payment_method;
     res.json({
       success: true,
@@ -712,11 +746,16 @@ router.post('/complete', async (req, res) => {
 router.post('/payment-complete', async (req, res) => {
   const { ride_id, payment_method, phone } = req.body;
   try {
-    const rideRes = await db.query('SELECT * FROM rides WHERE id = $1', [ride_id]);
+    const rideRes = await db.query(
+      `SELECT r.*, fs.commission_rate FROM rides r
+       LEFT JOIN fare_settings fs ON fs.vehicle_type = r.ride_type
+       WHERE r.id = $1`, [ride_id]
+    );
     if (rideRes.rows.length === 0) return res.json({ success: false, message: 'Ride nahi mili' });
     const ride = rideRes.rows[0];
-    const fare = parseFloat(ride.fare);
-    const commission = Math.round(fare * 0.15 * 100) / 100;
+    const fare = Math.max(0, parseFloat(ride.fare) - parseFloat(ride.discount || 0));
+    const commRate = parseFloat(ride.commission_rate || 15) / 100;
+    const commission = Math.round(fare * commRate * 100) / 100;
 
     // Idempotency: if already completed, just re-emit the socket so the driver gets notified
     if (ride.payment_status === 'completed') {
@@ -839,7 +878,7 @@ router.post('/cash-confirm', async (req, res) => {
       return res.status(403).json({ error: 'Yeh ride tumhari nahi hai' });
     if (rideRes.rows[0].payment_status === 'completed')
       return res.json({ success: true, message: 'Payment already confirmed hai' });
-    const fare = parseFloat(rideRes.rows[0].fare);
+    const fare = Math.max(0, parseFloat(rideRes.rows[0].fare) - parseFloat(rideRes.rows[0].discount || 0));
     const commission = Math.round(fare * 0.15 * 100) / 100;
 
     await db.query(`UPDATE rides SET payment_status = 'completed', payment_method = $1, commission_amount = $2 WHERE id = $3`, [method, commission, ride_id]);
@@ -897,6 +936,7 @@ router.post('/payment-not-received', async (req, res) => {
     );
     if (!rideRes.rows[0]) return res.status(404).json({ error: 'Ride nahi mili ya tumhari nahi hai' });
     const ride = rideRes.rows[0];
+    const netFareDisplay = Math.max(0, parseFloat(ride.fare || 0) - parseFloat(ride.discount || 0));
 
     if (!['completed', 'cash_pending'].includes(ride.status))
       return res.status(400).json({ error: 'Ride abhi completed nahi hai' });
@@ -918,7 +958,7 @@ router.post('/payment-not-received', async (req, res) => {
       `INSERT INTO ride_incidents(ride_id,incident_type,detected_by,driver_id,customer_id,metadata)
        VALUES($1,'payment_skipped','driver',$2,$3,$4)`,
       [ride_id, ride.driver_id_val, ride.passenger_id_val,
-       JSON.stringify({ fare: ride.fare, payment_method: ride.payment_method })]
+       JSON.stringify({ fare: netFareDisplay, full_fare: ride.fare, discount: ride.discount || 0, payment_method: ride.payment_method })]
     ).catch(() => {});
 
     // Auto-create complaint against customer
@@ -929,7 +969,7 @@ router.post('/payment-not-received', async (req, res) => {
          $4,'high','driver_report')
        RETURNING id`,
       [ride_id, ride.driver_id_val, ride.passenger_id_val,
-       `Driver ${ride.driver_name} (${driver_phone}) ne report kiya: Ride #${ride_id} ke baad customer ${ride.passenger_name} ne ₹${ride.fare} cash payment nahi ki aur chale gaye.`]
+       `Driver ${ride.driver_name} (${driver_phone}) ne report kiya: Ride #${ride_id} ke baad customer ${ride.passenger_name} ne ₹${netFareDisplay} cash payment nahi ki aur chale gaye.`]
     );
     if (cRes.rows[0]) {
       await db.query(
@@ -965,7 +1005,7 @@ router.post('/payment-not-received', async (req, res) => {
     // FCM to customer — warning
     sendFCM(ride.passenger_phone,
       '⚠️ Payment Issue Reported',
-      `Driver ne report kiya ki aapne ride #${ride_id} ka ₹${ride.fare} cash payment nahi kiya. Please support se contact karo.`,
+      `Driver ne report kiya ki aapne ride #${ride_id} ka ₹${netFareDisplay} cash payment nahi kiya. Please support se contact karo.`,
       { type: 'payment_dispute', ride_id: String(ride_id) },
       { role: 'customer' }
     ).catch(() => {});
@@ -1122,9 +1162,11 @@ router.get('/history', async (req, res) => {
 // GET /api/rides/payment-status/:rideId
 router.get('/payment-status/:rideId', async (req, res) => {
   try {
-    const result = await db.query(`SELECT payment_status, payment_method, fare FROM rides WHERE id = $1`, [req.params.rideId]);
+    const result = await db.query(`SELECT payment_status, payment_method, fare, discount FROM rides WHERE id = $1`, [req.params.rideId]);
     if (result.rows.length === 0) return res.json({ status: 'not_found' });
-    res.json(result.rows[0]);
+    const row = result.rows[0];
+    row.net_fare = Math.max(0, parseFloat(row.fare || 0) - parseFloat(row.discount || 0));
+    res.json(row);
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 

@@ -3,6 +3,7 @@ const router  = express.Router();
 const db      = require('../config/db');
 const { sendFCM }    = require('../config/firebase');
 const { emitToRoom } = require('../config/socket');
+const { calculateFare } = require('../services/pricing');
 const { rideQueue }  = require('../workers/rideWorker');
 
 // Kept for backwards-compat export — internal Set replaced by DB query in reject-offer (multi-instance safe)
@@ -36,13 +37,13 @@ async function getBuddy(customerId) {
            d.vehicle_type, d.vehicle_no, d.vehicle_brand, d.vehicle_model,
            d.rating, d.face_photo, d.is_online,
            (SELECT COUNT(*) FROM rides
-            WHERE passenger_id=$1 AND driver_id=fd.driver_id AND status='completed'
+            WHERE passenger_id=$2 AND driver_id=fd.driver_id AND status='completed'
            ) AS rides_together
     FROM favourite_drivers fd
     JOIN  users   u ON fd.driver_id = u.id
     LEFT JOIN drivers d ON fd.driver_id = d.id
     WHERE fd.customer_id = $1
-  `, [customerId]);
+  `, [customerId, customerId]);
   return r.rows[0] || null;
 }
 
@@ -149,20 +150,22 @@ router.post('/book', async (req, res) => {
 
     // Calculate fare
     const dist = parseFloat(distance) || 5;
+    const durMin = (dist / 20) * 60; // estimated at 20 km/h
     const ride_type = buddy.vehicle_type || 'auto';
     const fareRow = await db.query('SELECT * FROM fare_settings WHERE vehicle_type=$1', [ride_type]);
     const f = fareRow.rows[0] || defaultFares[ride_type] || defaultFares.auto;
     const hour = new Date().getHours();
-    const isNight = hour >= 22 || hour < 6;
-    let fare = Math.round(parseFloat(f.base_fare) + (dist * parseFloat(f.per_km_rate)));
-    if (isNight) fare = Math.round(fare * parseFloat(f.night_multiplier));
+    const isNight = hour >= parseInt(String(f.night_start || '22').split(':')[0]) || hour < parseInt(String(f.night_end || '6').split(':')[0]);
+    const fareCalc = calculateFare(f, dist, durMin, isNight);
+    const fare = fareCalc.fare;
 
     // Create ride record
     const ride = await db.query(
-      `INSERT INTO rides (passenger_id, pickup, drop_location, ride_type, fare, status, pickup_lat, pickup_lng, drop_lat, drop_lng)
-       VALUES ($1,$2,$3,$4,$5,'requested',$6,$7,$8,$9) RETURNING *`,
+      `INSERT INTO rides (passenger_id, pickup, drop_location, ride_type, fare, status, pickup_lat, pickup_lng, drop_lat, drop_lng, distance_km, platform_fee)
+       VALUES ($1,$2,$3,$4,$5,'requested',$6,$7,$8,$9,$10,$11) RETURNING *`,
       [customer.id, pickup, drop_location, ride_type, fare,
-       pickup_lat || null, pickup_lng || null, drop_lat || null, drop_lng || null]
+       pickup_lat || null, pickup_lng || null, drop_lat || null, drop_lng || null,
+       dist, fareCalc.platform_fee]
     );
     const rideId = ride.rows[0].id;
 
