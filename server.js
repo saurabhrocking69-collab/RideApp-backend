@@ -974,6 +974,14 @@ setTimeout(async () => {
     WHERE time_rate = 0
   `).catch(() => {});
 
+  // ── Repair corrupted fare_settings rows (per_km_rate accidentally set to 1) ──
+  await db.query(`
+    UPDATE fare_settings SET
+      base_fare   = CASE vehicle_type WHEN 'bike' THEN 15 WHEN 'auto' THEN 25 ELSE base_fare END,
+      per_km_rate = CASE vehicle_type WHEN 'bike' THEN 8  WHEN 'auto' THEN 12 ELSE per_km_rate END
+    WHERE vehicle_type IN ('bike','auto') AND per_km_rate <= 2
+  `).catch(() => {});
+
   // ── New rides columns for phase 2 fare system ────────────────────────────────
   await db.query(`ALTER TABLE rides ADD COLUMN IF NOT EXISTS trip_started_at TIMESTAMP`).catch(() => {});
   await db.query(`ALTER TABLE rides ADD COLUMN IF NOT EXISTS distance_km     NUMERIC`).catch(() => {});
