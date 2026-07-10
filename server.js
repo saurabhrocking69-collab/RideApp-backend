@@ -586,6 +586,7 @@ function _haversineKm(lat1, lng1, lat2, lng2) {
 
 io.on('connection', (socket) => {
   socket.on('joinRide',    ({ rideId })    => socket.join('ride_' + rideId));
+  socket.on('leaveRide',   ({ rideId })    => socket.leave('ride_' + rideId));
   socket.on('joinHourly',  ({ bookingId }) => socket.join('hourly_' + bookingId));
 
   // Per-connection Set: prevents re-delivering the same offer on repeated driverJoin calls
