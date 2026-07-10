@@ -1224,6 +1224,10 @@ db.query(`ALTER TABLE scheduled_rides ADD COLUMN IF NOT EXISTS payment_mode TEXT
 db.query(`CREATE INDEX IF NOT EXISTS idx_scheduled_rides_status ON scheduled_rides(status)`).catch(() => {});
 db.query(`CREATE INDEX IF NOT EXISTS idx_scheduled_rides_scheduled_at ON scheduled_rides(scheduled_at)`).catch(() => {});
 
+// Pre-assignment queue columns
+db.query(`ALTER TABLE rides ADD COLUMN IF NOT EXISTS pre_accepted_driver_phone TEXT`).catch(() => {});
+db.query(`ALTER TABLE rides ADD COLUMN IF NOT EXISTS pre_accepted_at TIMESTAMPTZ`).catch(() => {});
+
 // Startup recovery: reset any 'dispatching' rides that got stuck during a previous crash
 db.query(
   `UPDATE scheduled_rides SET status='pending'

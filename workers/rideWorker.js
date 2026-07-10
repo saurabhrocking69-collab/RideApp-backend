@@ -12,8 +12,12 @@ const rideQueue = new Queue('ride-assignment', { connection: makeBmqConn() });
 const RADIUS_LEVELS_M       = [500, 1000, 2000, 3000, 4000, 5000, 6000, 7000, 8000, 9000, 10000, 11000];
 const WINDOW_SEC            = 30;   // each radius level gets 30 seconds (real-time rides)
 const SCHEDULED_WINDOW_SEC  = 120;  // 2-minute window for scheduled rides — drivers need time to open app
-const SURGE_GRACE_SEC = 100;  // customer has 100s to accept surge offer
-const STALE_GPS_MS    = 15 * 60 * 1000; // 15 min — location older than this → include anyway
+const SURGE_GRACE_SEC       = 100;  // customer has 100s to accept surge offer
+const STALE_GPS_MS          = 15 * 60 * 1000; // 15 min — location older than this → include anyway
+const PRE_ASSIGN_OFFER_SEC  = 180;  // driver has 3 min to respond to pre-queue offer
+// Pre-assignment thresholds
+const PRE_ASSIGN_DRIVER_TO_DROP_KM  = 0.4; // driver must be within 400m of their own drop point
+const PRE_ASSIGN_DROP_TO_CUSTOMER_KM = 0.5; // that drop must be within 500m of new customer's pickup
 
 const VEHICLE_ALTERNATIVES = {
   bike:          ['auto', 'car'],
@@ -28,9 +32,11 @@ const VEHICLE_ALTERNATIVES = {
 
 const rideWorker = new Worker('ride-assignment', async (job) => {
   const d = job.data;
-  if (d.type === 'broadcast-advance')    await _bmqBroadcastAdvance(d).catch(e => console.error('[ADVANCE] error:', e.message));
-  if (d.type === 'surge-grace-timeout')  await _bmqSurgeGraceTimeout(d).catch(e => console.error('[SURGE_TIMEOUT] error:', e.message));
-  if (d.type === 'assign-next')          await _bmqAssignNext(d).catch(e => console.error('[ASSIGN-NEXT] error:', e.message));
+  if (d.type === 'broadcast-advance')      await _bmqBroadcastAdvance(d).catch(e => console.error('[ADVANCE] error:', e.message));
+  if (d.type === 'surge-grace-timeout')    await _bmqSurgeGraceTimeout(d).catch(e => console.error('[SURGE_TIMEOUT] error:', e.message));
+  if (d.type === 'assign-next')            await _bmqAssignNext(d).catch(e => console.error('[ASSIGN-NEXT] error:', e.message));
+  if (d.type === 'pre-assign-timeout')     await _bmqPreAssignTimeout(d).catch(e => console.error('[PRE-ASSIGN-TIMEOUT] error:', e.message));
+  if (d.type === 'pre-assign-recheck')     await _bmqPreAssignRecheck(d).catch(e => console.error('[PRE-ASSIGN-RECHECK] error:', e.message));
 }, { connection: makeBmqConn(), concurrency: 5 });
 
 rideWorker.on('failed', (job, err) => {
@@ -57,7 +63,7 @@ async function broadcastToRadius(rideId, pickupLat, pickupLng, rideType, radiusM
          AND (d.vehicle_type = $1 OR (d.vehicle_type = 'ultra_luxury' AND $1 = 'luxury'))
          AND NOT EXISTS (
            SELECT 1 FROM rides r2
-           WHERE r2.driver_id = d.id AND r2.status IN ('matched','arrived','started')
+           WHERE r2.driver_id = d.id AND r2.status IN ('matched','arrived','started','completed')
          )`,
       [rideType]
     ),
@@ -175,8 +181,206 @@ async function _bmqSurgeGraceTimeout({ rideId, pickupLat, pickupLng, rideType })
   await _escalate(rideId, rideType, true, pickupLat, pickupLng);
 }
 
+// ── Pre-assignment: find a busy driver who is almost at their drop, near the new customer ──
+// Returns the best candidate object or null. excludePhones prevents re-offering declined drivers.
+async function findPreAssignableDriver(pickupLat, pickupLng, rideType, excludePhones = []) {
+  const busyDrivers = await db.query(
+    `SELECT u.phone, u.name AS driver_name,
+            d.vehicle_no, d.vehicle_brand, d.vehicle_model, d.rating,
+            dl.lat AS driver_lat, dl.lng AS driver_lng, dl.updated_at AS loc_ts,
+            r.id AS active_ride_id, r.drop_lat, r.drop_lng
+     FROM rides r
+     JOIN users u ON r.driver_id = u.id
+     JOIN drivers d ON d.id = u.id
+     LEFT JOIN driver_locations dl ON dl.phone = u.phone
+     WHERE r.status IN ('matched','arrived','started','completed')
+       AND d.vehicle_type = $1
+       AND d.is_online = true
+       AND d.verification_status = 'approved'
+       AND dl.lat IS NOT NULL
+       AND dl.updated_at > NOW() - INTERVAL '10 minutes'`,
+    [rideType]
+  );
+
+  const cLat = parseFloat(pickupLat);
+  const cLng = parseFloat(pickupLng);
+  const excludeSet = new Set(excludePhones);
+
+  const candidates = busyDrivers.rows
+    .filter(dr => {
+      if (excludeSet.has(dr.phone)) return false;
+      if (!dr.drop_lat || !dr.drop_lng) return false;
+      const distToDropKm     = haversineKm(parseFloat(dr.driver_lat), parseFloat(dr.driver_lng), parseFloat(dr.drop_lat), parseFloat(dr.drop_lng));
+      const distDropToCustKm = haversineKm(parseFloat(dr.drop_lat), parseFloat(dr.drop_lng), cLat, cLng);
+      return distToDropKm <= PRE_ASSIGN_DRIVER_TO_DROP_KM && distDropToCustKm <= PRE_ASSIGN_DROP_TO_CUSTOMER_KM;
+    })
+    .map(dr => ({
+      ...dr,
+      dropToCustKm: haversineKm(parseFloat(dr.drop_lat), parseFloat(dr.drop_lng), cLat, cLng),
+    }))
+    .sort((a, b) => a.dropToCustKm - b.dropToCustKm);
+
+  return candidates[0] || null;
+}
+
+// ── Offer a pre-assignment slot to a candidate driver ─────────────────────────
+async function _offerPreAssignment(rideId, rideType, pickupLat, pickupLng, candidate, excludePhones = []) {
+  // Re-check ride still searching
+  const rideCheck = await db.query(
+    `SELECT id, pickup, fare FROM rides WHERE id=$1 AND status='requested' AND driver_id IS NULL`,
+    [rideId]
+  );
+  if (!rideCheck.rows[0]) return;
+  const ride = rideCheck.rows[0];
+
+  // ETA estimate: haversine drop→customer at 30 km/h city + 5 min buffer
+  const etaMin = Math.max(3, Math.ceil(candidate.dropToCustKm / 0.5) + 5);
+
+  await db.query(
+    `UPDATE rides
+     SET status = 'pre_assigned', pre_accepted_driver_phone = $1, pre_accepted_at = NOW()
+     WHERE id = $2 AND status = 'requested' AND driver_id IS NULL`,
+    [candidate.phone, rideId]
+  );
+
+  // Notify customer
+  emitToRoom('ride_' + rideId, 'rideUpdate', {
+    rideId, status: 'pre_assigned',
+    driver: {
+      name: candidate.driver_name, phone: candidate.phone,
+      vehicle_no: candidate.vehicle_no, vehicle_brand: candidate.vehicle_brand,
+      vehicle_model: candidate.vehicle_model, rating: parseFloat(candidate.rating) || 5.0,
+    },
+    eta_min: etaMin,
+    message: 'Driver mil gaya — woh apni current ride complete karke aayenge',
+  });
+
+  // Notify driver via socket + FCM
+  const rideEmoji = { bike: '🏍️', auto: '🛺', car: '🚕', eriksha: '🛵', luxury: '🚙', electric_auto: '🌿', green_bike: '⚡' }[rideType] || '🚗';
+  emitToRoom('driver_' + candidate.phone, 'preRideQueued', {
+    rideId, pickup: ride.pickup, fare: '₹' + Math.round(parseFloat(ride.fare)),
+    rideType, etaMin,
+  });
+  sendFCM(
+    candidate.phone,
+    `${rideEmoji} Next Ride Ready!`,
+    `${ride.pickup} · Drop ke baad seedha jao — ${PRE_ASSIGN_OFFER_SEC / 60} min mein respond karo`,
+    { type: 'pre_ride_queued', ride_id: String(rideId) },
+    { channelId: 'ride_requests', role: 'driver' }
+  ).catch(() => {});
+
+  // Timeout: if driver never responds, try next candidate or surge
+  rideQueue.add('ride-assignment', {
+    type: 'pre-assign-timeout', rideId, rideType, pickupLat, pickupLng,
+    offeredDriverPhone: candidate.phone,
+    excludePhones: [...excludePhones, candidate.phone],
+  }, { delay: PRE_ASSIGN_OFFER_SEC * 1000 }).catch(() => {});
+
+  console.log(`[PRE-ASSIGN] ride=${rideId} offered to driver=${candidate.phone} eta=${etaMin}min`);
+}
+
+// ── Pre-assign timeout: driver never responded → try next or surge ────────────
+async function _bmqPreAssignTimeout({ rideId, rideType, pickupLat, pickupLng, offeredDriverPhone, excludePhones = [] }) {
+  const r = await db.query(
+    `SELECT id FROM rides WHERE id=$1 AND status='pre_assigned' AND pre_accepted_driver_phone=$2`,
+    [rideId, offeredDriverPhone]
+  );
+  if (!r.rows[0]) {
+    console.log(`[PRE-ASSIGN-TIMEOUT] ride=${rideId} — already handled`);
+    return;
+  }
+  console.log(`[PRE-ASSIGN-TIMEOUT] ride=${rideId} driver=${offeredDriverPhone} timed out — trying next`);
+  // Revert to requested, then try pre-assign again or fall to surge
+  await db.query(
+    `UPDATE rides SET status='requested', pre_accepted_driver_phone=NULL, pre_accepted_at=NULL
+     WHERE id=$1 AND status='pre_assigned' AND pre_accepted_driver_phone=$2`,
+    [rideId, offeredDriverPhone]
+  );
+  const next = await findPreAssignableDriver(pickupLat, pickupLng, rideType, excludePhones).catch(() => null);
+  if (next) {
+    await _offerPreAssignment(rideId, rideType, pickupLat, pickupLng, next, excludePhones);
+  } else {
+    await _escalate(rideId, rideType, false, pickupLat, pickupLng, true /* skipPreAssign */);
+  }
+}
+
+// ── Pre-assign recheck: driver declined → try next or surge ──────────────────
+async function _bmqPreAssignRecheck({ rideId, rideType, pickupLat, pickupLng, excludePhones = [] }) {
+  const r = await db.query(
+    `SELECT id FROM rides WHERE id=$1 AND status='requested' AND driver_id IS NULL`,
+    [rideId]
+  );
+  if (!r.rows[0]) return;
+  const next = await findPreAssignableDriver(pickupLat, pickupLng, rideType, excludePhones).catch(() => null);
+  if (next) {
+    await _offerPreAssignment(rideId, rideType, pickupLat, pickupLng, next, excludePhones);
+  } else {
+    await _escalate(rideId, rideType, false, pickupLat, pickupLng, true /* skipPreAssign */);
+  }
+}
+
+// ── Activate a pre-assigned ride when driver finishes their current trip ──────
+// Called from the payment endpoints in rides.js after payment is confirmed.
+async function activateQueuedRide(driverPhone) {
+  const r = await db.query(
+    `SELECT r.id, r.pickup, r.drop_location, r.fare, r.ride_type,
+            u.phone AS passenger_phone
+     FROM rides r
+     JOIN users u ON r.passenger_id = u.id
+     WHERE r.status = 'pre_assigned' AND r.pre_accepted_driver_phone = $1
+     LIMIT 1`,
+    [driverPhone]
+  );
+  if (!r.rows[0]) return;
+  const pr = r.rows[0];
+
+  const driverRes = await db.query(
+    `SELECT u.phone, u.name, d.vehicle_type, d.vehicle_no, d.vehicle_brand, d.vehicle_model, d.rating
+     FROM drivers d JOIN users u ON d.id = u.id WHERE u.phone = $1`,
+    [driverPhone]
+  );
+  if (!driverRes.rows[0]) return;
+  const driver = driverRes.rows[0];
+
+  // Assign ride to driver
+  await db.query(
+    `UPDATE rides
+     SET status = 'matched', driver_id = (SELECT id FROM users WHERE phone = $1),
+         matched_at = NOW(), pre_accepted_driver_phone = NULL, pre_accepted_at = NULL
+     WHERE id = $2 AND status = 'pre_assigned'`,
+    [driverPhone, pr.id]
+  );
+
+  const driverPayload = {
+    name: driver.name, phone: driver.phone, vehicle_type: driver.vehicle_type,
+    vehicle_no: driver.vehicle_no, vehicle_brand: driver.vehicle_brand,
+    vehicle_model: driver.vehicle_model, rating: parseFloat(driver.rating) || 5.0,
+  };
+
+  // Tell customer their driver is now matched
+  emitToRoom('ride_' + pr.id, 'rideUpdate', {
+    rideId: pr.id, status: 'matched', driver: driverPayload,
+    message: 'Driver ab aapke taraf aa raha hai!',
+  });
+
+  // Tell driver their queued ride is now active
+  emitToRoom('driver_' + driverPhone, 'preRideActivated', {
+    rideId: pr.id, pickup: pr.pickup, dropLocation: pr.drop_location,
+    fare: '₹' + Math.round(parseFloat(pr.fare)), rideType: pr.ride_type,
+  });
+  sendFCM(
+    driverPhone,
+    '🏍️ Queued Ride Active!',
+    `Ab jao: ${pr.pickup}`,
+    { type: 'pre_ride_activated', ride_id: String(pr.id) },
+    { channelId: 'ride_requests', role: 'driver' }
+  ).catch(() => {});
+
+  console.log(`[PRE-ASSIGN] ride=${pr.id} activated for driver=${driverPhone}`);
+}
+
 // ── Escalation: first failure → surge offer, second → no_driver_final ────────
-async function _escalate(rideId, rideType, afterSurge, pickupLat, pickupLng) {
+async function _escalate(rideId, rideType, afterSurge, pickupLat, pickupLng, skipPreAssign = false) {
   if (afterSurge) {
     // Guard: if the stale-ride cron already cancelled this ride (rare but possible
     // when BullMQ jobs are delayed past the 15-min cleanup window), skip the
@@ -227,6 +431,16 @@ async function _escalate(rideId, rideType, afterSurge, pickupLat, pickupLng) {
       ).catch(() => {});
     }
   } else {
+    // Before showing surge offer, check if a busy driver is almost at their drop
+    // and close enough to the customer to pre-assign this ride.
+    if (!skipPreAssign && pickupLat && pickupLng) {
+      const candidate = await findPreAssignableDriver(pickupLat, pickupLng, rideType, []).catch(() => null);
+      if (candidate) {
+        await _offerPreAssignment(rideId, rideType, pickupLat, pickupLng, candidate, []);
+        return; // customer stays in matching; driver gets special offer
+      }
+    }
+
     const surgeInfo = await _computeSurgeOffer(pickupLat, pickupLng, rideId);
     emitToRoom('ride_' + rideId, 'rideUpdate', {
       rideId, status: 'surge_offer',
@@ -265,7 +479,7 @@ async function getAvailableAlternatives(rideType) {
   const r = await db.query(
     `SELECT d.vehicle_type, COUNT(*) AS cnt FROM drivers d JOIN users u ON d.id = u.id
      WHERE d.vehicle_type = ANY($1) AND d.is_online = true AND d.verification_status = 'approved'
-       AND NOT EXISTS (SELECT 1 FROM rides r2 WHERE r2.driver_id = d.id AND r2.status IN ('matched','arrived','started'))
+       AND NOT EXISTS (SELECT 1 FROM rides r2 WHERE r2.driver_id = d.id AND r2.status IN ('matched','arrived','started','completed'))
      GROUP BY d.vehicle_type`,
     [alts]
   );
@@ -343,4 +557,4 @@ async function assignRideToNextDriver(rideId, pickupLat, pickupLng, rideType, _i
   await _escalate(rideId, rideType, !!afterSurge, pickupLat, pickupLng);
 }
 
-module.exports = { rideQueue, rideWorker, assignRideToNextDriver, broadcastToRadius };
+module.exports = { rideQueue, rideWorker, assignRideToNextDriver, broadcastToRadius, activateQueuedRide };

@@ -3,7 +3,7 @@ const router = express.Router();
 const db = require('../config/db');
 const { sendFCM } = require('../config/firebase');
 const { emitToRoom } = require('../config/socket');
-const { assignRideToNextDriver } = require('../workers/rideWorker');
+const { assignRideToNextDriver, activateQueuedRide, rideQueue } = require('../workers/rideWorker');
 const { driverLocations } = require('../services/matching');
 const { maskPhone } = require('../services/phone');
 const { haversineKm } = require('../services/matching');
@@ -500,6 +500,15 @@ router.post('/cancel-smart', async (req, res) => {
     let penalty = 0;
     let message = 'Ride cancel ho gayi';
 
+    // Pre-assigned rides: always free cancel, notify the driver their queued ride is gone
+    if (ride.status === 'pre_assigned') {
+      await db.query(`UPDATE rides SET status='cancelled' WHERE id=$1 AND status='pre_assigned'`, [ride_id]);
+      if (ride.pre_accepted_driver_phone) {
+        emitToRoom('driver_' + ride.pre_accepted_driver_phone, 'preRideCancelled', { rideId: parseInt(ride_id) });
+      }
+      return res.json({ success: true, penalty: 0, message: 'Ride cancel ho gayi (free)' });
+    }
+
     if (cancelled_by === 'customer') {
       const today = new Date().toISOString().split('T')[0];
       let cm = await db.query('SELECT * FROM customer_metrics WHERE phone = $1', [phone]);
@@ -562,7 +571,7 @@ router.post('/cancel-smart', async (req, res) => {
     }
 
     const smartCancelRes = await db.query(
-      `UPDATE rides SET status = 'cancelled' WHERE id = $1 AND status IN ('requested', 'matched', 'arrived') RETURNING id`,
+      `UPDATE rides SET status = 'cancelled' WHERE id = $1 AND status IN ('requested', 'pre_assigned', 'matched', 'arrived') RETURNING id`,
       [ride_id]
     );
     if (!smartCancelRes.rows[0]) return res.json({ success: false, message: 'Ride started, completed ya already cancelled hai' });
@@ -809,6 +818,8 @@ router.post('/payment-complete', async (req, res) => {
     // Socket: customer's payment screen listens for this instead of polling
     emitToRoom('ride_' + ride_id, 'paymentConfirmed', { ride_id, status: 'completed', payment_method, cashbacks });
     res.json({ success: true, status: 'completed', message: 'Payment complete!', cashbacks });
+    // Activate any pre-assigned ride this driver has queued (fire-and-forget)
+    if (drPhone) activateQueuedRide(drPhone).catch(() => {});
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
@@ -863,6 +874,8 @@ router.post('/cash-confirm', async (req, res) => {
     // Notify customer's payment screen via socket so it can advance to post-ride without polling
     emitToRoom('ride_' + ride_id, 'paymentConfirmed', { ride_id, status: 'completed', payment_method: method, cashbacks });
     res.json({ success: true, message: 'Payment confirmed!', pending_commission: totalPending, cashbacks });
+    // Activate any pre-assigned ride this driver has queued (fire-and-forget)
+    activateQueuedRide(phone).catch(() => {});
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
@@ -1477,6 +1490,60 @@ router.get('/track-info/:rideId', async (req, res) => {
         vehicle:   [r.vehicle_brand, r.vehicle_model].filter(Boolean).join(' '),
       } : null,
     });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// POST /api/rides/pre-accept — driver accepts a pre-assignment offer
+router.post('/pre-accept', async (req, res) => {
+  const { ride_id, phone } = req.body;
+  if (!ride_id || !phone) return res.status(400).json({ error: 'ride_id aur phone zaroori hai' });
+  try {
+    const r = await db.query(
+      `SELECT r.id, r.pickup, r.fare
+       FROM rides r
+       WHERE r.id = $1 AND r.status = 'pre_assigned' AND r.pre_accepted_driver_phone = $2`,
+      [ride_id, phone]
+    );
+    if (!r.rows[0]) return res.status(404).json({ error: 'Pre-assigned ride nahi mili ya yeh tumhara nahi hai' });
+
+    // Confirm acceptance — emit to customer so they know driver confirmed
+    emitToRoom('ride_' + ride_id, 'rideUpdate', {
+      rideId: parseInt(ride_id), status: 'pre_assigned', pre_accepted: true,
+      message: 'Driver ne confirm kiya — woh current ride complete karke aayenge',
+    });
+    res.json({ success: true, message: 'Ride queue mein add ho gayi!' });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// POST /api/rides/pre-decline — driver declines a pre-assignment offer
+router.post('/pre-decline', async (req, res) => {
+  const { ride_id, phone } = req.body;
+  if (!ride_id || !phone) return res.status(400).json({ error: 'ride_id aur phone zaroori hai' });
+  try {
+    const r = await db.query(
+      `UPDATE rides SET status='requested', pre_accepted_driver_phone=NULL, pre_accepted_at=NULL
+       WHERE id=$1 AND status='pre_assigned' AND pre_accepted_driver_phone=$2
+       RETURNING id, pickup_lat, pickup_lng, ride_type`,
+      [ride_id, phone]
+    );
+    if (!r.rows[0]) return res.status(404).json({ error: 'Pre-assigned ride nahi mili' });
+    const ride = r.rows[0];
+
+    // Tell customer we're searching again
+    emitToRoom('ride_' + ride_id, 'rideUpdate', {
+      rideId: parseInt(ride_id), status: 'searching',
+      message: 'Driver available nahi hua — dobara dhundh rahe hain...',
+    });
+
+    // Queue recheck: try next pre-assignable driver or fall to surge
+    rideQueue.add('ride-assignment', {
+      type: 'pre-assign-recheck',
+      rideId: parseInt(ride_id),
+      pickupLat: ride.pickup_lat, pickupLng: ride.pickup_lng, rideType: ride.ride_type,
+      excludePhones: [phone],
+    }, { delay: 500 }).catch(() => {});
+
+    res.json({ success: true });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
