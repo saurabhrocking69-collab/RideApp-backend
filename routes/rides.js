@@ -138,7 +138,7 @@ router.post('/book', async (req, res) => {
     res.json({ message: 'Driver dhundh rahe hain...', fare: '₹' + fare, net_fare: netFare, discount: disc, distance: distance + ' km', ride_id: ride.rows[0].id, status: 'requested', surge_multiplier: 1.0, platform_fee: platFee, dist_fare: fareCalc.dist_fare, time_fare: fareCalc.time_fare, base_fare: fareCalc.base_fare, is_night: fareCalc.is_night });
 
     assignRideToNextDriver(ride.rows[0].id, pickup_lat || null, pickup_lng || null, ride_type).catch(() => {});
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { console.error('[rides]', err.message); res.status(500).json({ error: 'Kuch problem aayi — dobara try karo' }); }
 });
 
 // GET /api/rides/surge-check — surge multiplier for a pickup location
@@ -164,7 +164,7 @@ router.post('/:id/driver-location', async (req, res) => {
     // Emit to customer's socket room
     emitToRoom('ride_' + rideId, 'driverMoved', { lat, lng });
     res.json({ ok: true });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { console.error('[rides]', err.message); res.status(500).json({ error: 'Kuch problem aayi — dobara try karo' }); }
 });
 
 // GET /api/rides/status/:rideId
@@ -194,7 +194,7 @@ router.get('/status/:rideId', async (req, res) => {
     }
     ride.net_fare = Math.max(0, parseFloat(ride.fare || 0) - parseFloat(ride.discount || 0));
     res.json({ ride });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { console.error('[rides]', err.message); res.status(500).json({ error: 'Kuch problem aayi — dobara try karo' }); }
 });
 
 // POST /api/rides/accept
@@ -285,7 +285,8 @@ router.post('/accept', async (req, res) => {
     if (err.message && err.message.includes('Concurrent transition')) {
       return res.json({ success: false, message: 'Ride kisi aur driver ne le li — agli dekho!' });
     }
-    res.status(500).json({ error: err.message });
+    console.error('[rides] accept:', err.message);
+    res.status(500).json({ error: 'Kuch problem aayi — dobara try karo' });
   }
 });
 
@@ -324,7 +325,7 @@ router.post('/reject-offer', async (req, res) => {
     }).catch(() => {});
 
     res.json({ success: true });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { console.error('[rides]', err.message); res.status(500).json({ error: 'Kuch problem aayi — dobara try karo' }); }
 });
 
 // POST /api/rides/arrived
@@ -371,7 +372,8 @@ router.post('/arrived', async (req, res) => {
   } catch (err) {
     if (err.message?.includes('Invalid transition') || err.message?.includes('Concurrent transition'))
       return res.status(409).json({ error: 'Ride is state mein arrived nahi ho sakti' });
-    res.status(500).json({ error: err.message });
+    console.error('[rides] arrived:', err.message);
+    res.status(500).json({ error: 'Kuch problem aayi — dobara try karo' });
   }
 });
 
@@ -393,7 +395,8 @@ router.post('/start', async (req, res) => {
   } catch (err) {
     if (err.message?.includes('Invalid transition') || err.message?.includes('Concurrent transition'))
       return res.status(409).json({ success: false, message: 'Trip abhi start nahi ho sakta — pehle arrived confirm karo' });
-    res.status(500).json({ error: err.message });
+    console.error('[rides] start:', err.message);
+    res.status(500).json({ error: 'Kuch problem aayi — dobara try karo' });
   }
 });
 
@@ -416,7 +419,7 @@ router.post('/cancel', async (req, res) => {
       sendFCM(rideInfo.rows[0].passenger_phone, '🚫 Ride Cancel Ho Gayi', 'Driver ne ride cancel kar di', { type: 'ride_cancelled', ride_id: String(ride_id) }, { role: 'customer' });
     }
     res.json({ success: true, message: 'Trip cancel ki', reason });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { console.error('[rides]', err.message); res.status(500).json({ error: 'Kuch problem aayi — dobara try karo' }); }
 });
 
 // Helper: load cancel settings from DB (falls back to defaults if table missing)
@@ -483,7 +486,7 @@ router.get('/cancel-info/:ride_id', async (req, res) => {
       wait_fare_free_min: WAIT_FARE_FREE_MIN,
       wait_fare_billable_min: waitFareBillableMin,
     });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { console.error('[rides]', err.message); res.status(500).json({ error: 'Kuch problem aayi — dobara try karo' }); }
 });
 
 // POST /api/rides/cancel-smart
@@ -591,7 +594,7 @@ router.post('/cancel-smart', async (req, res) => {
     emitRideUpdate(ride_id, { status: 'cancelled', cancelled_by, penalty });
     clearRideCache(ride_id).catch(() => {});
     res.json({ success: true, penalty, message });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { console.error('[rides]', err.message); res.status(500).json({ error: 'Kuch problem aayi — dobara try karo' }); }
 });
 
 // POST /api/rides/complete
@@ -739,7 +742,7 @@ router.post('/complete', async (req, res) => {
         ).catch(() => {});
       }
     } catch (_e) {}
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { console.error('[rides]', err.message); res.status(500).json({ error: 'Kuch problem aayi — dobara try karo' }); }
 });
 
 // POST /api/rides/payment-complete
@@ -859,7 +862,7 @@ router.post('/payment-complete', async (req, res) => {
     res.json({ success: true, status: 'completed', message: 'Payment complete!', cashbacks });
     // Activate any pre-assigned ride this driver has queued (fire-and-forget)
     if (drPhone) activateQueuedRide(drPhone).catch(() => {});
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { console.error('[rides]', err.message); res.status(500).json({ error: 'Kuch problem aayi — dobara try karo' }); }
 });
 
 // POST /api/rides/cash-confirm
@@ -915,7 +918,7 @@ router.post('/cash-confirm', async (req, res) => {
     res.json({ success: true, message: 'Payment confirmed!', pending_commission: totalPending, cashbacks });
     // Activate any pre-assigned ride this driver has queued (fire-and-forget)
     activateQueuedRide(phone).catch(() => {});
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { console.error('[rides]', err.message); res.status(500).json({ error: 'Kuch problem aayi — dobara try karo' }); }
 });
 
 // POST /api/rides/payment-not-received
@@ -1017,7 +1020,7 @@ router.post('/payment-not-received', async (req, res) => {
       customer_trust_score_deducted: 25,
       customer_skips_total: totalSkips,
     });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { console.error('[rides]', err.message); res.status(500).json({ error: 'Kuch problem aayi — dobara try karo' }); }
 });
 
 // POST /api/rides/rate
@@ -1036,7 +1039,7 @@ router.post('/rate', async (req, res) => {
       await db.query(`UPDATE driver_wallet SET balance = balance + $1, total_earned = total_earned + $1 WHERE driver_id = $2`, [tip, rideData.rows[0].driver_id]);
     }
     res.json({ success: true });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { console.error('[rides]', err.message); res.status(500).json({ error: 'Kuch problem aayi — dobara try karo' }); }
 });
 
 // GET /api/rides/driver-eta — nearest available driver per vehicle type from pickup point
@@ -1111,7 +1114,7 @@ router.get('/driver-eta', async (req, res) => {
     }
 
     res.json({ eta: nearest });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { console.error('[rides]', err.message); res.status(500).json({ error: 'Kuch problem aayi — dobara try karo' }); }
 });
 
 // GET /api/rides/nearby-drivers — available driver positions near a point (for map display)
@@ -1141,7 +1144,7 @@ router.get('/nearby-drivers', async (req, res) => {
       .filter(dr => haversineKm(clat, clng, dr.lat, dr.lng) <= 6)
       .slice(0, 25);
     res.json({ drivers });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { console.error('[rides]', err.message); res.status(500).json({ error: 'Kuch problem aayi — dobara try karo' }); }
 });
 
 // GET /api/rides/history
@@ -1156,7 +1159,7 @@ router.get('/history', async (req, res) => {
       [phone]
     );
     res.json({ rides: result.rows });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { console.error('[rides]', err.message); res.status(500).json({ error: 'Kuch problem aayi — dobara try karo' }); }
 });
 
 // GET /api/rides/payment-status/:rideId
@@ -1167,7 +1170,7 @@ router.get('/payment-status/:rideId', async (req, res) => {
     const row = result.rows[0];
     row.net_fare = Math.max(0, parseFloat(row.fare || 0) - parseFloat(row.discount || 0));
     res.json(row);
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { console.error('[rides]', err.message); res.status(500).json({ error: 'Kuch problem aayi — dobara try karo' }); }
 });
 
 // GET /api/rides/driver-location/:rideId
@@ -1194,7 +1197,7 @@ router.get('/driver-location/:rideId', async (req, res) => {
       return res.json({ location: loc });
     }
     res.json({ location: null });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { console.error('[rides]', err.message); res.status(500).json({ error: 'Kuch problem aayi — dobara try karo' }); }
 });
 
 // POST /api/rides/switch-vehicle — customer switches vehicle type while searching
@@ -1233,7 +1236,7 @@ router.post('/switch-vehicle', async (req, res) => {
     assignRideToNextDriver(ride_id, pickup_lat, pickup_lng, new_vehicle_type).catch(() => {});
 
     res.json({ success: true, new_vehicle_type, new_fare: '₹' + newFare, message: `${new_vehicle_type} driver dhundh rahe hain...` });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { console.error('[rides]', err.message); res.status(500).json({ error: 'Kuch problem aayi — dobara try karo' }); }
 });
 
 // POST /api/rides/extension-request
@@ -1284,7 +1287,7 @@ router.post('/extension-request', async (req, res) => {
     }, 62000);
 
     res.json({ success: true, extension_id: extId, estimated_fare: estFare, driver_name: ride.driver_name, driver_phone: maskPhone(ride.driver_phone) });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { console.error('[rides]', err.message); res.status(500).json({ error: 'Kuch problem aayi — dobara try karo' }); }
 });
 
 // GET /api/rides/extension-status/:id
@@ -1298,7 +1301,7 @@ router.get('/extension-status/:id', async (req, res) => {
       return res.json({ status: 'expired' });
     }
     res.json({ status: ext.status, new_ride_id: ext.new_ride_id, estimated_fare: ext.estimated_fare, seconds_left: Math.max(0, Math.ceil((new Date(ext.response_expires_at).getTime() - Date.now()) / 1000)) });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { console.error('[rides]', err.message); res.status(500).json({ error: 'Kuch problem aayi — dobara try karo' }); }
 });
 
 // GET /api/rides/extension-pending
@@ -1314,7 +1317,7 @@ router.get('/extension-pending', async (req, res) => {
     if (!r.rows[0]) return res.json({ extension: null });
     const ext = r.rows[0];
     res.json({ extension: { ...ext, seconds_left: Math.max(0, Math.ceil((new Date(ext.response_expires_at).getTime() - Date.now()) / 1000)) } });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { console.error('[rides]', err.message); res.status(500).json({ error: 'Kuch problem aayi — dobara try karo' }); }
 });
 
 // POST /api/rides/extension-accept
@@ -1339,7 +1342,8 @@ router.post('/extension-accept', async (req, res) => {
     res.json({ success: true, new_ride_id: newRide.rows[0].id, fare: ext.estimated_fare });
   } catch (err) {
     await client.query('ROLLBACK').catch(() => {}); client.release();
-    res.status(500).json({ error: err.message });
+    console.error('[rides] extension-accept:', err.message);
+    res.status(500).json({ error: 'Kuch problem aayi — dobara try karo' });
   }
 });
 
@@ -1350,7 +1354,7 @@ router.post('/extension-reject', async (req, res) => {
     const r = await db.query("UPDATE ride_extensions SET status='rejected' WHERE id=$1 RETURNING customer_phone, new_drop", [extension_id]);
     if (r.rows[0]) sendFCM(r.rows[0].customer_phone, '❌ Extension Reject', 'Driver ne reject kiya — naya ride book karo', {}, { role: 'customer' });
     res.json({ success: true });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { console.error('[rides]', err.message); res.status(500).json({ error: 'Kuch problem aayi — dobara try karo' }); }
 });
 
 // POST /api/rides/rate-customer
@@ -1381,7 +1385,7 @@ router.post('/rate-customer', async (req, res) => {
     ).catch(() => {});
 
     res.json({ success: true });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { console.error('[rides]', err.message); res.status(500).json({ error: 'Kuch problem aayi — dobara try karo' }); }
 });
 
 // POST /api/rides/surge-fare
@@ -1434,7 +1438,7 @@ router.post('/surge-fare', async (req, res) => {
       new_fare: '₹' + newFare,
       surge_count: newSurgeCount,
     });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { console.error('[rides]', err.message); res.status(500).json({ error: 'Kuch problem aayi — dobara try karo' }); }
 });
 
 // ── GET /api/rides/track-info/:rideId — public, no auth, for live tracking page ──
@@ -1470,7 +1474,7 @@ router.get('/track-info/:rideId', async (req, res) => {
         vehicle:   [r.vehicle_brand, r.vehicle_model].filter(Boolean).join(' '),
       } : null,
     });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { console.error('[rides]', err.message); res.status(500).json({ error: 'Kuch problem aayi — dobara try karo' }); }
 });
 
 // POST /api/rides/pre-accept — driver accepts a pre-assignment offer
@@ -1492,7 +1496,7 @@ router.post('/pre-accept', async (req, res) => {
       message: 'Driver ne confirm kiya — woh current ride complete karke aayenge',
     });
     res.json({ success: true, message: 'Ride queue mein add ho gayi!' });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { console.error('[rides]', err.message); res.status(500).json({ error: 'Kuch problem aayi — dobara try karo' }); }
 });
 
 // POST /api/rides/pre-decline — driver declines a pre-assignment offer
@@ -1524,7 +1528,7 @@ router.post('/pre-decline', async (req, res) => {
     }, { delay: 500 }).catch(() => {});
 
     res.json({ success: true });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { console.error('[rides]', err.message); res.status(500).json({ error: 'Kuch problem aayi — dobara try karo' }); }
 });
 
 module.exports = router;

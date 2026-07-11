@@ -16,7 +16,7 @@ router.post('/upload', async (req, res) => {
     if (!image) return res.status(400).json({ error: 'Image nahi mili' });
     const result = await cloudinary.uploader.upload(image, { folder: 'rideapp_drivers', resource_type: 'image' });
     res.json({ success: true, url: result.secure_url });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { console.error('[drivers]', err.message); res.status(500).json({ error: 'Kuch problem aayi — dobara try karo' }); }
 });
 
 // POST /api/driver/register (legacy)
@@ -30,7 +30,7 @@ router.post('/register', async (req, res) => {
     const driver = await db.query('INSERT INTO drivers (id, vehicle_type, vehicle_no, license_no) VALUES ($1, $2, $3, $4) RETURNING *', [userId, vehicle_type, vehicle_no, license_no]);
     await db.query('INSERT INTO driver_wallet (driver_id) VALUES ($1)', [userId]);
     res.json({ message: 'Driver registered!', driver: driver.rows[0] });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { console.error('[drivers]', err.message); res.status(500).json({ error: 'Kuch problem aayi — dobara try karo' }); }
 });
 
 // POST /api/driver/register-buddy
@@ -61,7 +61,7 @@ router.post('/register-buddy', async (req, res) => {
     }
     await db.query('INSERT INTO driver_wallet (driver_id) VALUES ($1) ON CONFLICT (driver_id) DO NOTHING', [userId]);
     res.json({ success: true, message: 'Registration submit ho gaya! Verification pending.', status: 'pending' });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { console.error('[drivers]', err.message); res.status(500).json({ error: 'Kuch problem aayi — dobara try karo' }); }
 });
 
 // POST /api/driver/login
@@ -78,7 +78,7 @@ router.post('/login', async (req, res) => {
     const d = result.rows[0];
     const maskedAadhaar = d.aadhaar_number ? 'XXXX XXXX ' + d.aadhaar_number.replace(/\D/g, '').slice(-4) : null;
     res.json({ success: true, driver: { name: d.name || d.dl_name, phone: d.phone, vehicle_type: d.vehicle_type, vehicle_no: d.vehicle_no, vehicle_brand: d.vehicle_brand, vehicle_model: d.vehicle_model, dl_number: d.dl_number, aadhaar_masked: maskedAadhaar, face_photo: d.face_photo, rating: d.rating || 5.0, status: d.verification_status, admin_message: d.admin_message } });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { console.error('[drivers]', err.message); res.status(500).json({ error: 'Kuch problem aayi — dobara try karo' }); }
 });
 
 // POST /api/driver/toggle-online
@@ -87,7 +87,7 @@ router.post('/toggle-online', async (req, res) => {
   try {
     await db.query(`UPDATE drivers SET is_online = $1 WHERE id = (SELECT id FROM users WHERE phone = $2)`, [is_online, phone]);
     res.json({ success: true });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { console.error('[drivers]', err.message); res.status(500).json({ error: 'Kuch problem aayi — dobara try karo' }); }
 });
 
 // GET /api/driver/pending-ride
@@ -157,7 +157,7 @@ router.get('/pending-ride', async (req, res) => {
       return res.json({ ride: { ...fb, seconds_to_accept: fb.is_scheduled ? 120 : 30, distance: fbKm ? fbKm.toFixed(1) : null }, pending_commission: pendingComm });
     }
     return res.json({ ride: null });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { console.error('[drivers]', err.message); res.status(500).json({ error: 'Kuch problem aayi — dobara try karo' }); }
 });
 
 // GET /api/driver/active-ride
@@ -176,7 +176,7 @@ router.get('/active-ride', async (req, res) => {
       delete ride.passenger_phone;
     }
     res.json({ ride });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { console.error('[drivers]', err.message); res.status(500).json({ error: 'Kuch problem aayi — dobara try karo' }); }
 });
 
 // POST /api/driver/update-location
@@ -199,7 +199,7 @@ router.post('/update-location', async (req, res) => {
       setDriverLoc(rideId, parseFloat(lat), parseFloat(lng)).catch(() => {});
     }
     res.json({ success: true });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { console.error('[drivers]', err.message); res.status(500).json({ error: 'Kuch problem aayi — dobara try karo' }); }
 });
 
 // GET /api/driver/upi
@@ -208,7 +208,7 @@ router.get('/upi', async (req, res) => {
   try {
     const r = await db.query(`SELECT d.upi_id FROM drivers d JOIN users u ON d.id=u.id WHERE u.phone=$1`, [phone]);
     res.json({ upi_id: r.rows[0]?.upi_id || '' });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { console.error('[drivers]', err.message); res.status(500).json({ error: 'Kuch problem aayi — dobara try karo' }); }
 });
 
 // POST /api/driver/upi
@@ -219,7 +219,7 @@ router.post('/upi', async (req, res) => {
     const result = await db.query(`UPDATE drivers SET upi_id=$1 WHERE id=(SELECT id FROM users WHERE phone=$2) RETURNING upi_id`, [upi_id, phone]);
     if (result.rows.length === 0) return res.status(404).json({ error: 'Driver nahi mila' });
     res.json({ success: true, upi_id: result.rows[0].upi_id });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { console.error('[drivers]', err.message); res.status(500).json({ error: 'Kuch problem aayi — dobara try karo' }); }
 });
 
 // GET /api/driver/bank
@@ -235,7 +235,7 @@ router.get('/bank', async (req, res) => {
       [phone]
     );
     res.json(r.rows[0] || {});
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { console.error('[drivers]', err.message); res.status(500).json({ error: 'Kuch problem aayi — dobara try karo' }); }
 });
 
 // POST /api/driver/bank
@@ -253,7 +253,7 @@ router.post('/bank', async (req, res) => {
     );
     if (!r.rows[0]) return res.status(404).json({ error: 'Driver nahi mila' });
     res.json({ success: true });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { console.error('[drivers]', err.message); res.status(500).json({ error: 'Kuch problem aayi — dobara try karo' }); }
 });
 
 // GET /api/driver/target
@@ -267,7 +267,7 @@ router.get('/target', async (req, res) => {
     );
     const done = parseInt(today.rows[0].count);
     res.json({ target: t.rides_target, bonus: parseFloat(t.bonus_amount), completed: done, remaining: Math.max(0, t.rides_target - done), achieved: done >= t.rides_target });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { console.error('[drivers]', err.message); res.status(500).json({ error: 'Kuch problem aayi — dobara try karo' }); }
 });
 
 // GET /api/driver/verification-status
@@ -277,7 +277,7 @@ router.get('/verification-status', async (req, res) => {
     const result = await db.query(`SELECT d.verification_status, d.admin_message FROM drivers d JOIN users u ON d.id = u.id WHERE u.phone = $1`, [phone]);
     if (result.rows.length === 0) return res.json({ status: null });
     res.json({ status: result.rows[0].verification_status, message: result.rows[0].admin_message });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { console.error('[drivers]', err.message); res.status(500).json({ error: 'Kuch problem aayi — dobara try karo' }); }
 });
 
 // GET /api/driver/check-suspension
@@ -292,7 +292,7 @@ router.get('/check-suspension', async (req, res) => {
       return res.json({ suspended: true, minutes_left: minsLeft, message: `${minsLeft} min baad online ho sakte ho` });
     }
     res.json({ suspended: false, cancellation_rate: m.cancellation_rate, acceptance_rate: m.acceptance_rate });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { console.error('[drivers]', err.message); res.status(500).json({ error: 'Kuch problem aayi — dobara try karo' }); }
 });
 
 // POST /api/driver/track-metric
@@ -311,7 +311,7 @@ router.post('/track-metric', async (req, res) => {
       }
     }
     res.json({ success: true });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { console.error('[drivers]', err.message); res.status(500).json({ error: 'Kuch problem aayi — dobara try karo' }); }
 });
 
 
@@ -363,7 +363,7 @@ router.post('/payout', async (req, res) => {
       pending_amount: amt,
       pending_commission: parseFloat(pending_commission),
     });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { console.error('[drivers]', err.message); res.status(500).json({ error: 'Kuch problem aayi — dobara try karo' }); }
 });
 
 // GET /api/driver/history
@@ -377,7 +377,7 @@ router.get('/history', async (req, res) => {
     );
     const wallet = await db.query(`SELECT w.balance, w.total_earned FROM driver_wallet w JOIN users d ON w.driver_id = d.id WHERE d.phone = $1`, [phone]);
     res.json({ rides: rides.rows, wallet: wallet.rows[0] || { balance: 0, total_earned: 0 }, total_trips: rides.rows.length });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { console.error('[drivers]', err.message); res.status(500).json({ error: 'Kuch problem aayi — dobara try karo' }); }
 });
 
 // GET /api/driver/commission-status
@@ -388,7 +388,7 @@ router.get('/commission-status', async (req, res) => {
     const pending = parseFloat(w.rows[0]?.pending_commission || 0);
     const records = await db.query(`SELECT ride_id, fare, commission, payment_method, status, created_at FROM driver_commissions WHERE driver_phone = $1 AND status = 'cash_owed' ORDER BY created_at DESC LIMIT 20`, [phone]);
     res.json({ pending_commission: pending, is_blocked: false, records: records.rows });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { console.error('[drivers]', err.message); res.status(500).json({ error: 'Kuch problem aayi — dobara try karo' }); }
 });
 
 // GET /api/driver/commission-history
@@ -403,7 +403,7 @@ router.get('/commission-history', async (req, res) => {
     const settledCommission = records.filter(r => ['settled', 'collected', 'auto_settled'].includes(r.status)).reduce((s, r) => s + parseFloat(r.commission), 0);
     const pendingCommission = parseFloat(walletRow.rows[0]?.pending_commission || 0);
     res.json({ pending_commission: pendingCommission, total_commission: Math.round(totalCommission * 100) / 100, settled_commission: Math.round(settledCommission * 100) / 100, wallet_balance: parseFloat(walletRow.rows[0]?.balance || 0), total_earned: parseFloat(walletRow.rows[0]?.total_earned || 0), records, payments: payRows.rows });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { console.error('[drivers]', err.message); res.status(500).json({ error: 'Kuch problem aayi — dobara try karo' }); }
 });
 
 // GET /api/driver/order-history
@@ -436,7 +436,7 @@ router.get('/order-history', async (req, res) => {
       rides,
       summary: { total: rides.length, completed: completed.length, cancelled: cancelled.length, earnings: Math.round(earnings) }
     });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { console.error('[drivers]', err.message); res.status(500).json({ error: 'Kuch problem aayi — dobara try karo' }); }
 });
 
 // POST /api/driver/commission-pay
@@ -451,7 +451,7 @@ router.post('/commission-pay', async (req, res) => {
     const order = await razorpay.orders.create({ amount: Math.round(pending * 100), currency: 'INR', receipt: `comm_${phone}_${Date.now()}`, notes: { driver_phone: phone, purpose: 'commission_payment' } });
     await db.query(`INSERT INTO driver_commission_payments (driver_phone, amount, payment_id, status) VALUES ($1, $2, $3, 'initiated')`, [phone, pending, order.id]);
     res.json({ success: true, order_id: order.id, amount: order.amount, currency: 'INR', key_id: process.env.RAZORPAY_KEY_ID });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { console.error('[drivers]', err.message); res.status(500).json({ error: 'Kuch problem aayi — dobara try karo' }); }
 });
 
 // POST /api/driver/commission-pay-verify
@@ -473,7 +473,7 @@ router.post('/commission-pay-verify', async (req, res) => {
       await db.query(`UPDATE driver_commissions SET status = 'settled' WHERE driver_phone = $1 AND status = 'cash_owed'`, [phone]).catch(() => {});
     sendFCM(phone, '✅ Commission Paid!', `₹${amount.toFixed(0)} commission clear ho gaya. Ab aap nayi rides le sakte hain!`, { type: 'commission_cleared' }, { role: 'driver' }).catch(() => {});
     res.json({ success: true, message: 'Commission paid!', pending_commission: parseFloat(remaining.rows[0]?.pc || 0) });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { console.error('[drivers]', err.message); res.status(500).json({ error: 'Kuch problem aayi — dobara try karo' }); }
 });
 
 // ── GET /api/driver/demand-zones — Hot ride zones near driver ──
@@ -517,7 +517,7 @@ router.get('/demand-zones', async (req, res) => {
     }).sort((a, b) => a.dist_km - b.dist_km);
 
     res.json({ zones, updated_at: new Date().toISOString() });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { console.error('[drivers]', err.message); res.status(500).json({ error: 'Kuch problem aayi — dobara try karo' }); }
 });
 
 // ── GET /api/driver/level/:phone — Driver tier + progress ──
@@ -572,7 +572,7 @@ router.get('/level/:phone', async (req, res) => {
       benefits: cur.benefits,
       requirements: next ? { rides: next.minRides, rating: next.minRating, cancel_rate: next.maxCancel } : null,
     });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { console.error('[drivers]', err.message); res.status(500).json({ error: 'Kuch problem aayi — dobara try karo' }); }
 });
 
 // ── GET /api/driver/demand-prediction — hourly demand curve for current weekday ──
@@ -607,7 +607,7 @@ router.get('/demand-prediction', async (req, res) => {
       current_hour: nowHour,
       current_intensity: hourly[nowHour]?.intensity || 0,
     });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { console.error('[drivers]', err.message); res.status(500).json({ error: 'Kuch problem aayi — dobara try karo' }); }
 });
 
 // ── GET /api/driver/earnings-analytics/:phone ──────────────────────────────
@@ -693,7 +693,7 @@ router.get('/earnings-analytics/:phone', async (req, res) => {
       this_week: { rides: parseInt(thisWeek?.rides) || 0, earned: Math.round(parseFloat(thisWeek?.earned) || 0) },
       last_week: { rides: parseInt(lastWeek?.rides) || 0, earned: Math.round(parseFloat(lastWeek?.earned) || 0) },
     });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { console.error('[drivers]', err.message); res.status(500).json({ error: 'Kuch problem aayi — dobara try karo' }); }
 });
 
 module.exports = router;

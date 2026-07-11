@@ -81,7 +81,7 @@ router.post('/book', async (req, res) => {
     );
     await client.query('COMMIT');
     res.json({ success: true, booking_id: bk.rows[0].id, fare: baseFare, km_included: pkg.km, scheduled_at: schedAt });
-  } catch (err) { await client.query('ROLLBACK'); res.status(500).json({ error: err.message }); }
+  } catch (err) { await client.query('ROLLBACK'); console.error('[hourly]', err.message); res.status(500).json({ error: 'Kuch problem aayi — dobara try karo' }); }
   finally { client.release(); }
 });
 
@@ -116,7 +116,7 @@ router.get('/status/:id', async (req, res) => {
       };
     }
     res.json({ booking: b, driver, approaching_limit });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { console.error('[hourly]', err.message); res.status(500).json({ error: 'Kuch problem aayi — dobara try karo' }); }
 });
 
 // GET /api/hourly/driver-pending
@@ -133,7 +133,7 @@ router.get('/driver-pending', async (req, res) => {
       [dr.rows[0].vehicle_type, phone]
     );
     res.json({ booking: r.rows[0] || null });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { console.error('[hourly]', err.message); res.status(500).json({ error: 'Kuch problem aayi — dobara try karo' }); }
 });
 
 // POST /api/hourly/accept
@@ -146,7 +146,7 @@ router.post('/accept', async (req, res) => {
     sendFCM(booking.customer_phone, '⏱️ Driver Mil Gaya!', 'Hourly booking ke liye driver aa raha hai!', { type: 'hourly_matched', booking_id: String(booking_id) }, { role: 'customer' });
     emitToRoom('hourly_' + booking_id, 'hourlyMatched', { status: 'matched', driver_phone, booking_id });
     res.json({ success: true });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { console.error('[hourly]', err.message); res.status(500).json({ error: 'Kuch problem aayi — dobara try karo' }); }
 });
 
 // POST /api/hourly/driver-cancel  — driver backs out after accepting (before OTP)
@@ -166,7 +166,7 @@ router.post('/driver-cancel', async (req, res) => {
     sendFCM(booking.customer_phone, '⚠️ Driver Cancel Ho Gaya', 'Driver unavailable ho gaya — naya driver dhundh rahe hain', {}, { role: 'customer' });
     emitToRoom('hourly_' + booking_id, 'hourlyDriverCancelled', { booking_id });
     res.json({ success: true });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { console.error('[hourly]', err.message); res.status(500).json({ error: 'Kuch problem aayi — dobara try karo' }); }
 });
 
 // POST /api/hourly/arrived — driver marks arrival at pickup point
@@ -189,7 +189,7 @@ router.post('/arrived', async (req, res) => {
     );
     emitToRoom('hourly_' + booking_id, 'hourlyDriverArrived', { booking_id });
     res.json({ success: true });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { console.error('[hourly]', err.message); res.status(500).json({ error: 'Kuch problem aayi — dobara try karo' }); }
 });
 
 // POST /api/hourly/start
@@ -204,7 +204,7 @@ router.post('/start', async (req, res) => {
     await db.query(`UPDATE hourly_bookings SET status='active', started_at=NOW() WHERE id=$1`, [booking_id]);
     emitToRoom('hourly_' + booking_id, 'hourlyTripStarted', { booking_id, started_at });
     res.json({ success: true });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { console.error('[hourly]', err.message); res.status(500).json({ error: 'Kuch problem aayi — dobara try karo' }); }
 });
 
 // GET /api/hourly/driver-active
@@ -213,7 +213,7 @@ router.get('/driver-active', async (req, res) => {
   try {
     const r = await db.query(`SELECT * FROM hourly_bookings WHERE driver_phone=$1 AND status IN ('matched','arrived','active') ORDER BY created_at DESC LIMIT 1`, [phone]);
     res.json({ booking: r.rows[0] || null });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { console.error('[hourly]', err.message); res.status(500).json({ error: 'Kuch problem aayi — dobara try karo' }); }
 });
 
 // GET /api/hourly/active
@@ -238,7 +238,7 @@ router.get('/active', async (req, res) => {
       driver = dr.rows[0] || null;
     }
     res.json({ booking: b, driver });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { console.error('[hourly]', err.message); res.status(500).json({ error: 'Kuch problem aayi — dobara try karo' }); }
 });
 
 // POST /api/hourly/complete
@@ -263,7 +263,7 @@ router.post('/complete', async (req, res) => {
     }
     const result = await doCompleteHourly(booking_id, actual_km || 0);
     res.json({ success: true, ...result });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { console.error('[hourly]', err.message); res.status(500).json({ error: 'Kuch problem aayi — dobara try karo' }); }
 });
 
 // POST /api/hourly/early-end-request
@@ -285,7 +285,7 @@ router.post('/early-end-request', async (req, res) => {
     if (requested_by === 'driver') sendFCM(b.customer_phone, '⚠️ Driver Trip End Karna Chahta Hai', 'App mein confirm ya reject karo.', {}, { role: 'customer' });
     else sendFCM(b.driver_phone, '⚠️ Customer Trip End Karna Chahta Hai', 'App mein confirm ya reject karo.', {}, { role: 'driver' });
     res.json({ success: true });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { console.error('[hourly]', err.message); res.status(500).json({ error: 'Kuch problem aayi — dobara try karo' }); }
 });
 
 // POST /api/hourly/early-end-confirm
@@ -318,7 +318,7 @@ router.post('/early-end-confirm', async (req, res) => {
     sendFCM(b.customer_phone, '✅ Trip Complete', isCustomerEnd ? 'Trip complete! Driver ko full payment gayi.' : `₹${refund} wallet mein wapas aa gaye!`, {}, { role: 'customer' });
     sendFCM(b.driver_phone, '✅ Trip Complete!', `₹${driverEarning} aapki kamai — wallet mein add ho gaya!`, {}, { role: 'driver' });
     res.json({ success: true, driver_earning: driverEarning, refund, actual_hours: actualHours.toFixed(1) });
-  } catch (err) { await client.query('ROLLBACK'); res.status(500).json({ error: err.message }); }
+  } catch (err) { await client.query('ROLLBACK'); console.error('[hourly]', err.message); res.status(500).json({ error: 'Kuch problem aayi — dobara try karo' }); }
   finally { client.release(); }
 });
 
@@ -346,7 +346,7 @@ router.post('/customer-early-complete', async (req, res) => {
     if (io) io.to('hourly_' + booking_id).emit('hourlyTripCompleted', { driver_earning: driverEarning });
     sendFCM(b.driver_phone, '✅ Customer ne Trip Complete Kiya!', `Full payment ₹${driverEarning.toFixed(0)} aapki kamai — wallet mein add ho gaya!`, {}, { role: 'driver' });
     res.json({ success: true, driver_earning: driverEarning, actual_hours: actualHours.toFixed(1) });
-  } catch (err) { await client.query('ROLLBACK'); res.status(500).json({ error: err.message }); }
+  } catch (err) { await client.query('ROLLBACK'); console.error('[hourly]', err.message); res.status(500).json({ error: 'Kuch problem aayi — dobara try karo' }); }
   finally { client.release(); }
 });
 
@@ -357,7 +357,7 @@ router.post('/early-end-reject', async (req, res) => {
     const r = await db.query('UPDATE hourly_bookings SET early_end_requested_by=NULL, early_end_reject_count=COALESCE(early_end_reject_count,0)+1, early_end_last_rejected_at=NOW() WHERE id=$1 RETURNING early_end_reject_count', [booking_id]);
     const count = r.rows[0]?.early_end_reject_count || 1;
     res.json({ success: true, reject_count: count, locked: count >= 2 });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { console.error('[hourly]', err.message); res.status(500).json({ error: 'Kuch problem aayi — dobara try karo' }); }
 });
 
 // POST /api/hourly/cancel
@@ -385,7 +385,7 @@ router.post('/cancel', async (req, res) => {
       emitToRoom('hourly_' + booking_id, 'hourlyCancelled', { booking_id });
     }
     res.json({ success: true, refunded: b.base_fare });
-  } catch (err) { await client.query('ROLLBACK'); res.status(500).json({ error: err.message }); }
+  } catch (err) { await client.query('ROLLBACK'); console.error('[hourly]', err.message); res.status(500).json({ error: 'Kuch problem aayi — dobara try karo' }); }
   finally { client.release(); }
 });
 
@@ -397,7 +397,7 @@ router.post('/customer-confirm-complete', async (req, res) => {
     if (!r.rows[0]) return res.json({ success: false, message: 'Confirmation pending nahi hai' });
     const result = await doCompleteHourly(booking_id, r.rows[0].actual_km || 0);
     res.json({ success: true, ...result });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { console.error('[hourly]', err.message); res.status(500).json({ error: 'Kuch problem aayi — dobara try karo' }); }
 });
 
 // POST /api/hourly/customer-dispute-complete
@@ -408,7 +408,7 @@ router.post('/customer-dispute-complete', async (req, res) => {
     if (!r.rows[0]) return res.json({ success: false, message: 'Koi pending confirmation nahi' });
     sendFCM(r.rows[0].driver_phone, '⚠️ Customer ne Dispute Raise Kiya', 'Admin review karega — paise escrow mein hain', {}, { role: 'driver' });
     res.json({ success: true, message: 'Dispute raise ho gaya — admin 24h mein resolve karega' });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { console.error('[hourly]', err.message); res.status(500).json({ error: 'Kuch problem aayi — dobara try karo' }); }
 });
 
 // POST /api/hourly/request-extend
@@ -434,7 +434,7 @@ router.post('/request-extend', async (req, res) => {
     await db.query('UPDATE hourly_bookings SET extend_requested_hours=$1, extend_escrow=$2 WHERE id=$3', [extra_hours, extraFare, booking_id]);
     sendFCM(b.driver_phone, `📅 Customer +${extra_hours}h Extend Chahta Hai`, `₹${extraFare} escrow mein — accept ya reject karo app mein`, {}, { role: 'driver' });
     res.json({ success: true, extra_fare: extraFare, message: `₹${extraFare} hold ho gaye — driver ka intezaar karo` });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { console.error('[hourly]', err.message); res.status(500).json({ error: 'Kuch problem aayi — dobara try karo' }); }
 });
 
 // POST /api/hourly/accept-extend
@@ -459,7 +459,7 @@ router.post('/accept-extend', async (req, res) => {
     const io = getIO();
     if (io) io.to('hourly_' + booking_id).emit('hourlyExtensionResult', { accepted: true, new_hours: newHours, new_km: newKm, new_fare: newFare });
     res.json({ success: true, new_hours: newHours, new_km: newKm, new_fare: newFare });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { console.error('[hourly]', err.message); res.status(500).json({ error: 'Kuch problem aayi — dobara try karo' }); }
 });
 
 // POST /api/hourly/reject-extend
@@ -481,7 +481,7 @@ router.post('/reject-extend', async (req, res) => {
     const io = getIO();
     if (io) io.to('hourly_' + booking_id).emit('hourlyExtensionResult', { accepted: false, refund: parseFloat(b.extend_escrow || 0) });
     res.json({ success: true });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { console.error('[hourly]', err.message); res.status(500).json({ error: 'Kuch problem aayi — dobara try karo' }); }
 });
 
 // POST /api/hourly/update-km
@@ -512,7 +512,7 @@ router.post('/update-km', async (req, res) => {
     }
     const extraKmCharge = Math.max(0, actual_km - parseFloat(b.km_included)) * (HOURLY_FARES[b.vehicle_type]?.extra || 8);
     res.json({ success: true, alerts, km_pct: Math.round(kmPct * 100), time_pct: Math.round(timePct * 100), extra_km_charge: extraKmCharge });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { console.error('[hourly]', err.message); res.status(500).json({ error: 'Kuch problem aayi — dobara try karo' }); }
 });
 
 // GET /api/hourly/extend-cost
@@ -537,7 +537,7 @@ router.get('/extend-cost', async (req, res) => {
       ? pkg[extraHours].km
       : Math.round((parseFloat(b.km_included) / parseFloat(b.package_hours)) * totalExtraDecimalHours);
     res.json({ extra_fare: extraFare, extra_km: extraKm, extra_hours: extraHours, extra_minutes: extraMin, per_km_rate: pkg?.extra || 8 });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { console.error('[hourly]', err.message); res.status(500).json({ error: 'Kuch problem aayi — dobara try karo' }); }
 });
 
 // POST /api/hourly/request-extend-v2
@@ -574,7 +574,7 @@ router.post('/request-extend-v2', async (req, res) => {
     const io = getIO();
     if (io) io.to('hourly_' + booking_id).emit('hourlyExtendRequest', { booking_id, extra_hours: totalExtraDecimalHours, extra_fare: extraFare, label });
     res.json({ success: true, extra_fare: extraFare, label, message: `₹${extraFare} hold ho gaye — driver ka intezaar karo` });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { console.error('[hourly]', err.message); res.status(500).json({ error: 'Kuch problem aayi — dobara try karo' }); }
 });
 
 // POST /api/hourly/chat/send
@@ -607,7 +607,7 @@ router.post('/chat/send', async (req, res) => {
     await db.query('INSERT INTO chat_messages (ride_id, sender, message) VALUES ($1,$2,$3)', [`h_${booking_id}`, sender, message]);
     emitToRoom('hourly_' + booking_id, 'hourlyChatMessage', { sender, message, created_at });
     res.json({ success: true });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { console.error('[hourly]', err.message); res.status(500).json({ error: 'Kuch problem aayi — dobara try karo' }); }
 });
 
 // GET /api/hourly/chat/:id
@@ -615,7 +615,7 @@ router.get('/chat/:id', async (req, res) => {
   try {
     const r = await db.query('SELECT sender, message, created_at FROM chat_messages WHERE ride_id=$1 ORDER BY created_at ASC', [`h_${req.params.id}`]);
     res.json({ messages: r.rows });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { console.error('[hourly]', err.message); res.status(500).json({ error: 'Kuch problem aayi — dobara try karo' }); }
 });
 
 module.exports = router;

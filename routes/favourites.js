@@ -71,7 +71,7 @@ router.get('/', async (req, res) => {
     if (!cu.rows[0]) return res.json({ buddy: null });
     const buddy = await getBuddy(cu.rows[0].id);
     res.json({ buddy });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { console.error('[favourites]', err.message); res.status(500).json({ error: 'Kuch problem aayi — dobara try karo' }); }
 });
 
 // POST /api/favourites  — set / replace favourite buddy
@@ -106,7 +106,7 @@ router.post('/', async (req, res) => {
 
     const buddy = await getBuddy(customerId);
     res.json({ success: true, buddy });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { console.error('[favourites]', err.message); res.status(500).json({ error: 'Kuch problem aayi — dobara try karo' }); }
 });
 
 // DELETE /api/favourites  — remove favourite buddy
@@ -119,38 +119,37 @@ router.delete('/', async (req, res) => {
     if (!cu.rows[0]) return res.status(404).json({ error: 'Customer nahi mila' });
     await db.query('DELETE FROM favourite_drivers WHERE customer_id=$1', [cu.rows[0].id]);
     res.json({ success: true });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { console.error('[favourites]', err.message); res.status(500).json({ error: 'Kuch problem aayi — dobara try karo' }); }
 });
 
 // POST /api/favourites/book  — direct booking with favourite buddy
 router.post('/book', async (req, res) => {
   const { customer_phone, pickup, drop_location, pickup_lat, pickup_lng, drop_lat, drop_lng, distance } = req.body;
   if (!customer_phone || !pickup || !drop_location)
-    return res.status(400).json({ error: 'customer_phone, pickup aur drop_location chahiye' });
+    return res.status(400).json({ error: 'Pickup aur drop location daalein' });
 
-  let rideId = null; // hoisted so catch block can cancel a partially created ride
+  const client = await db.connect();
   try {
-    const cu = await db.query('SELECT * FROM users WHERE phone=$1', [customer_phone]);
-    if (!cu.rows[0]) return res.status(404).json({ error: 'Customer nahi mila' });
+    const cu = await client.query('SELECT * FROM users WHERE phone=$1', [customer_phone]);
+    if (!cu.rows[0]) return res.status(404).json({ error: 'Account nahi mila — dobara login karein' });
     const customer = cu.rows[0];
     if (customer.booking_restricted)
-      return res.status(403).json({ error: '🚫 Aapka account temporarily hold pe hai. Support se contact karo: help@sppero.in', restricted: true });
+      return res.status(403).json({ error: '🚫 Aapka account hold pe hai. help@sppero.in pe contact karein', restricted: true });
 
     const buddy = await getBuddy(customer.id);
     if (!buddy) return res.status(400).json({ error: 'Koi favourite buddy set nahi hai' });
 
-    // Driver availability checks
     if (!buddy.is_online)
       return res.json({ success: false, reason: 'offline', driver_name: buddy.driver_name });
 
-    const busyCheck = await db.query(
+    const busyCheck = await client.query(
       `SELECT 1 FROM rides WHERE driver_id=$1 AND status IN ('matched','arrived','started') LIMIT 1`,
       [buddy.driver_id]
     );
     if (busyCheck.rows[0])
       return res.json({ success: false, reason: 'busy', driver_name: buddy.driver_name });
 
-    // Calculate fare — derive distance from coords when not supplied by client
+    // Calculate fare
     let dist = parseFloat(distance) || 0;
     if (!dist && pickup_lat && pickup_lng && drop_lat && drop_lng) {
       const toRad = d => d * Math.PI / 180;
@@ -159,49 +158,52 @@ router.post('/book', async (req, res) => {
       dist = parseFloat((6371 * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a))).toFixed(2));
     }
     if (!dist) dist = 5;
-    const durMin = (dist / 20) * 60; // estimated at 20 km/h
+    const durMin = (dist / 20) * 60;
     const ride_type = buddy.vehicle_type || 'auto';
-    const fareRow = await db.query('SELECT * FROM fare_settings WHERE vehicle_type=$1', [ride_type]);
+    const fareRow = await client.query('SELECT * FROM fare_settings WHERE vehicle_type=$1', [ride_type]);
     const f = fareRow.rows[0] || defaultFares[ride_type] || defaultFares.auto;
     const hour = new Date().getHours();
     const isNight = hour >= parseInt(String(f.night_start || '22').split(':')[0]) || hour < parseInt(String(f.night_end || '6').split(':')[0]);
     const fareCalc = calculateFare(f, dist, durMin, isNight);
     const fare = fareCalc.fare;
 
-    // Create ride record
-    const ride = await db.query(
-      `INSERT INTO rides (passenger_id, pickup, drop_location, ride_type, fare, status, pickup_lat, pickup_lng, drop_lat, drop_lng, distance_km, platform_fee)
+    // Atomic transaction: INSERT ride + UPDATE assignment together.
+    // If either fails the whole thing rolls back — no orphan rides left in DB.
+    await client.query('BEGIN');
+
+    const ride = await client.query(
+      `INSERT INTO rides (passenger_id, pickup, drop_location, ride_type, fare, status,
+          pickup_lat, pickup_lng, drop_lat, drop_lng, distance_km, platform_fee)
        VALUES ($1,$2,$3,$4,$5,'requested',$6,$7,$8,$9,$10,$11) RETURNING *`,
       [customer.id, pickup, drop_location, ride_type, fare,
        pickup_lat || null, pickup_lng || null, drop_lat || null, drop_lng || null,
        dist, fareCalc.platform_fee]
     );
-    rideId = ride.rows[0].id;
+    const rideId = ride.rows[0].id;
 
-    // Assign directly to buddy — also add to offered_phones so the standard accept endpoint can verify them
-    // $3 is buddy.driver_phone again to avoid PostgreSQL "inconsistent types" error when $1 is used
-    // both as a column-typed value and inside ARRAY[...::text] in the same prepared statement.
-    await db.query(
-      `UPDATE rides SET assigned_to_phone=$1, assignment_expires_at=NOW()+INTERVAL '25 seconds',
-         assignment_queue='[]', status='requested',
-         offered_phones=ARRAY[$3::text]
+    await client.query(
+      `UPDATE rides
+       SET assigned_to_phone=$1,
+           assignment_expires_at=NOW()+INTERVAL '25 seconds',
+           assignment_queue='[]',
+           offered_phones=ARRAY[$3::text]
        WHERE id=$2`,
       [buddy.driver_phone, rideId, buddy.driver_phone]
     );
 
-    // BullMQ fallback: if buddy ignores the 25s window, escalate to normal driver search after 28s
+    await client.query('COMMIT');
+
+    // Post-commit side-effects (outside transaction — failures here don't orphan the ride)
     rideQueue.add('ride-assignment', {
       type: 'assign-next', rideId, pickupLat: pickup_lat, pickupLng: pickup_lng,
       rideType: ride_type, queue: null, radiusKm: 5,
       wasFavouriteTimeout: true, buddyName: buddy.driver_name,
     }, { delay: 28000 }).catch(() => {});
 
-    // Notify driver — FCM + socket with is_favourite_request flag
-    const rideEmoji = { bike:'🏍️', auto:'🛺', car:'🚕', eriksha:'🛵', luxury:'🚙', green_bike:'⚡', electric_auto:'🌿' }[ride_type] || '🚗';
     sendFCM(
       buddy.driver_phone,
       `⭐ ${customer.name || 'Customer'} ki Direct Request!`,
-      `Aapke regular customer ne seedha aapko request bhehi hai — 25 sec mein decide karo!`,
+      `Aapke regular customer ne seedha aapko request bheji hai — 25 sec mein decide karo!`,
       { type: 'new_ride', ride_id: String(rideId), is_favourite_request: 'true' },
       { channelId: 'ride_requests' }
     );
@@ -218,12 +220,11 @@ router.post('/book', async (req, res) => {
       distance: dist + ' km',
     });
   } catch (err) {
-    // Cancel the ride if it was partially created so it doesn't become a floating orphan
-    // that gets repeatedly assigned to drivers through the fallback poll mechanism.
-    if (rideId) {
-      db.query(`UPDATE rides SET status='cancelled' WHERE id=$1 AND status='requested'`, [rideId]).catch(() => {});
-    }
-    res.status(500).json({ error: err.message });
+    await client.query('ROLLBACK').catch(() => {});
+    console.error('[BUDDY BOOK] Error:', err.message);
+    res.status(500).json({ error: 'Booking nahi ho payi — please try again' });
+  } finally {
+    client.release();
   }
 });
 

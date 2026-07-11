@@ -166,7 +166,7 @@ async function webhookHandler(req, res) {
     res.json({ status: 'ok' });
   } catch (err) {
     console.error('❌ Razorpay webhook handler error:', err.message);
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: 'Payment process mein error — support se contact karo' });
   }
 }
 
