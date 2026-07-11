@@ -1481,7 +1481,7 @@ router.get('/scheduled/:phone', async (req, res) => {
     const r = await db.query(
       `SELECT * FROM scheduled_rides
        WHERE customer_phone = $1
-         AND scheduled_at > NOW() - INTERVAL '7 days'
+         AND (scheduled_at > NOW() OR created_at > NOW() - INTERVAL '7 days')
        ORDER BY scheduled_at DESC
        LIMIT 30`,
       [req.params.phone]
