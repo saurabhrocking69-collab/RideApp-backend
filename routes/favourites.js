@@ -148,8 +148,15 @@ router.post('/book', async (req, res) => {
     if (busyCheck.rows[0])
       return res.json({ success: false, reason: 'busy', driver_name: buddy.driver_name });
 
-    // Calculate fare
-    const dist = parseFloat(distance) || 5;
+    // Calculate fare — derive distance from coords when not supplied by client
+    let dist = parseFloat(distance) || 0;
+    if (!dist && pickup_lat && pickup_lng && drop_lat && drop_lng) {
+      const toRad = d => d * Math.PI / 180;
+      const dLat = toRad(drop_lat - pickup_lat), dLng = toRad(drop_lng - pickup_lng);
+      const a = Math.sin(dLat/2)**2 + Math.cos(toRad(pickup_lat)) * Math.cos(toRad(drop_lat)) * Math.sin(dLng/2)**2;
+      dist = parseFloat((6371 * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a))).toFixed(2));
+    }
+    if (!dist) dist = 5;
     const durMin = (dist / 20) * 60; // estimated at 20 km/h
     const ride_type = buddy.vehicle_type || 'auto';
     const fareRow = await db.query('SELECT * FROM fare_settings WHERE vehicle_type=$1', [ride_type]);
@@ -170,12 +177,14 @@ router.post('/book', async (req, res) => {
     const rideId = ride.rows[0].id;
 
     // Assign directly to buddy — also add to offered_phones so the standard accept endpoint can verify them
+    // $3 is buddy.driver_phone again to avoid PostgreSQL "inconsistent types" error when $1 is used
+    // both as a column-typed value and inside ARRAY[...::text] in the same prepared statement.
     await db.query(
       `UPDATE rides SET assigned_to_phone=$1, assignment_expires_at=NOW()+INTERVAL '25 seconds',
          assignment_queue='[]', status='requested',
-         offered_phones=ARRAY[$1::text]
+         offered_phones=ARRAY[$3::text]
        WHERE id=$2`,
-      [buddy.driver_phone, rideId]
+      [buddy.driver_phone, rideId, buddy.driver_phone]
     );
 
     // BullMQ fallback: if buddy ignores the 25s window, escalate to normal driver search after 28s
