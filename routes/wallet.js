@@ -24,7 +24,7 @@ router.get('/balance', async (req, res) => {
 // POST /api/wallet/add — internal only (admin/webhook). Must supply x-internal-secret header.
 router.post('/add', async (req, res) => {
   const secret = process.env.INTERNAL_API_SECRET;
-  if (secret && req.headers['x-internal-secret'] !== secret)
+  if (!secret || req.headers['x-internal-secret'] !== secret)
     return res.status(401).json({ error: 'Unauthorized' });
   const { phone, amount } = req.body;
   if (!phone || !amount || isNaN(parseFloat(amount)) || parseFloat(amount) <= 0)

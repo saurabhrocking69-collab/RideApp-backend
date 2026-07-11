@@ -1298,6 +1298,11 @@ db.query(`CREATE INDEX IF NOT EXISTS idx_scheduled_rides_scheduled_at ON schedul
 db.query(`ALTER TABLE rides ADD COLUMN IF NOT EXISTS pre_accepted_driver_phone TEXT`).catch(() => {});
 db.query(`ALTER TABLE rides ADD COLUMN IF NOT EXISTS pre_accepted_at TIMESTAMPTZ`).catch(() => {});
 
+// Scheduled ride link columns on live rides
+db.query(`ALTER TABLE rides ADD COLUMN IF NOT EXISTS is_scheduled BOOLEAN DEFAULT FALSE`).catch(() => {});
+db.query(`ALTER TABLE rides ADD COLUMN IF NOT EXISTS scheduled_at TIMESTAMPTZ`).catch(() => {});
+db.query(`ALTER TABLE rides ADD COLUMN IF NOT EXISTS scheduled_ride_id INTEGER`).catch(() => {});
+
 // Startup recovery: reset any 'dispatching' rides that got stuck during a previous crash
 db.query(
   `UPDATE scheduled_rides SET status='pending'
@@ -1379,14 +1384,16 @@ setInterval(async () => {
         const rideRes = await db.query(
           `INSERT INTO rides
              (passenger_id, pickup, drop_location, ride_type, fare, status,
-              pickup_lat, pickup_lng, drop_lat, drop_lng, payment_mode)
-           VALUES ($1,$2,$3,$4,$5,'requested',$6,$7,$8,$9,$10)
+              pickup_lat, pickup_lng, drop_lat, drop_lng, payment_mode,
+              is_scheduled, scheduled_at, scheduled_ride_id)
+           VALUES ($1,$2,$3,$4,$5,'requested',$6,$7,$8,$9,$10,$11,$12,$13)
            RETURNING id`,
           [userRes.rows[0].id, sr.pickup, sr.drop_location,
            sr.vehicle_type || 'auto', sr.fare_estimate || 0,
            sr.pickup_lat || null, sr.pickup_lng || null,
            sr.drop_lat || null, sr.drop_lng || null,
-           sr.payment_mode || 'cash']
+           sr.payment_mode || 'cash',
+           true, sr.scheduled_at, sr.id]
         );
         const rideId = rideRes.rows[0].id;
 

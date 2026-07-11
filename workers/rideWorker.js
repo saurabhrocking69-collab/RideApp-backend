@@ -107,15 +107,35 @@ async function broadcastToRadius(rideId, pickupLat, pickupLng, rideType, radiusM
     [radiusM, allOffered, rideId]
   );
 
+  // Check if this is a scheduled ride so we can label it correctly for the driver
+  const schedRow = await db.query(
+    `SELECT scheduled_at, is_scheduled FROM rides WHERE id=$1`,
+    [rideId]
+  ).catch(() => ({ rows: [] }));
+  const isScheduledRide = schedRow.rows[0]?.is_scheduled;
+  const scheduledAt     = schedRow.rows[0]?.scheduled_at;
+  const scheduledTimeStr = scheduledAt
+    ? new Date(scheduledAt).toLocaleTimeString('hi-IN', { hour: '2-digit', minute: '2-digit', hour12: true, timeZone: 'Asia/Kolkata' })
+    : null;
+
   // Broadcast to all eligible drivers simultaneously
   const rideEmoji = { bike: '🏍️', auto: '🛺', car: '🚕', eriksha: '🛵', luxury: '🚙', electric_auto: '🌿', green_bike: '⚡' }[rideType] || '🚗';
   for (const dr of eligible) {
-    emitToRoom('driver_' + dr.phone, 'newRideRequest', { rideId, secondsToAccept: windowSec, radiusM });
+    emitToRoom('driver_' + dr.phone, 'newRideRequest', {
+      rideId, secondsToAccept: windowSec, radiusM,
+      isScheduled: !!isScheduledRide, scheduledAt: scheduledAt || null,
+    });
+    const fcmTitle = isScheduledRide
+      ? `📅 Scheduled Ride — ${scheduledTimeStr}`
+      : `${rideEmoji} Nayi Ride Request!`;
+    const fcmBody = isScheduledRide
+      ? `${rideEmoji} ${(rideType || '').toUpperCase()} — ${scheduledTimeStr} ke liye. Accept karo, aapke paas time hai!`
+      : `${rideType.toUpperCase()} ride — ${windowSec}s mein accept karo!`;
     sendFCM(
       dr.phone,
-      `${rideEmoji} Nayi Ride Request!`,
-      `${rideType.toUpperCase()} ride — ${windowSec}s mein accept karo!`,
-      { type: 'new_ride', ride_id: String(rideId) },
+      fcmTitle,
+      fcmBody,
+      { type: 'new_ride', ride_id: String(rideId), is_scheduled: isScheduledRide ? 'true' : 'false', scheduled_at: scheduledAt ? String(scheduledAt) : '' },
       { channelId: 'ride_requests', role: 'driver' }
     ).catch(() => {});
     db.query(

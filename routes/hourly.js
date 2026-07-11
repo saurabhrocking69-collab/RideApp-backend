@@ -22,10 +22,19 @@ async function doCompleteHourly(booking_id, actual_km) {
     const driverUser = await client.query('SELECT id FROM users WHERE phone=$1', [b.driver_phone]);
     if (driverUser.rows[0]) await client.query('UPDATE driver_wallet SET balance=balance+$1, total_earned=total_earned+$1 WHERE driver_id=$2', [driverEarning, driverUser.rows[0].id]);
     if (extraCharge > 0) {
-      const cu = await client.query('SELECT id FROM users WHERE phone=$1', [b.customer_phone]);
+      const cu = await client.query(
+        `SELECT u.id, COALESCE(cw.balance, 0) AS balance
+         FROM users u LEFT JOIN customer_wallet cw ON cw.user_id = u.id
+         WHERE u.phone = $1`,
+        [b.customer_phone]
+      );
       if (cu.rows[0]) {
-        await client.query('UPDATE customer_wallet SET balance=balance-$1 WHERE user_id=$2', [extraCharge, cu.rows[0].id]);
-        await client.query("INSERT INTO transactions (user_id,type,amount,description) VALUES ($1,'debit',$2,'Hourly - extra km charge')", [cu.rows[0].id, extraCharge]);
+        const available = Math.max(0, parseFloat(cu.rows[0].balance));
+        const chargeableExtra = Math.min(extraCharge, available);
+        if (chargeableExtra > 0) {
+          await client.query('UPDATE customer_wallet SET balance=balance-$1 WHERE user_id=$2', [chargeableExtra, cu.rows[0].id]);
+          await client.query("INSERT INTO transactions (user_id,type,amount,description) VALUES ($1,'debit',$2,'Hourly - extra km charge')", [cu.rows[0].id, chargeableExtra]);
+        }
       }
     }
     await client.query(
@@ -170,6 +179,7 @@ router.post('/arrived', async (req, res) => {
     );
     if (!r.rows[0]) return res.status(404).json({ success: false, message: 'Booking nahi mili ya already shuru ho gayi' });
     const b = r.rows[0];
+    await db.query(`UPDATE hourly_bookings SET status='arrived' WHERE id=$1`, [booking_id]);
     sendFCM(
       b.customer_phone,
       '📍 Sppero Buddy Pahunch Gaya!',
@@ -184,10 +194,12 @@ router.post('/arrived', async (req, res) => {
 
 // POST /api/hourly/start
 router.post('/start', async (req, res) => {
-  const { booking_id, otp } = req.body;
+  const { booking_id, otp, driver_phone } = req.body;
   try {
-    const r = await db.query('SELECT otp FROM hourly_bookings WHERE id=$1', [booking_id]);
+    const r = await db.query('SELECT otp, driver_phone FROM hourly_bookings WHERE id=$1', [booking_id]);
     if (!r.rows[0] || r.rows[0].otp !== otp) return res.status(400).json({ success: false, message: 'Galat OTP!' });
+    if (driver_phone && r.rows[0].driver_phone && r.rows[0].driver_phone !== driver_phone)
+      return res.status(403).json({ success: false, message: 'Aap is booking ke driver nahi hain' });
     const started_at = new Date().toISOString();
     await db.query(`UPDATE hourly_bookings SET status='active', started_at=NOW() WHERE id=$1`, [booking_id]);
     emitToRoom('hourly_' + booking_id, 'hourlyTripStarted', { booking_id, started_at });
@@ -199,7 +211,7 @@ router.post('/start', async (req, res) => {
 router.get('/driver-active', async (req, res) => {
   const { phone } = req.query;
   try {
-    const r = await db.query(`SELECT * FROM hourly_bookings WHERE driver_phone=$1 AND status IN ('matched','active') ORDER BY created_at DESC LIMIT 1`, [phone]);
+    const r = await db.query(`SELECT * FROM hourly_bookings WHERE driver_phone=$1 AND status IN ('matched','arrived','active') ORDER BY created_at DESC LIMIT 1`, [phone]);
     res.json({ booking: r.rows[0] || null });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
@@ -213,7 +225,7 @@ router.get('/active', async (req, res) => {
     const r = await db.query(
       `SELECT * FROM hourly_bookings
        WHERE customer_phone=$1
-         AND status IN ('pending','matched','active')
+         AND status IN ('pending','matched','arrived','active')
          AND NOT (status='pending' AND created_at < NOW() - INTERVAL '30 minutes')
        ORDER BY created_at DESC LIMIT 1`,
       [phone]
@@ -354,8 +366,11 @@ router.post('/cancel', async (req, res) => {
   const client = await db.connect();
   try {
     await client.query('BEGIN');
-    const r = await client.query("SELECT * FROM hourly_bookings WHERE id=$1 AND status='pending'", [booking_id]);
-    if (!r.rows[0]) { await client.query('ROLLBACK'); return res.json({ success: false, message: 'Cancel nahi ho sakta' }); }
+    const r = await client.query(
+      `SELECT * FROM hourly_bookings WHERE id=$1 AND status IN ('pending','matched','arrived')`,
+      [booking_id]
+    );
+    if (!r.rows[0]) { await client.query('ROLLBACK'); return res.json({ success: false, message: 'Cancel nahi ho sakta — ride already started or completed hai' }); }
     const b = r.rows[0];
     const cu = await client.query('SELECT id FROM users WHERE phone=$1', [b.customer_phone]);
     if (cu.rows[0]) {
@@ -364,6 +379,11 @@ router.post('/cancel', async (req, res) => {
     }
     await client.query("UPDATE hourly_bookings SET status='cancelled', payment_status='refunded' WHERE id=$1", [booking_id]);
     await client.query('COMMIT');
+    // Notify driver if they were already assigned
+    if (b.driver_phone) {
+      sendFCM(b.driver_phone, '❌ Booking Cancel Ho Gayi', 'Customer ne hourly booking cancel kar di', { type: 'hourly_cancelled', booking_id: String(booking_id) }, { role: 'driver' }).catch(() => {});
+      emitToRoom('hourly_' + booking_id, 'hourlyCancelled', { booking_id });
+    }
     res.json({ success: true, refunded: b.base_fare });
   } catch (err) { await client.query('ROLLBACK'); res.status(500).json({ error: err.message }); }
   finally { client.release(); }

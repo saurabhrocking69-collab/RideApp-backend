@@ -1479,7 +1479,11 @@ router.post('/schedule', async (req, res) => {
 router.get('/scheduled/:phone', async (req, res) => {
   try {
     const r = await db.query(
-      `SELECT * FROM scheduled_rides WHERE customer_phone=$1 AND status='pending' AND scheduled_at > NOW() ORDER BY scheduled_at ASC LIMIT 20`,
+      `SELECT * FROM scheduled_rides
+       WHERE customer_phone = $1
+         AND scheduled_at > NOW() - INTERVAL '7 days'
+       ORDER BY scheduled_at DESC
+       LIMIT 30`,
       [req.params.phone]
     );
     res.json({ rides: r.rows });
@@ -1491,10 +1495,13 @@ router.delete('/scheduled/:id', async (req, res) => {
   const { phone } = req.body;
   try {
     const r = await db.query(
-      `UPDATE scheduled_rides SET status='cancelled' WHERE id=$1 AND customer_phone=$2 RETURNING id`,
+      `UPDATE scheduled_rides SET status='cancelled', updated_at=NOW()
+       WHERE id=$1 AND customer_phone=$2 AND status='pending'
+       RETURNING id`,
       [req.params.id, phone]
     );
-    if (r.rows.length === 0) return res.status(404).json({ error: 'Ride nahi mili ya unauthorized' });
+    if (r.rows.length === 0)
+      return res.status(400).json({ error: 'Ride cancel nahi ho sakti — ya toh dispatch ho chuki hai ya mili nahi' });
     res.json({ success: true });
   } catch (e) { res.status(500).json({ error: String(e.message) }); }
 });
