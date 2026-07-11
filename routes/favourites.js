@@ -127,6 +127,8 @@ router.post('/book', async (req, res) => {
   const { customer_phone, pickup, drop_location, pickup_lat, pickup_lng, drop_lat, drop_lng, distance } = req.body;
   if (!customer_phone || !pickup || !drop_location)
     return res.status(400).json({ error: 'customer_phone, pickup aur drop_location chahiye' });
+
+  let rideId = null; // hoisted so catch block can cancel a partially created ride
   try {
     const cu = await db.query('SELECT * FROM users WHERE phone=$1', [customer_phone]);
     if (!cu.rows[0]) return res.status(404).json({ error: 'Customer nahi mila' });
@@ -174,7 +176,7 @@ router.post('/book', async (req, res) => {
        pickup_lat || null, pickup_lng || null, drop_lat || null, drop_lng || null,
        dist, fareCalc.platform_fee]
     );
-    const rideId = ride.rows[0].id;
+    rideId = ride.rows[0].id;
 
     // Assign directly to buddy — also add to offered_phones so the standard accept endpoint can verify them
     // $3 is buddy.driver_phone again to avoid PostgreSQL "inconsistent types" error when $1 is used
@@ -215,7 +217,14 @@ router.post('/book', async (req, res) => {
       vehicle_type: ride_type,
       distance: dist + ' km',
     });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) {
+    // Cancel the ride if it was partially created so it doesn't become a floating orphan
+    // that gets repeatedly assigned to drivers through the fallback poll mechanism.
+    if (rideId) {
+      db.query(`UPDATE rides SET status='cancelled' WHERE id=$1 AND status='requested'`, [rideId]).catch(() => {});
+    }
+    res.status(500).json({ error: err.message });
+  }
 });
 
 module.exports = router;

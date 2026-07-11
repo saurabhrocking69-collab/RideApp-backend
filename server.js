@@ -1287,6 +1287,21 @@ setInterval(() => {
 db.query(`ALTER TABLE rides ADD COLUMN IF NOT EXISTS pre_accepted_driver_phone TEXT`).catch(() => {});
 db.query(`ALTER TABLE rides ADD COLUMN IF NOT EXISTS pre_accepted_at TIMESTAMPTZ`).catch(() => {});
 
+// ── Stale ride cleanup — cancel requested rides with no driver after 10 min ──
+// Prevents orphaned rides (e.g. from partially failed buddy bookings) from
+// surfacing repeatedly to drivers through the fallback poll mechanism.
+setInterval(async () => {
+  try {
+    const r = await db.query(
+      `UPDATE rides SET status='cancelled'
+       WHERE status='requested' AND driver_id IS NULL
+         AND created_at < NOW() - INTERVAL '10 minutes'
+       RETURNING id`
+    );
+    if (r.rowCount > 0) console.log(`[CLEANUP] Auto-cancelled ${r.rowCount} stale requested ride(s)`);
+  } catch (_e) {}
+}, 2 * 60 * 1000); // runs every 2 minutes
+
 // ── Hourly booking cleanup — auto-cancel pending bookings older than 30 min ──
 setInterval(async () => {
   try {
