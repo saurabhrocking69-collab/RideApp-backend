@@ -48,7 +48,7 @@ function calculateFare(f, distKm, durationMin = 0, isNight = false) {
   }
 
   const timeFare  = durationMin * timeRate;
-  const meterFare = Math.round((baseFare + distFare + timeFare) * nightMult);
+  const meterFare = Math.round((distFare + timeFare) * nightMult);
   const tripFare  = Math.max(minFare, meterFare);
   const totalFare = tripFare + platFee;
 
