@@ -1531,4 +1531,83 @@ router.post('/pre-decline', async (req, res) => {
   } catch (err) { console.error('[rides]', err.message); res.status(500).json({ error: 'Kuch problem aayi — dobara try karo' }); }
 });
 
+// ── GET /api/rides/customer-analytics?phone=X ──────────────────────────────
+router.get('/customer-analytics', async (req, res) => {
+  const { phone } = req.query;
+  if (!phone) return res.status(400).json({ error: 'phone zaroori hai' });
+  try {
+    const userRes = await db.query(`SELECT id FROM users WHERE phone = $1 LIMIT 1`, [phone]);
+    if (!userRes.rows.length) return res.json({ total_rides: 0, total_spent: 0, avg_fare: 0, total_savings: 0, monthly: [], vehicle: {}, days7: [], payment_methods: {} });
+    const uid = userRes.rows[0].id;
+
+    const [agg, monthly, vehicle, days7, payMethods] = await Promise.all([
+      // Aggregate totals
+      db.query(`
+        SELECT
+          COUNT(*) FILTER (WHERE status = 'completed') AS total_rides,
+          COALESCE(SUM(fare - COALESCE(discount,0)) FILTER (WHERE status = 'completed'), 0) AS total_spent,
+          COALESCE(ROUND(AVG(fare) FILTER (WHERE status = 'completed'), 0), 0) AS avg_fare,
+          COALESCE(SUM(discount) FILTER (WHERE discount > 0 AND status = 'completed'), 0) AS total_savings
+        FROM rides WHERE passenger_id = $1`, [uid]),
+
+      // Monthly breakdown — last 6 months
+      db.query(`
+        SELECT TO_CHAR(DATE_TRUNC('month', created_at), 'Mon') AS label,
+               EXTRACT(MONTH FROM created_at)::int AS mon,
+               EXTRACT(YEAR FROM created_at)::int AS yr,
+               COUNT(*) FILTER (WHERE status = 'completed') AS rides,
+               COALESCE(SUM(fare - COALESCE(discount,0)) FILTER (WHERE status = 'completed'), 0) AS spent
+        FROM rides
+        WHERE passenger_id = $1 AND created_at >= NOW() - INTERVAL '6 months'
+        GROUP BY DATE_TRUNC('month', created_at), label, mon, yr
+        ORDER BY yr, mon`, [uid]),
+
+      // Vehicle type breakdown
+      db.query(`
+        SELECT ride_type, COUNT(*) AS count
+        FROM rides WHERE passenger_id = $1 AND status = 'completed'
+        GROUP BY ride_type`, [uid]),
+
+      // Last 7 days
+      db.query(`
+        SELECT dates.day,
+               TO_CHAR(dates.day, 'Dy') AS label,
+               COALESCE(r.rides, 0) AS rides,
+               COALESCE(r.spent, 0) AS spent
+        FROM (SELECT generate_series(NOW()::date - 6, NOW()::date, '1 day'::interval)::date AS day) AS dates
+        LEFT JOIN (
+          SELECT DATE(created_at) AS day, COUNT(*) AS rides,
+                 COALESCE(SUM(fare - COALESCE(discount,0)),0) AS spent
+          FROM rides WHERE passenger_id = $1 AND status = 'completed'
+            AND created_at >= NOW() - INTERVAL '7 days'
+          GROUP BY DATE(created_at)
+        ) AS r ON r.day = dates.day
+        ORDER BY dates.day`, [uid]),
+
+      // Payment method breakdown
+      db.query(`
+        SELECT payment_method, COUNT(*) AS count
+        FROM rides WHERE passenger_id = $1 AND status = 'completed' AND payment_method IS NOT NULL
+        GROUP BY payment_method`, [uid]),
+    ]);
+
+    const vehicleMap = {};
+    vehicle.rows.forEach(r => { vehicleMap[r.ride_type] = parseInt(r.count); });
+
+    const payMap = {};
+    payMethods.rows.forEach(r => { payMap[r.payment_method] = parseInt(r.count); });
+
+    res.json({
+      total_rides:   parseInt(agg.rows[0].total_rides),
+      total_spent:   Math.round(parseFloat(agg.rows[0].total_spent)),
+      avg_fare:      Math.round(parseFloat(agg.rows[0].avg_fare)),
+      total_savings: Math.round(parseFloat(agg.rows[0].total_savings)),
+      monthly:       monthly.rows.map((r: any) => ({ label: r.label, rides: parseInt(r.rides), spent: Math.round(parseFloat(r.spent)) })),
+      vehicle:       vehicleMap,
+      days7:         days7.rows.map((r: any) => ({ label: r.label, rides: parseInt(r.rides), spent: Math.round(parseFloat(r.spent)) })),
+      payment_methods: payMap,
+    });
+  } catch (err) { console.error('[rides/customer-analytics]', err.message); res.status(500).json({ error: 'Kuch problem aayi — dobara try karo' }); }
+});
+
 module.exports = router;
