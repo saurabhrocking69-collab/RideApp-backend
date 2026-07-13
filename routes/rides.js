@@ -1602,9 +1602,9 @@ router.get('/customer-analytics', async (req, res) => {
       total_spent:   Math.round(parseFloat(agg.rows[0].total_spent)),
       avg_fare:      Math.round(parseFloat(agg.rows[0].avg_fare)),
       total_savings: Math.round(parseFloat(agg.rows[0].total_savings)),
-      monthly:       monthly.rows.map((r: any) => ({ label: r.label, rides: parseInt(r.rides), spent: Math.round(parseFloat(r.spent)) })),
+      monthly:       monthly.rows.map(r => ({ label: r.label, rides: parseInt(r.rides), spent: Math.round(parseFloat(r.spent)) })),
       vehicle:       vehicleMap,
-      days7:         days7.rows.map((r: any) => ({ label: r.label, rides: parseInt(r.rides), spent: Math.round(parseFloat(r.spent)) })),
+      days7:         days7.rows.map(r => ({ label: r.label, rides: parseInt(r.rides), spent: Math.round(parseFloat(r.spent)) })),
       payment_methods: payMap,
     });
   } catch (err) { console.error('[rides/customer-analytics]', err.message); res.status(500).json({ error: 'Kuch problem aayi — dobara try karo' }); }
