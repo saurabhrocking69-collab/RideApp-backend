@@ -25,6 +25,7 @@ try {
 async function sendFCM(phone, title, body, data = {}, options = {}) {
   const channelId = options.channelId || 'default';
   const role      = options.role || 'customer';
+  const imageUrl  = options.imageUrl  || null;
   try {
     const col  = role === 'driver'
       ? 'COALESCE(driver_fcm_token, fcm_token)'
@@ -46,7 +47,7 @@ async function sendFCM(phone, title, body, data = {}, options = {}) {
         priority: 'high',
         channelId,
         ttl: 300,
-        data,
+        data: { ...data, ...(imageUrl ? { image_url: imageUrl } : {}) },
       };
       const expoRes = await fetch('https://exp.host/--/api/v2/push/send', {
         method: 'POST',
@@ -75,10 +76,11 @@ async function sendFCM(phone, title, body, data = {}, options = {}) {
     }
     // Map legacy channel → v2 so any old call sites automatically get the right channel.
     const resolvedChannel = channelId === 'ride_requests' ? 'ride_requests_v2' : channelId;
+    const fcmData = { ...data, ...(imageUrl ? { image_url: imageUrl } : {}) };
     await firebaseMessaging.send({
       token,
-      notification: { title, body },
-      data: Object.fromEntries(Object.entries(data).map(([k, v]) => [k, String(v)])),
+      notification: { title, body, ...(imageUrl ? { imageUrl } : {}) },
+      data: Object.fromEntries(Object.entries(fcmData).map(([k, v]) => [k, String(v)])),
       android: {
         priority: 'high',
         notification: {
@@ -86,9 +88,10 @@ async function sendFCM(phone, title, body, data = {}, options = {}) {
           channelId: resolvedChannel,
           priority: 'max',
           visibility: 'public',
-          vibrateTimingsMillis: [0, 800, 200, 800, 200, 800],  // ~3 seconds
+          vibrateTimingsMillis: [0, 800, 200, 800, 200, 800],
           defaultVibrateTimings: false,
           notificationCount: 1,
+          ...(imageUrl ? { imageUrl } : {}),
         },
       },
     });

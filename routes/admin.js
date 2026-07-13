@@ -413,12 +413,13 @@ router.delete('/campaigns/:id', async (req, res) => {
 
 // POST /api/admin/notify-all
 router.post('/notify-all', async (req, res) => {
-  const { title, body, target } = req.body;
+  const { title, body, target, imageUrl } = req.body;
   if (!title || !body) return res.status(400).json({ error: 'Title aur body zaroori hai' });
   try {
     // Ensure notifications table has the columns we need
     await db.query(`ALTER TABLE notifications ADD COLUMN IF NOT EXISTS target TEXT`).catch(() => {});
     await db.query(`ALTER TABLE notifications ADD COLUMN IF NOT EXISTS message TEXT`).catch(() => {});
+    await db.query(`ALTER TABLE notifications ADD COLUMN IF NOT EXISTS image_url TEXT`).catch(() => {});
 
     // Distinguish customers vs drivers by which token column is set, NOT by role.
     // (Driver registration overwrites role to 'driver', so role='passenger' would
@@ -445,8 +446,8 @@ router.post('/notify-all', async (req, res) => {
                       : (target === 'drivers')   ? 'drivers'
                       :                            'all';
     await db.query(
-      `INSERT INTO notifications (target, title, message, created_at) VALUES ($1, $2, $3, NOW())`,
-      [notifTarget, title, body]
+      `INSERT INTO notifications (target, title, message, image_url, created_at) VALUES ($1, $2, $3, $4, NOW())`,
+      [notifTarget, title, body, imageUrl || null]
     ).catch(() => {});
 
     // Respond immediately (don't block on FCM sends)
@@ -458,8 +459,8 @@ router.post('/notify-all', async (req, res) => {
       try {
         await sendFCM(
           u.phone, title, body,
-          { type: 'broadcast' },
-          { role: fcmRole, channelId: 'default' }
+          { type: 'broadcast', ...(imageUrl ? { image_url: imageUrl } : {}) },
+          { role: fcmRole, channelId: 'default', ...(imageUrl ? { imageUrl } : {}) }
         );
         sent++;
       } catch (_e) { failed++; }

@@ -251,7 +251,8 @@ router.get('/notifications', async (req, res) => {
       `SELECT title,
               COALESCE(message, body) AS message,
               created_at,
-              type
+              type,
+              image_url
        FROM notifications
        WHERE target = 'all'
           OR target = $1

@@ -264,6 +264,15 @@ input,select,textarea{outline:none}
         <p style="font-size:12px;color:#888;margin-bottom:10px">FCM push seedha phones pe bhejo</p>
         <input id="notif-title" placeholder="Notification title" class="input-sm" style="margin-bottom:8px">
         <textarea id="notif-body" placeholder="Message text..." class="input-sm" style="resize:none;height:58px;margin-bottom:8px"></textarea>
+        <div style="position:relative;margin-bottom:8px">
+          <input id="notif-image" placeholder="🖼️ Banner image URL (optional — for promo/discount)" class="input-sm" style="width:100%;padding-right:72px;box-sizing:border-box" oninput="previewNotifImg(this.value)">
+          <span style="position:absolute;right:8px;top:50%;transform:translateY(-50%);font-size:10px;color:#bbb;pointer-events:none">optional</span>
+        </div>
+        <div id="notif-img-preview" style="display:none;margin-bottom:10px;border-radius:10px;overflow:hidden;border:1px solid #eee;position:relative">
+          <img id="notif-img-el" style="width:100%;max-height:130px;object-fit:cover;display:block" onerror="document.getElementById('notif-img-preview').style.display='none'">
+          <div style="position:absolute;inset:0;background:linear-gradient(to bottom,transparent 60%,rgba(0,0,0,.45));pointer-events:none"></div>
+          <div style="position:absolute;bottom:6px;left:8px;font-size:10px;color:#fff;font-weight:700;letter-spacing:.04em">PREVIEW</div>
+        </div>
         <select id="notif-target" class="input-sm" style="margin-bottom:10px">
           <option value="all">All Users</option>
           <option value="customers">Customers Only</option>
@@ -1453,16 +1462,24 @@ async function loadCampaigns(){
 }
 async function toggleCampaign(id){await aFetch('/api/admin/campaigns/toggle/'+id,{method:'POST'});loadCampaigns();}
 
+function previewNotifImg(url){
+  const wrap=document.getElementById('notif-img-preview');
+  const img=document.getElementById('notif-img-el');
+  if(url.trim()){img.src=url.trim();wrap.style.display='block';}
+  else{wrap.style.display='none';}
+}
 async function sendBroadcast(){
   const title=document.getElementById('notif-title').value.trim();
   const body=document.getElementById('notif-body').value.trim();
   const target=document.getElementById('notif-target').value;
+  const imageUrl=document.getElementById('notif-image').value.trim()||undefined;
   if(!title||!body){document.getElementById('notif-status').textContent='❌ Title aur body zaroori hai';return;}
   document.getElementById('notif-status').textContent='⏳ Bhej raha hai...';
   document.getElementById('notif-status').style.color='#e65100';
-  const d=await aJson('/api/admin/notify-all',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({title,body,target})});
+  const d=await aJson('/api/admin/notify-all',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({title,body,target,imageUrl})});
   document.getElementById('notif-status').textContent=d.success?`✅ Bheja! ${d.total_targets} users ko`:'❌ '+d.error;
   document.getElementById('notif-status').style.color=d.success?'#2e7d32':'#c62828';
+  if(d.success){document.getElementById('notif-title').value='';document.getElementById('notif-body').value='';document.getElementById('notif-image').value='';document.getElementById('notif-img-preview').style.display='none';}
 }
 
 async function createPromo(){
