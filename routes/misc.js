@@ -330,4 +330,40 @@ router.get('/customer/rating', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+// GET /api/customer/tier?phone=X — loyalty tier based on all-time completed rides
+router.get('/customer/tier', async (req, res) => {
+  const { phone } = req.query;
+  if (!phone) return res.status(400).json({ error: 'phone chahiye' });
+  try {
+    const r = await db.query(
+      `SELECT COUNT(*) AS total
+       FROM rides r JOIN users u ON r.passenger_id = u.id
+       WHERE u.phone = $1 AND r.status = 'completed'`,
+      [phone]
+    );
+    const total = parseInt(r.rows[0]?.total || '0');
+
+    const TIERS = [
+      { tier: 'starter', label: 'Starter',  emoji: '🌱', min: 0,  next_min: 5,   color: '#059669' },
+      { tier: 'regular', label: 'Regular',  emoji: '⭐', min: 5,  next_min: 20,  color: '#1D4ED8' },
+      { tier: 'expert',  label: 'Expert',   emoji: '🔥', min: 20, next_min: 50,  color: '#FF7A00' },
+      { tier: 'elite',   label: 'Elite',    emoji: '👑', min: 50, next_min: null, color: '#F59E0B' },
+    ];
+    const current = [...TIERS].reverse().find(t => total >= t.min) || TIERS[0];
+    const idx = TIERS.indexOf(current);
+    const next = TIERS[idx + 1] || null;
+
+    res.json({
+      total_rides:   total,
+      tier:          current.tier,
+      label:         current.label,
+      emoji:         current.emoji,
+      color:         current.color,
+      rides_to_next: next ? Math.max(0, next.min - total) : 0,
+      next_tier:     next ? { tier: next.tier, label: next.label, emoji: next.emoji, min: next.min } : null,
+      progress_pct:  next ? Math.min(100, Math.round(((total - current.min) / (next.min - current.min)) * 100)) : 100,
+    });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
 module.exports = router;
