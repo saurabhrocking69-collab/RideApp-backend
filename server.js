@@ -42,11 +42,26 @@ const complaintsRouter = require('./routes/complaints');
 const bonusRouter      = require('./routes/bonus');
 const healthCheck      = require('./services/healthCheck');
 
+// ── Allowed browser origins (mobile apps don't send Origin, so this only gates web clients) ──
+const ALLOWED_ORIGINS = process.env.ALLOWED_ORIGINS
+  ? process.env.ALLOWED_ORIGINS.split(',').map(o => o.trim())
+  : [];
+
+const corsOptions = {
+  origin: (origin, cb) => {
+    // No origin = native mobile app / server-to-server / curl — allow
+    if (!origin) return cb(null, true);
+    if (ALLOWED_ORIGINS.includes(origin)) return cb(null, true);
+    cb(new Error(`CORS: origin not allowed — ${origin}`));
+  },
+  credentials: true,
+};
+
 // ── App + HTTP + Socket.io ───────────────────────
 const app    = express();
 const server = http.createServer(app);
 const io     = new Server(server, {
-  cors: { origin: '*' },
+  cors: corsOptions,
   pingInterval: 10000, // ping every 10s (default 25s) — keeps mobile connections alive through NAT
   pingTimeout:  5000,  // 5s to respond (default 20s) — detect dead connections faster
 });
@@ -67,7 +82,7 @@ redis.on('ready', async () => {
 });
 
 // ── Core middleware ──────────────────────────────
-app.use(cors());
+app.use(cors(corsOptions));
 app.use(compression());
 
 // CRITICAL: Razorpay webhook needs raw Buffer for HMAC verification.
@@ -95,8 +110,17 @@ app.get('/health', (_req, res) =>
   res.json({ status: 'ok', uptime: Math.floor(process.uptime()), ts: Date.now() })
 );
 
+// ── Debug auth — requires DEBUG_SECRET env var; no env var = always 403 ──────
+const debugAuth = (req, res, next) => {
+  const secret = process.env.DEBUG_SECRET;
+  if (!secret || req.headers['x-debug-secret'] !== secret) {
+    return res.status(403).json({ error: 'Forbidden' });
+  }
+  next();
+};
+
 // ── Matching diagnostics — shows exactly what the worker sees ────────────────
-app.get('/debug/match-state', async (req, res) => {
+app.get('/debug/match-state', debugAuth, async (req, res) => {
   try {
     const [driversRes, ridesRes, locRes, stuckRes] = await Promise.all([
       db.query(`
@@ -139,7 +163,7 @@ app.get('/debug/match-state', async (req, res) => {
 });
 
 // ── Deep-dive: why didn't a specific driver get the last ride? ────────────────
-app.get('/debug/driver/:phone', async (req, res) => {
+app.get('/debug/driver/:phone', debugAuth, async (req, res) => {
   const { phone } = req.params;
   try {
     const [driverRes, locRes, activeRideRes, recentOfferedRes] = await Promise.all([
@@ -190,7 +214,7 @@ app.get('/debug/driver/:phone', async (req, res) => {
 });
 
 // ── Dry-run the exact worker matching query for a vehicle type ────────────────
-app.get('/debug/worker-query', async (req, res) => {
+app.get('/debug/worker-query', debugAuth, async (req, res) => {
   const rideType = req.query.type || 'bike';
   try {
     const drRes = await db.query(`
@@ -230,10 +254,7 @@ app.get('/debug/worker-query', async (req, res) => {
 });
 
 // ── Quick admin: force-approve a driver for testing (secret header required) ──
-app.post('/debug/approve-driver', async (req, res) => {
-  if (req.headers['x-debug-secret'] !== (process.env.DEBUG_SECRET || 'sppero-debug-2024')) {
-    return res.status(403).json({ error: 'Forbidden' });
-  }
+app.post('/debug/approve-driver', debugAuth, async (req, res) => {
   const { phone } = req.body;
   if (!phone) return res.status(400).json({ error: 'phone required' });
   try {
@@ -247,7 +268,7 @@ app.post('/debug/approve-driver', async (req, res) => {
 });
 
 // ── BullMQ queue health + manual trigger ─────────────────────────────────────
-app.get('/debug/bullmq', async (req, res) => {
+app.get('/debug/bullmq', debugAuth, async (req, res) => {
   try {
     const [waiting, active, failed, completed, delayed] = await Promise.all([
       rideQueue.getWaitingCount(),
@@ -268,7 +289,7 @@ app.get('/debug/bullmq', async (req, res) => {
 });
 
 // ── Show all open rides + their assignment state ──────────────────────────────
-app.get('/debug/open-rides', async (req, res) => {
+app.get('/debug/open-rides', debugAuth, async (req, res) => {
   try {
     const [ridesRes, driversRes] = await Promise.all([
       db.query(`
@@ -320,10 +341,7 @@ app.get('/debug/open-rides', async (req, res) => {
 });
 
 // ── Manually trigger match for a specific ride (bypasses BullMQ entirely) ────
-app.post('/debug/trigger-match', async (req, res) => {
-  if (req.headers['x-debug-secret'] !== (process.env.DEBUG_SECRET || 'sppero-debug-2024')) {
-    return res.status(403).json({ error: 'Forbidden' });
-  }
+app.post('/debug/trigger-match', debugAuth, async (req, res) => {
   const { ride_id } = req.body;
   if (!ride_id) return res.status(400).json({ error: 'ride_id required' });
   try {

@@ -23,8 +23,6 @@ router.post('/send-otp', async (req, res) => {
     await redis.setEx('otp:' + phone, 600, otp);
     await redis.setEx('otp:sent:' + phone, 30, '1');
     await redis.del('otp:attempts:' + phone);
-    console.log('📱 OTP for', phone, ':', otp);
-
     // Fast2SMS integration (set FAST2SMS_API_KEY env var)
     if (process.env.FAST2SMS_API_KEY) {
       try {
@@ -85,6 +83,25 @@ router.post('/verify-otp', async (req, res) => {
   } catch (err) {
     console.error('verify-otp error:', err.message);
     res.status(500).json({ error: `Login error: ${err.message}` });
+  }
+});
+
+// POST /api/auth/refresh — issue a new 30-day token from a valid existing one
+router.post('/refresh', async (req, res) => {
+  const token = req.headers.authorization?.split(' ')[1];
+  if (!token) return res.status(401).json({ error: 'Token required' });
+  try {
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    const user = await db.query('SELECT id, phone FROM users WHERE id = $1', [decoded.id]);
+    if (!user.rows.length) return res.status(401).json({ error: 'User not found' });
+    const newToken = jwt.sign(
+      { id: user.rows[0].id, phone: user.rows[0].phone },
+      process.env.JWT_SECRET,
+      { expiresIn: '30d' }
+    );
+    res.json({ token: newToken });
+  } catch {
+    res.status(401).json({ error: 'Token expired or invalid — please login again' });
   }
 });
 
