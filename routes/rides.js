@@ -599,7 +599,7 @@ router.post('/cancel-smart', async (req, res) => {
 
 // POST /api/rides/complete
 // Accepts optional driver_lat/driver_lng for early-completion detection.
-// If driver is >800m from drop point, marks early_completion=true and auto-raises a complaint.
+// If driver is >800m from drop point, marks early_completion=true and logs an incident.
 router.post('/complete', async (req, res) => {
   const { ride_id, driver_phone, driver_lat, driver_lng } = req.body;
   try {
@@ -692,7 +692,7 @@ router.post('/complete', async (req, res) => {
         }
       }
 
-      // Log incident + auto-complaint for early completion
+      // Log incident for early completion
       if (earlyCompletion) {
         await db.query(
           `INSERT INTO ride_incidents (ride_id, incident_type, detected_by, driver_id, customer_id, metadata)
@@ -701,30 +701,11 @@ router.post('/complete', async (req, res) => {
            JSON.stringify({ dist_km: distFromDrop, driver_lat, driver_lng, drop_lat: ride.drop_lat, drop_lng: ride.drop_lng })]
         ).catch((e) => { console.error('ride_incidents insert failed:', e.message); });
 
-        // Auto-create complaint on behalf of customer
-        const cRes = await db.query(
-          `INSERT INTO complaints(ride_id,filed_by,filed_against,filer_role,complaint_type,title,description,priority,source)
-           VALUES($1,$2,$3,'customer','early_trip_end',
-             'Driver ne drop se pehle trip complete kiya',
-             $4,'high','system_auto')
-           RETURNING id`,
-          [ride_id, ride.passenger_id, ride.driver_id,
-           `System detected: driver ne trip complete ki jab woh drop location se ${(distFromDrop||0).toFixed(1)}km door the. Ride #${ride_id}.`]
-        ).catch((e) => { console.error('Auto-complaint insert failed:', e.message); return { rows: [] }; });
-
-        if (cRes.rows[0]) {
-          await db.query(
-            `INSERT INTO complaint_timeline(complaint_id,event,description,actor_role,actor_name)
-             VALUES($1,'auto_created','System ne early completion detect ki aur complaint auto-raise ki','system','Sppero System')`,
-            [cRes.rows[0].id]
-          ).catch(() => {});
-        }
-
         // Alert customer about early completion
         sendFCM(ride.passenger_phone,
           '⚠️ Driver ne sahi jagah nahi chhoda!',
-          `Aapka driver drop se ${(distFromDrop||0).toFixed(1)}km door tha jab usne trip complete ki. Complaint auto-raise ho gayi.`,
-          { type: 'early_completion_alert', ride_id: String(ride_id), complaint_id: cRes.rows[0]?.id || '' },
+          `Aapka driver drop se ${(distFromDrop||0).toFixed(1)}km door tha jab usne trip complete ki.`,
+          { type: 'early_completion_alert', ride_id: String(ride_id) },
           { role: 'customer' }
         ).catch(() => {});
 
@@ -923,7 +904,7 @@ router.post('/cash-confirm', async (req, res) => {
 
 // POST /api/rides/payment-not-received
 // Driver calls this within 10 min of trip completion when cash customer refuses/runs.
-// Auto-creates incident + complaint, penalizes customer trust_score.
+// Auto-creates incident, penalizes customer trust_score.
 router.post('/payment-not-received', async (req, res) => {
   const { ride_id, driver_phone } = req.body;
   if (!ride_id || !driver_phone) return res.status(400).json({ error: 'ride_id aur driver_phone zaroori hai' });
@@ -964,24 +945,6 @@ router.post('/payment-not-received', async (req, res) => {
        JSON.stringify({ fare: netFareDisplay, full_fare: ride.fare, discount: ride.discount || 0, payment_method: ride.payment_method })]
     ).catch(() => {});
 
-    // Auto-create complaint against customer
-    const cRes = await db.query(
-      `INSERT INTO complaints(ride_id,filed_by,filed_against,filer_role,complaint_type,title,description,priority,source)
-       VALUES($1,$2,$3,'driver','payment_issue',
-         'Customer ne cash payment nahi ki',
-         $4,'high','driver_report')
-       RETURNING id`,
-      [ride_id, ride.driver_id_val, ride.passenger_id_val,
-       `Driver ${ride.driver_name} (${driver_phone}) ne report kiya: Ride #${ride_id} ke baad customer ${ride.passenger_name} ne ₹${netFareDisplay} cash payment nahi ki aur chale gaye.`]
-    );
-    if (cRes.rows[0]) {
-      await db.query(
-        `INSERT INTO complaint_timeline(complaint_id,event,description,actor_role,actor_name)
-         VALUES($1,'driver_reported','Driver ne payment not received report ki','driver',$2)`,
-        [cRes.rows[0].id, ride.driver_name]
-      ).catch(() => {});
-    }
-
     // Penalize customer trust score
     await db.query(
       `UPDATE users SET trust_score = GREATEST(0, COALESCE(trust_score,100) - 25) WHERE id=$1`, [ride.passenger_id_val]
@@ -1015,7 +978,6 @@ router.post('/payment-not-received', async (req, res) => {
 
     res.json({
       success: true,
-      complaint_id: cRes.rows[0]?.id,
       message: 'Payment not received report ho gayi. Admin review karega.',
       customer_trust_score_deducted: 25,
       customer_skips_total: totalSkips,

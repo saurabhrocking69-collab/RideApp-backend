@@ -38,7 +38,6 @@ const driversRouter = require('./routes/drivers');
 const hourlyRouter  = require('./routes/hourly');
 const adminRouter      = require('./routes/admin');
 const favouritesRouter = require('./routes/favourites');
-const complaintsRouter = require('./routes/complaints');
 const bonusRouter      = require('./routes/bonus');
 const healthCheck      = require('./services/healthCheck');
 
@@ -586,7 +585,6 @@ app.use('/api/driver',   driversRouter);
 app.use('/api/hourly',   hourlyRouter);
 app.use('/api/admin',      adminAuth, adminRouter);
 app.use('/api/favourites', favouritesRouter);
-app.use('/api/complaints', complaintsRouter);
 app.use('/api/bonus',      bonusRouter);
 
 
@@ -679,80 +677,6 @@ io.on('connection', (socket) => {
   });
 });
 
-// ── Critical tables — created immediately, no delay ──────────────────────────
-(async () => {
-  try {
-    await db.query(`
-      CREATE TABLE IF NOT EXISTS complaints (
-        id               SERIAL PRIMARY KEY,
-        ride_id          TEXT,
-        filed_by         TEXT NOT NULL,
-        filed_against    TEXT NOT NULL,
-        filer_role       VARCHAR(20) NOT NULL,
-        complaint_type   VARCHAR(60) NOT NULL,
-        title            TEXT NOT NULL,
-        description      TEXT NOT NULL,
-        priority         VARCHAR(20) NOT NULL DEFAULT 'normal',
-        status           VARCHAR(30) NOT NULL DEFAULT 'open',
-        source           VARCHAR(30) NOT NULL DEFAULT 'manual',
-        resolution       TEXT,
-        resolution_note  TEXT,
-        action_taken     TEXT,
-        assigned_admin   TEXT,
-        refund_amount    NUMERIC(10,2) DEFAULT 0,
-        resolved_at      TIMESTAMP,
-        created_at       TIMESTAMP NOT NULL DEFAULT NOW(),
-        updated_at       TIMESTAMP NOT NULL DEFAULT NOW()
-      )
-    `);
-    await db.query(`
-      CREATE TABLE IF NOT EXISTS complaint_messages (
-        id             SERIAL PRIMARY KEY,
-        complaint_id   INTEGER NOT NULL,
-        sender_id      TEXT,
-        sender_role    VARCHAR(20),
-        sender_name    VARCHAR(100),
-        message        TEXT NOT NULL,
-        is_internal    BOOLEAN NOT NULL DEFAULT FALSE,
-        created_at     TIMESTAMP NOT NULL DEFAULT NOW()
-      )
-    `);
-    await db.query(`
-      CREATE TABLE IF NOT EXISTS complaint_evidence (
-        id             SERIAL PRIMARY KEY,
-        complaint_id   INTEGER NOT NULL,
-        uploaded_by    TEXT,
-        file_url       TEXT NOT NULL,
-        caption        TEXT,
-        created_at     TIMESTAMP NOT NULL DEFAULT NOW()
-      )
-    `);
-    await db.query(`
-      CREATE TABLE IF NOT EXISTS complaint_timeline (
-        id             SERIAL PRIMARY KEY,
-        complaint_id   INTEGER NOT NULL,
-        event          VARCHAR(60),
-        description    TEXT,
-        actor_role     VARCHAR(20),
-        actor_name     VARCHAR(100),
-        metadata       TEXT,
-        created_at     TIMESTAMP NOT NULL DEFAULT NOW()
-      )
-    `);
-    await db.query(`CREATE INDEX IF NOT EXISTS idx_complaints_filed_by      ON complaints(filed_by)`);
-    await db.query(`CREATE INDEX IF NOT EXISTS idx_complaints_filed_against  ON complaints(filed_against)`);
-    await db.query(`CREATE INDEX IF NOT EXISTS idx_complaints_status         ON complaints(status)`);
-    await db.query(`CREATE INDEX IF NOT EXISTS idx_complaint_msgs_cid        ON complaint_messages(complaint_id)`);
-    await db.query(`CREATE INDEX IF NOT EXISTS idx_complaint_tl_cid          ON complaint_timeline(complaint_id)`);
-    await db.query(`ALTER TABLE complaints ADD COLUMN IF NOT EXISTS source VARCHAR(30) DEFAULT 'manual'`).catch(() => {});
-    await db.query(`ALTER TABLE complaint_messages ADD COLUMN IF NOT EXISTS is_internal BOOLEAN NOT NULL DEFAULT FALSE`).catch(() => {});
-    await db.query(`ALTER TABLE complaint_messages ADD COLUMN IF NOT EXISTS sender_role VARCHAR(20)`).catch(() => {});
-    await db.query(`ALTER TABLE complaint_messages ADD COLUMN IF NOT EXISTS sender_name VARCHAR(100)`).catch(() => {});
-    console.log('✅ Complaint tables ready (immediate)');
-  } catch (e) {
-    console.error('❌ Complaint table init error:', e.message);
-  }
-})();
 
 // ── Startup tasks ────────────────────────────────
 setTimeout(async () => {
@@ -822,9 +746,7 @@ setTimeout(async () => {
   await db.query(`ALTER TABLE driver_metrics ADD COLUMN IF NOT EXISTS strike_count INTEGER DEFAULT 0`).catch(() => {});
   // driver_wallet: pending_commission was missing from original CREATE TABLE
   await db.query(`ALTER TABLE driver_wallet ADD COLUMN IF NOT EXISTS pending_commission NUMERIC(10,2) DEFAULT 0`).catch(() => {});
-  // Source column on complaints (manual vs system_auto vs driver_report)
-  await db.query(`ALTER TABLE complaints ADD COLUMN IF NOT EXISTS source VARCHAR(30) DEFAULT 'manual'`).catch(() => {});
-  // Hourly booking extension columns (trip extension feature)
+// Hourly booking extension columns (trip extension feature)
   await db.query(`ALTER TABLE hourly_bookings ADD COLUMN IF NOT EXISTS extend_requested_hours DECIMAL`).catch(() => {});
   await db.query(`ALTER TABLE hourly_bookings ADD COLUMN IF NOT EXISTS extend_escrow DECIMAL DEFAULT 0`).catch(() => {});
   await db.query(`ALTER TABLE hourly_bookings ADD COLUMN IF NOT EXISTS extend_total_minutes INTEGER DEFAULT 0`).catch(() => {});
@@ -856,69 +778,7 @@ setTimeout(async () => {
   await db.query(`CREATE INDEX IF NOT EXISTS idx_incidents_type ON ride_incidents(incident_type)`).catch(() => {});
   console.log('✅ DB indexes ready');
 
-  // ── Complaint system tables ───────────────────────
-  const complaintTables = [
-    `CREATE TABLE IF NOT EXISTS complaints (
-      id               SERIAL PRIMARY KEY,
-      ride_id          TEXT,
-      filed_by         TEXT NOT NULL,
-      filed_against    TEXT NOT NULL,
-      filer_role       VARCHAR(20) NOT NULL,
-      complaint_type   VARCHAR(60) NOT NULL,
-      title            TEXT NOT NULL,
-      description      TEXT NOT NULL,
-      priority         VARCHAR(20) NOT NULL DEFAULT 'normal',
-      status           VARCHAR(30) NOT NULL DEFAULT 'open',
-      source           VARCHAR(30) NOT NULL DEFAULT 'manual',
-      resolution       TEXT,
-      resolution_note  TEXT,
-      action_taken     TEXT,
-      assigned_admin   TEXT,
-      refund_amount    NUMERIC(10,2) DEFAULT 0,
-      resolved_at      TIMESTAMP,
-      created_at       TIMESTAMP NOT NULL DEFAULT NOW(),
-      updated_at       TIMESTAMP NOT NULL DEFAULT NOW()
-    )`,
-    `CREATE TABLE IF NOT EXISTS complaint_messages (
-      id             SERIAL PRIMARY KEY,
-      complaint_id   INTEGER NOT NULL,
-      sender_id      TEXT,
-      sender_role    VARCHAR(20),
-      sender_name    VARCHAR(100),
-      message        TEXT NOT NULL,
-      is_internal    BOOLEAN NOT NULL DEFAULT FALSE,
-      created_at     TIMESTAMP NOT NULL DEFAULT NOW()
-    )`,
-    `CREATE TABLE IF NOT EXISTS complaint_evidence (
-      id             SERIAL PRIMARY KEY,
-      complaint_id   INTEGER NOT NULL,
-      uploaded_by    TEXT,
-      file_url       TEXT NOT NULL,
-      caption        TEXT,
-      created_at     TIMESTAMP NOT NULL DEFAULT NOW()
-    )`,
-    `CREATE TABLE IF NOT EXISTS complaint_timeline (
-      id             SERIAL PRIMARY KEY,
-      complaint_id   INTEGER NOT NULL,
-      event          VARCHAR(60),
-      description    TEXT,
-      actor_role     VARCHAR(20),
-      actor_name     VARCHAR(100),
-      metadata       TEXT,
-      created_at     TIMESTAMP NOT NULL DEFAULT NOW()
-    )`,
-    `CREATE INDEX IF NOT EXISTS idx_complaints_filed_by      ON complaints(filed_by)`,
-    `CREATE INDEX IF NOT EXISTS idx_complaints_filed_against  ON complaints(filed_against)`,
-    `CREATE INDEX IF NOT EXISTS idx_complaints_status         ON complaints(status)`,
-    `CREATE INDEX IF NOT EXISTS idx_complaints_ride_id        ON complaints(ride_id)`,
-    `CREATE INDEX IF NOT EXISTS idx_complaint_msgs_cid        ON complaint_messages(complaint_id)`,
-    `CREATE INDEX IF NOT EXISTS idx_complaint_tl_cid          ON complaint_timeline(complaint_id)`,
-    `CREATE INDEX IF NOT EXISTS idx_complaint_ev_cid          ON complaint_evidence(complaint_id)`,
-  ];
-  for (const sql of complaintTables) await db.query(sql).catch((e) => console.error('Complaint table error:', e.message));
-  console.log('✅ Complaint tables ready');
-
-  // Ensure all vehicle types have fare_settings rows; also repair NULL per_km_rate (causes NaN fare bug)
+// Ensure all vehicle types have fare_settings rows; also repair NULL per_km_rate (causes NaN fare bug)
   await db.query(`
     INSERT INTO fare_settings (vehicle_type, base_fare, per_km_rate, night_multiplier)
     VALUES

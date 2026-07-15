@@ -761,289 +761,10 @@ router.post('/payout-reject', async (req, res) => {
 });
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// COMPLAINT MANAGEMENT — Admin Routes
+// INCIDENT MANAGEMENT
 // ═══════════════════════════════════════════════════════════════════════════════
 
-// GET /api/admin/complaints/stats
-router.get('/complaints/stats', async (req, res) => {
-  try {
-    const [total, open, under_review, resolved, urgent, today] = await Promise.all([
-      db.query("SELECT COUNT(*) FROM complaints"),
-      db.query("SELECT COUNT(*) FROM complaints WHERE status='open'"),
-      db.query("SELECT COUNT(*) FROM complaints WHERE status IN ('under_review','awaiting_response','evidence_requested','escalated','appealed')"),
-      db.query("SELECT COUNT(*) FROM complaints WHERE status IN ('resolved','closed')"),
-      db.query("SELECT COUNT(*) FROM complaints WHERE priority='urgent' AND status NOT IN ('resolved','closed')"),
-      db.query("SELECT COUNT(*) FROM complaints WHERE DATE(created_at)=CURRENT_DATE"),
-    ]);
-    res.json({
-      total:        parseInt(total.rows[0].count),
-      open:         parseInt(open.rows[0].count),
-      under_review: parseInt(under_review.rows[0].count),
-      resolved:     parseInt(resolved.rows[0].count),
-      urgent_open:  parseInt(urgent.rows[0].count),
-      today:        parseInt(today.rows[0].count),
-    });
-  } catch (err) { res.status(500).json({ error: err.message }); }
-});
 
-// GET /api/admin/complaints — list with filters
-router.get('/complaints', async (req, res) => {
-  const { status, priority, filer_role, page = 1, limit = 50, search } = req.query;
-  const offset = (page - 1) * limit;
-  const params = [];
-  const conds  = [];
-
-  if (status)     { params.push(status);     conds.push(`c.status=$${params.length}`); }
-  if (priority)   { params.push(priority);   conds.push(`c.priority=$${params.length}`); }
-  if (filer_role) { params.push(filer_role); conds.push(`c.filer_role=$${params.length}`); }
-  if (search)     { params.push(`%${search}%`); conds.push(`(ub.name ILIKE $${params.length} OR ua.name ILIKE $${params.length} OR c.title ILIKE $${params.length})`); }
-
-  const where = conds.length ? 'WHERE ' + conds.join(' AND ') : '';
-
-  try {
-    const result = await db.query(
-      `SELECT c.id, c.ride_id, c.filer_role, c.complaint_type, c.title, c.status, c.priority,
-              c.assigned_admin, c.resolution, c.source, c.created_at, c.updated_at,
-              ub.name AS filed_by_name, ub.phone AS filed_by_phone,
-              ua.name AS filed_against_name, ua.phone AS filed_against_phone,
-              (SELECT COUNT(*) FROM complaint_messages cm WHERE cm.complaint_id=c.id AND cm.is_internal=false) AS msg_count
-       FROM complaints c
-       LEFT JOIN users ub ON c.filed_by=ub.id::text
-       LEFT JOIN users ua ON c.filed_against=ua.id::text
-       ${where}
-       ORDER BY
-         CASE c.priority WHEN 'urgent' THEN 1 WHEN 'high' THEN 2 WHEN 'normal' THEN 3 ELSE 4 END,
-         c.created_at DESC
-       LIMIT $${params.length+1} OFFSET $${params.length+2}`,
-      [...params, limit, offset]
-    );
-    const countRes = await db.query(
-      `SELECT COUNT(*) FROM complaints c LEFT JOIN users ub ON c.filed_by=ub.id::text LEFT JOIN users ua ON c.filed_against=ua.id::text ${where}`,
-      params
-    );
-    res.json({ complaints: result.rows, total: parseInt(countRes.rows[0].count) });
-  } catch (err) { res.status(500).json({ error: err.message }); }
-});
-
-// GET /api/admin/complaints/:id — full detail
-router.get('/complaints/:id', async (req, res) => {
-  try {
-    const cRes = await db.query(
-      `SELECT c.*,
-              ub.name AS filed_by_name, ub.phone AS filed_by_phone,
-              ua.name AS filed_against_name, ua.phone AS filed_against_phone,
-              r.pickup, r.drop_location, r.fare, r.ride_type, r.status AS ride_status, r.created_at AS ride_date,
-              r.pickup_lat, r.pickup_lng, r.drop_lat, r.drop_lng,
-              r.early_completion, r.driver_lat_at_complete, r.driver_lng_at_complete, r.completion_dist_from_drop
-       FROM complaints c
-       LEFT JOIN users ub ON c.filed_by=ub.id::text
-       LEFT JOIN users ua ON c.filed_against=ua.id::text
-       LEFT JOIN rides r  ON c.ride_id = r.id::text
-       WHERE c.id=$1`,
-      [req.params.id]
-    );
-    if (cRes.rows.length === 0) return res.status(404).json({ error: 'Complaint nahi mili' });
-
-    const comp = cRes.rows[0];
-    const [messages, evidence, timeline, incidents] = await Promise.all([
-      db.query('SELECT * FROM complaint_messages WHERE complaint_id=$1 ORDER BY created_at ASC', [req.params.id]),
-      db.query('SELECT ce.*, u.name AS uploader_name FROM complaint_evidence ce LEFT JOIN users u ON ce.uploaded_by=u.id::text WHERE ce.complaint_id=$1 ORDER BY created_at ASC', [req.params.id]),
-      db.query('SELECT * FROM complaint_timeline WHERE complaint_id=$1 ORDER BY created_at ASC', [req.params.id]),
-      comp.ride_id
-        ? db.query('SELECT * FROM ride_incidents WHERE ride_id=$1 ORDER BY created_at DESC', [comp.ride_id]).catch(() => ({ rows: [] }))
-        : Promise.resolve({ rows: [] }),
-    ]);
-    res.json({ complaint: comp, messages: messages.rows, evidence: evidence.rows, timeline: timeline.rows, incidents: incidents.rows });
-  } catch (err) { res.status(500).json({ error: err.message }); }
-});
-
-// PUT /api/admin/complaints/:id/assign
-router.put('/complaints/:id/assign', async (req, res) => {
-  const { admin_name } = req.body;
-  if (!admin_name) return res.status(400).json({ error: 'admin_name zaroori hai' });
-  try {
-    await db.query(
-      "UPDATE complaints SET assigned_admin=$1, status=CASE WHEN status='open' THEN 'under_review' ELSE status END, updated_at=NOW() WHERE id=$2",
-      [admin_name, req.params.id]
-    );
-    await db.query(
-      "INSERT INTO complaint_timeline(complaint_id,event,description,actor_role,actor_name) VALUES($1,'assigned',$2,'admin',$3)",
-      [req.params.id, `Assigned to ${admin_name}`, admin_name]
-    );
-    res.json({ success: true });
-  } catch (err) { res.status(500).json({ error: err.message }); }
-});
-
-// PUT /api/admin/complaints/:id/status
-router.put('/complaints/:id/status', async (req, res) => {
-  const { status, note } = req.body;
-  const validStatuses = ['open','under_review','awaiting_response','evidence_requested','escalated','resolved','closed'];
-  if (!validStatuses.includes(status)) return res.status(400).json({ error: 'Invalid status' });
-  try {
-    await db.query("UPDATE complaints SET status=$1, updated_at=NOW() WHERE id=$2", [status, req.params.id]);
-    await db.query(
-      "INSERT INTO complaint_timeline(complaint_id,event,description,actor_role,actor_name) VALUES($1,'status_changed',$2,'admin','Admin')",
-      [req.params.id, `Status changed to ${status}${note ? ': ' + note : ''}`]
-    );
-    const filerRes = await db.query(
-      'SELECT u.phone, (d.id IS NOT NULL) AS is_driver FROM users u LEFT JOIN drivers d ON d.id=u.id WHERE u.id=(SELECT filed_by FROM complaints WHERE id=$1)',
-      [req.params.id]
-    );
-    if (filerRes.rows[0]?.phone) {
-      const fcmRole = filerRes.rows[0].is_driver ? 'driver' : 'customer';
-      const statusLabels = { under_review:'Under Review ho gayi', awaiting_response:'Aapka jawab chahiye', evidence_requested:'Proof submit karo', escalated:'Senior team ko bheja', resolved:'Resolve ho gayi', closed:'Closed ho gayi' };
-      const msg = statusLabels[status] || `Status: ${status}`;
-      sendFCM(filerRes.rows[0].phone, `📋 Complaint Update`, msg, { type: 'complaint_update', complaint_id: req.params.id, status }, { role: fcmRole }).catch(() => {});
-    }
-    res.json({ success: true });
-  } catch (err) { res.status(500).json({ error: err.message }); }
-});
-
-// POST /api/admin/complaints/:id/message — send message to parties or internal note
-router.post('/complaints/:id/message', async (req, res) => {
-  const { message, is_internal, admin_name } = req.body;
-  if (!message) return res.status(400).json({ error: 'Message zaroori hai' });
-  try {
-    const cRes = await db.query('SELECT filed_by, filed_against FROM complaints WHERE id=$1', [req.params.id]);
-    if (cRes.rows.length === 0) return res.status(404).json({ error: 'Complaint nahi mili' });
-    const c = cRes.rows[0];
-
-    await db.query(
-      "INSERT INTO complaint_messages(complaint_id,sender_role,sender_name,message,is_internal) VALUES($1,'admin',$2,$3,$4)",
-      [req.params.id, admin_name || 'Sppero Team', message, !!is_internal]
-    );
-    await db.query(
-      "INSERT INTO complaint_timeline(complaint_id,event,description,actor_role,actor_name) VALUES($1,'admin_message',$2,'admin',$3)",
-      [req.params.id, is_internal ? 'Admin internal note added' : 'Admin sent message to parties', admin_name || 'Admin']
-    );
-
-    // notify both parties if not internal
-    if (!is_internal) {
-      const phones = await db.query('SELECT phone FROM users WHERE id::text IN ($1,$2)', [c.filed_by, c.filed_against]);
-      for (const row of phones.rows) {
-        sendFCM(row.phone, 'Complaint Update', message.substring(0, 80), { type: 'complaint_update', complaint_id: req.params.id }).catch(() => {});
-      }
-    }
-    res.json({ success: true });
-  } catch (err) { res.status(500).json({ error: err.message }); }
-});
-
-// PUT /api/admin/complaints/:id/resolve — final resolution
-router.put('/complaints/:id/resolve', async (req, res) => {
-  const { resolution, resolution_note, action_taken, admin_name } = req.body;
-  const validRes = ['favor_complainant','favor_respondent','partial','inconclusive','withdrawn'];
-  if (!validRes.includes(resolution)) return res.status(400).json({ error: 'Invalid resolution' });
-  if (!resolution_note) return res.status(400).json({ error: 'Resolution note zaroori hai' });
-  try {
-    const cRes = await db.query('SELECT filed_by, filed_against FROM complaints WHERE id=$1', [req.params.id]);
-    if (cRes.rows.length === 0) return res.status(404).json({ error: 'Complaint nahi mili' });
-    const c = cRes.rows[0];
-
-    await db.query(
-      "UPDATE complaints SET status='resolved', resolution=$1, resolution_note=$2, action_taken=$3, resolved_at=NOW(), updated_at=NOW() WHERE id=$4",
-      [resolution, resolution_note, action_taken || null, req.params.id]
-    );
-    if (req.body.refund_amount) {
-      await db.query("UPDATE complaints SET refund_amount=$1 WHERE id=$2", [parseFloat(req.body.refund_amount)||0, req.params.id]).catch(() => {});
-    }
-    await db.query(
-      "INSERT INTO complaint_messages(complaint_id,sender_role,sender_name,message,is_internal) VALUES($1,'admin',$2,$3,false)",
-      [req.params.id, admin_name || 'Sppero Team', `[RESOLVED] ${resolution_note}`]
-    );
-    await db.query(
-      "INSERT INTO complaint_timeline(complaint_id,event,description,actor_role,actor_name,metadata) VALUES($1,'resolved',$2,'admin',$3,$4)",
-      [req.params.id, `Resolved: ${resolution}`, admin_name || 'Admin', JSON.stringify({ resolution, action_taken })]
-    );
-
-    // notify both parties
-    const phones = await db.query(
-      'SELECT u.phone, (d.id IS NOT NULL) AS is_driver FROM users u LEFT JOIN drivers d ON d.id=u.id WHERE u.id::text IN ($1,$2)',
-      [c.filed_by, c.filed_against]
-    );
-    for (const row of phones.rows) {
-      const fcmRole = row.is_driver ? 'driver' : 'customer';
-      sendFCM(row.phone, 'Complaint Resolved', resolution_note.substring(0, 80), { type: 'complaint_resolved', complaint_id: req.params.id }, { role: fcmRole }).catch(() => {});
-    }
-    res.json({ success: true });
-  } catch (err) { res.status(500).json({ error: err.message }); }
-});
-
-// POST /api/admin/complaints/:id/action — warn / suspend / ban / refund
-router.post('/complaints/:id/action', async (req, res) => {
-  const { action, target_user_id, reason, suspend_days, refund_amount, admin_name } = req.body;
-  const validActions = ['warn','suspend','ban','refund','strike'];
-  if (!validActions.includes(action)) return res.status(400).json({ error: 'Invalid action' });
-
-  try {
-    let description = '';
-
-    const targetUser = await db.query(
-      'SELECT u.phone, (d.id IS NOT NULL) AS is_driver FROM users u LEFT JOIN drivers d ON d.id=u.id WHERE u.id=$1',
-      [target_user_id]
-    );
-    const targetPhone = targetUser.rows[0]?.phone;
-    const targetFcmRole = targetUser.rows[0]?.is_driver ? 'driver' : 'customer';
-
-    if (action === 'warn') {
-      await db.query(
-        "INSERT INTO complaint_messages(complaint_id,sender_role,sender_name,message,is_internal) VALUES($1,'admin',$2,$3,true)",
-        [req.params.id, admin_name || 'Admin', `[WARNING ISSUED] User ${target_user_id}: ${reason}`]
-      );
-      if (targetPhone) sendFCM(targetPhone, '⚠️ Sppero Warning', reason || 'Platform guidelines violation', { type: 'warning' }, { role: targetFcmRole }).catch(() => {});
-      description = `Warning issued to user ${target_user_id}`;
-    }
-
-    if (action === 'suspend') {
-      const days = parseInt(suspend_days) || 3;
-      const suspendUntil = new Date(Date.now() + days * 86400000).toISOString();
-      await db.query('UPDATE users SET suspended_until=$1 WHERE id=$2', [suspendUntil, target_user_id]).catch(() => {});
-      if (targetPhone) sendFCM(targetPhone, '🚫 Account Suspended', `Aapka account ${days} din ke liye suspend hua hai: ${reason}`, { type: 'suspended' }, { role: targetFcmRole }).catch(() => {});
-      description = `User ${target_user_id} suspended for ${days} days`;
-    }
-
-    if (action === 'ban') {
-      await db.query('UPDATE users SET is_banned=true WHERE id=$1', [target_user_id]).catch(() => {});
-      if (targetPhone) sendFCM(targetPhone, '🚫 Account Banned', `Aapka account permanently ban ho gaya hai: ${reason}`, { type: 'banned' }, { role: targetFcmRole }).catch(() => {});
-      description = `User ${target_user_id} permanently banned`;
-    }
-
-    if (action === 'refund') {
-      const amt = parseFloat(refund_amount) || 0;
-      if (amt > 0) {
-        await db.query(
-          "INSERT INTO wallet_transactions(user_id,type,amount,description) VALUES($1,'credit',$2,$3)",
-          [target_user_id, amt, `Complaint refund: ${reason || 'ride issue'}`]
-        ).catch(() => {});
-        await db.query(
-          "INSERT INTO customer_wallet(user_id,balance) VALUES($1,$2) ON CONFLICT(user_id) DO UPDATE SET balance=customer_wallet.balance+$2",
-          [target_user_id, amt]
-        ).catch(() => {});
-        await db.query("UPDATE complaints SET refund_amount=$1 WHERE id=$2", [amt, req.params.id]).catch(() => {});
-      }
-      if (targetPhone) sendFCM(targetPhone, '💰 Refund Processed', `₹${amt} aapke wallet mein add ho gaya`, { type: 'refund', amount: amt }, { role: targetFcmRole }).catch(() => {});
-      description = `Refund ₹${amt} issued to user ${target_user_id}`;
-    }
-
-    if (action === 'strike') {
-      await db.query(
-        'UPDATE drivers SET strike_count=COALESCE(strike_count,0)+1 WHERE id=$1',
-        [target_user_id]
-      ).catch(() => {});
-      description = `Strike added to driver ${target_user_id}`;
-    }
-
-    await db.query(
-      "UPDATE complaints SET action_taken=$1, updated_at=NOW() WHERE id=$2",
-      [action, req.params.id]
-    );
-    await db.query(
-      "INSERT INTO complaint_timeline(complaint_id,event,description,actor_role,actor_name,metadata) VALUES($1,'action_taken',$2,'admin',$3,$4)",
-      [req.params.id, description, admin_name || 'Admin', JSON.stringify({ action, target_user_id, reason })]
-    );
-
-    res.json({ success: true, description });
-  } catch (err) { res.status(500).json({ error: err.message }); }
-});
 
 // ── GET /api/admin/incidents — list all system-detected incidents ──────────────
 router.get('/incidents', async (req, res) => {
@@ -1109,27 +830,6 @@ router.put('/customer-profile/:id/unrestrict', async (req, res) => {
       "UPDATE users SET booking_restricted=false, booking_restricted_reason=NULL, trust_score=LEAST(100,COALESCE(trust_score,0)+20) WHERE id=$1",
       [req.params.id]
     );
-    res.json({ success: true });
-  } catch (err) { res.status(500).json({ error: err.message }); }
-});
-
-// POST /api/admin/complaints/:id/request-evidence
-router.post('/complaints/:id/request-evidence', async (req, res) => {
-  const { note, admin_name } = req.body;
-  try {
-    await db.query("UPDATE complaints SET status='evidence_requested', updated_at=NOW() WHERE id=$1", [req.params.id]);
-    await db.query(
-      "INSERT INTO complaint_timeline(complaint_id,event,description,actor_role,actor_name) VALUES($1,'evidence_requested',$2,'admin',$3)",
-      [req.params.id, `Evidence requested${note ? ': ' + note : ''}`, admin_name || 'Admin']
-    );
-    const filerRes = await db.query(
-      'SELECT u.phone, (d.id IS NOT NULL) AS is_driver FROM users u LEFT JOIN drivers d ON d.id=u.id WHERE u.id=(SELECT filed_by FROM complaints WHERE id=$1)',
-      [req.params.id]
-    );
-    if (filerRes.rows[0]?.phone) {
-      const fcmRole = filerRes.rows[0].is_driver ? 'driver' : 'customer';
-      sendFCM(filerRes.rows[0].phone, '📎 Proof Chahiye — Complaint Update', note || 'Admin ne aapka proof/screenshot manga hai. App mein jaake upload karo.', { type: 'evidence_requested', complaint_id: req.params.id }, { role: fcmRole }).catch(() => {});
-    }
     res.json({ success: true });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
@@ -1246,8 +946,7 @@ router.get('/referral-detail', async (req, res) => {
 });
 
 // ── POST /api/admin/incidents/:id/compensate-driver ─────────────────────────
-// Credits the driver's wallet with (fare - commission) for a payment_skipped incident,
-// resolves the incident, and closes the linked complaint.
+// Credits the driver's wallet with (fare - commission) for a payment_skipped incident.
 router.post('/incidents/:id/compensate-driver', async (req, res) => {
   const { admin_name } = req.body;
   try {
@@ -1292,33 +991,12 @@ router.post('/incidents/:id/compensate-driver', async (req, res) => {
     // Mark incident resolved
     await db.query('UPDATE ride_incidents SET resolved = true WHERE id = $1', [req.params.id]);
 
-    // Resolve linked payment_issue complaint if exists
-    const cmpRes = await db.query(
-      `SELECT id FROM complaints WHERE ride_id = $1 AND complaint_type = 'payment_issue' LIMIT 1`,
-      [inc.ride_id]
-    );
-    if (cmpRes.rows[0]) {
-      const cid = cmpRes.rows[0].id;
-      const note = `Driver ${inc.driver_name || ''} ko ₹${compensation} compensation diya (₹${fare} fare - 15% commission). Customer ka trust score already -25 hua tha.`;
-      await db.query(
-        `UPDATE complaints SET status='resolved', resolution='favor_complainant',
-         resolution_note=$1, refund_amount=$2, action_taken='compensate_driver',
-         resolved_at=NOW(), updated_at=NOW() WHERE id=$3`,
-        [note, compensation, cid]
-      ).catch(() => {});
-      await db.query(
-        `INSERT INTO complaint_timeline(complaint_id,event,description,actor_role,actor_name)
-         VALUES($1,'driver_compensated',$2,'admin',$3)`,
-        [cid, `₹${compensation} driver wallet mein credited by admin`, admin_name || 'Admin']
-      ).catch(() => {});
-    }
-
     // Notify driver
     if (inc.driver_phone) {
       sendFCM(
         inc.driver_phone,
         '💰 Compensation Credited!',
-        `Aapki complaint verified hui. ₹${compensation} Sppero wallet mein add ho gaye! (Ride ₹${fare} - 15% fee)`,
+        `Payment dispute resolved. ₹${compensation} Sppero wallet mein add ho gaye! (Ride ₹${fare} - 15% fee)`,
         { type: 'compensation_credited', amount: String(compensation) },
         { role: 'driver' }
       ).catch(() => {});
