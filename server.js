@@ -36,9 +36,11 @@ const paymentsRouter = require('./routes/payments');
 const ridesRouter   = require('./routes/rides');
 const driversRouter = require('./routes/drivers');
 const hourlyRouter  = require('./routes/hourly');
-const adminRouter      = require('./routes/admin');
-const favouritesRouter = require('./routes/favourites');
-const bonusRouter      = require('./routes/bonus');
+const adminRouter        = require('./routes/admin');
+const favouritesRouter   = require('./routes/favourites');
+const bonusRouter        = require('./routes/bonus');
+const supportRouter      = require('./routes/support');
+const adminSupportRouter = require('./routes/adminSupport');
 const healthCheck      = require('./services/healthCheck');
 
 // ── Allowed browser origins (mobile apps don't send Origin, so this only gates web clients) ──
@@ -583,9 +585,11 @@ app.use('/api/payment',  paymentsRouter);
 app.use('/api/rides',    ridesRouter);
 app.use('/api/driver',   driversRouter);
 app.use('/api/hourly',   hourlyRouter);
-app.use('/api/admin',      adminAuth, adminRouter);
-app.use('/api/favourites', favouritesRouter);
-app.use('/api/bonus',      bonusRouter);
+app.use('/api/admin',         adminAuth, adminRouter);
+app.use('/api/admin/support', adminAuth, adminSupportRouter);
+app.use('/api/support',       supportRouter);
+app.use('/api/favourites',    favouritesRouter);
+app.use('/api/bonus',         bonusRouter);
 
 
 // Admin portal HTML
@@ -776,6 +780,57 @@ setTimeout(async () => {
   await db.query(`CREATE INDEX IF NOT EXISTS idx_incidents_customer ON ride_incidents(customer_id)`).catch(() => {});
   await db.query(`CREATE INDEX IF NOT EXISTS idx_incidents_driver ON ride_incidents(driver_id)`).catch(() => {});
   await db.query(`CREATE INDEX IF NOT EXISTS idx_incidents_type ON ride_incidents(incident_type)`).catch(() => {});
+
+  // ── Support Tickets tables ────────────────────────────────────────────────
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS support_tickets (
+      id               SERIAL PRIMARY KEY,
+      ticket_no        TEXT UNIQUE,
+      role             TEXT NOT NULL,
+      user_phone       VARCHAR(20) NOT NULL,
+      ride_id          TEXT,
+      category         TEXT NOT NULL,
+      title            TEXT NOT NULL,
+      description      TEXT NOT NULL,
+      status           TEXT NOT NULL DEFAULT 'open',
+      priority         TEXT NOT NULL DEFAULT 'normal',
+      sla_deadline     TIMESTAMPTZ,
+      assigned_to      TEXT,
+      resolution_note  TEXT,
+      action_taken     TEXT,
+      refund_amount    NUMERIC(10,2),
+      resolved_at      TIMESTAMPTZ,
+      created_at       TIMESTAMPTZ DEFAULT NOW(),
+      updated_at       TIMESTAMPTZ DEFAULT NOW()
+    )
+  `).catch(() => {});
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS ticket_messages (
+      id          SERIAL PRIMARY KEY,
+      ticket_id   INTEGER REFERENCES support_tickets(id) ON DELETE CASCADE,
+      sender      TEXT NOT NULL,
+      sender_name TEXT,
+      message     TEXT NOT NULL,
+      is_internal BOOLEAN DEFAULT FALSE,
+      created_at  TIMESTAMPTZ DEFAULT NOW()
+    )
+  `).catch(() => {});
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS ticket_attachments (
+      id          SERIAL PRIMARY KEY,
+      ticket_id   INTEGER REFERENCES support_tickets(id) ON DELETE CASCADE,
+      image_url   TEXT NOT NULL,
+      uploaded_by TEXT DEFAULT 'user',
+      caption     TEXT,
+      created_at  TIMESTAMPTZ DEFAULT NOW()
+    )
+  `).catch(() => {});
+  await db.query(`CREATE INDEX IF NOT EXISTS idx_tickets_phone    ON support_tickets(user_phone)`).catch(() => {});
+  await db.query(`CREATE INDEX IF NOT EXISTS idx_tickets_status   ON support_tickets(status, priority)`).catch(() => {});
+  await db.query(`CREATE INDEX IF NOT EXISTS idx_tickets_role     ON support_tickets(role, status)`).catch(() => {});
+  await db.query(`CREATE INDEX IF NOT EXISTS idx_ticket_msgs      ON ticket_messages(ticket_id, created_at)`).catch(() => {});
+  console.log('✅ Support tickets tables ready');
+
   console.log('✅ DB indexes ready');
 
 // Ensure all vehicle types have fare_settings rows; also repair NULL per_km_rate (causes NaN fare bug)

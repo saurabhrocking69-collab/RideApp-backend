@@ -162,6 +162,7 @@ input,select,textarea{outline:none}
     <button class="tab" onclick="showSection('incidents',this);loadIncidents()">🚨 Incidents</button>
     <button class="tab" onclick="showSection('rewards',this);loadRewards()">💎 Rewards</button>
     <button class="tab" onclick="showSection('location',this);loadLocationIntel()">🗺️ Location Intel</button>
+    <button class="tab" onclick="showSection('support',this);loadSupport()">🎫 Support Tickets</button>
   </div>
 
   <!-- TRANSACTIONS -->
@@ -650,6 +651,47 @@ input,select,textarea{outline:none}
     </div>
   </div>
 
+  <!-- SUPPORT TICKETS -->
+  <div id="support" class="section">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
+      <div style="font-size:18px;font-weight:700">🎫 Support Tickets</div>
+      <button class="refresh-btn" onclick="loadSupport()">⟳ Refresh All</button>
+    </div>
+    <div class="stats" style="grid-template-columns:repeat(4,1fr);margin-bottom:16px">
+      <div class="stat-card" style="cursor:default"><div class="stat-icon">📂</div><div class="stat-value" id="sup-val-open">—</div><div class="stat-label">Open</div></div>
+      <div class="stat-card" style="cursor:default"><div class="stat-icon">🔄</div><div class="stat-value" id="sup-val-prog">—</div><div class="stat-label">In Progress</div></div>
+      <div class="stat-card" style="cursor:default"><div class="stat-icon">✅</div><div class="stat-value" id="sup-val-res">—</div><div class="stat-label">Resolved Today</div></div>
+      <div class="stat-card" id="sup-stat-sla" style="cursor:default"><div class="stat-icon">⏱</div><div class="stat-value" id="sup-val-sla">—</div><div class="stat-label">SLA Breached</div></div>
+    </div>
+    <div style="display:grid;grid-template-columns:340px 1fr;gap:16px;align-items:start">
+      <div style="background:#fff;border-radius:14px;box-shadow:0 2px 10px rgba(0,0,0,.06);overflow:hidden;position:sticky;top:70px">
+        <div style="padding:12px;border-bottom:1px solid #f0f0f0">
+          <input id="sup-search" placeholder="🔍 Phone, ticket#, ride ID..."
+            style="width:100%;box-sizing:border-box;padding:8px 10px;border:1px solid #e0e0e0;border-radius:8px;font-size:12px;outline:none;margin-bottom:8px"
+            oninput="clearTimeout(supSearchTimer);supSearchTimer=setTimeout(()=>{supFilter.search=this.value.trim();loadSupList();},400)">
+          <div style="display:flex;gap:4px;flex-wrap:wrap">
+            <button onclick="supSetF('','','')" id="supf-all" class="tab active" style="font-size:11px;padding:3px 9px">All</button>
+            <button onclick="supSetF('open','','')" id="supf-open" class="tab" style="font-size:11px;padding:3px 9px">Open</button>
+            <button onclick="supSetF('in_progress','','')" id="supf-prog" class="tab" style="font-size:11px;padding:3px 9px">In Progress</button>
+            <button onclick="supSetF('resolved','','')" id="supf-res" class="tab" style="font-size:11px;padding:3px 9px">Resolved</button>
+            <button onclick="supSetF('','urgent','')" id="supf-urg" class="tab" style="font-size:11px;padding:3px 9px">🔴 Urgent</button>
+            <button onclick="supSetF('','','driver')" id="supf-drv" class="tab" style="font-size:11px;padding:3px 9px">Driver</button>
+            <button onclick="supSetF('','','customer')" id="supf-cus" class="tab" style="font-size:11px;padding:3px 9px">Customer</button>
+          </div>
+        </div>
+        <div id="sup-list" style="max-height:calc(100vh - 310px);overflow-y:auto">
+          <div class="loading">Open Support Tickets tab to load</div>
+        </div>
+      </div>
+      <div id="sup-detail" class="card" style="min-height:300px">
+        <div style="padding:60px 20px;text-align:center;color:#aaa">
+          <div style="font-size:48px;margin-bottom:12px">🎫</div>
+          <div style="font-size:14px">Select a ticket from the list</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
 </div>
 
 <script>
@@ -724,6 +766,7 @@ function showSection(id,btn){
   if(id==='marketing'){loadCampaigns();loadPromos();loadReferrals();}
   if(id==='payouts'){loadPayouts('pending');}
   if(id==='location'){loadLocationIntel();}
+  if(id==='support'){loadSupport();}
 }
 
 // ── Location Intelligence ────────────────────────────────────
@@ -2192,6 +2235,333 @@ async function loadAll(){
     hideLogin();
     loadAll();
   }
+// ── SUPPORT TICKETS ──────────────────────────────────────────────────
+let supFilter = { status:'', priority:'', role:'', search:'' };
+let supSearchTimer = null;
+let supSelected = null;
+let _supAdmin = '';
+const SUP_PC = { urgent:'#EF4444', high:'#F59E0B', normal:'#3B82F6', low:'#94A3B8' };
+const SUP_SC = { open:'#F59E0B', in_progress:'#3B82F6', resolved:'#059669' };
+const SUP_SL = { open:'Open', in_progress:'In Progress', resolved:'Resolved' };
+
+function supAdmin() {
+  if (!_supAdmin) {
+    _supAdmin = localStorage.getItem('sup_admin') || '';
+    if (!_supAdmin) {
+      _supAdmin = prompt('Your name (for admin messages):') || 'Admin';
+      localStorage.setItem('sup_admin', _supAdmin);
+    }
+  }
+  return _supAdmin;
+}
+
+function supSlaBadge(deadline, status, full) {
+  if (!deadline || status === 'resolved') return '';
+  const m = Math.round((new Date(deadline) - Date.now()) / 60000);
+  if (m < 0) return `<span style="color:#EF4444;font-weight:700">⚡${full ? ' SLA breached ' + Math.abs(m) + 'm ago' : ' breached'}</span>`;
+  if (m < 120) return `<span style="color:#F59E0B;font-weight:600">⏱${full ? ' ' + m + 'm remaining' : ' ' + m + 'm'}</span>`;
+  if (m < 1440) return `<span style="color:#059669">⏱${full ? ' ' + Math.round(m/60) + 'h remaining' : ' ' + Math.round(m/60) + 'h'}</span>`;
+  return `<span style="color:#9CA3AF">⏱${full ? ' ' + Math.round(m/1440) + 'd remaining' : ' ' + Math.round(m/1440) + 'd'}</span>`;
+}
+
+async function loadSupport() {
+  loadSupStats();
+  loadSupList();
+}
+
+async function loadSupStats() {
+  try {
+    const d = await aJson('/api/admin/support/stats');
+    document.getElementById('sup-val-open').textContent = d.open ?? '—';
+    document.getElementById('sup-val-prog').textContent = d.in_progress ?? '—';
+    document.getElementById('sup-val-res').textContent  = d.resolved_today ?? '—';
+    document.getElementById('sup-val-sla').textContent  = d.sla_breached ?? '—';
+    const slaCard = document.getElementById('sup-stat-sla');
+    if (slaCard) slaCard.style.borderLeft = (d.sla_breached||0) > 0 ? '4px solid #EF4444' : '';
+  } catch(e) {}
+}
+
+async function loadSupList() {
+  const el = document.getElementById('sup-list');
+  if (!el) return;
+  el.innerHTML = '<div class="loading">Loading...</div>';
+  const qs = new URLSearchParams();
+  if (supFilter.status)   qs.set('status',   supFilter.status);
+  if (supFilter.priority) qs.set('priority',  supFilter.priority);
+  if (supFilter.role)     qs.set('role',      supFilter.role);
+  if (supFilter.search)   qs.set('search',    supFilter.search);
+  qs.set('limit', '50');
+  try {
+    const d = await aJson('/api/admin/support/tickets?' + qs.toString());
+    if (!d.tickets || !d.tickets.length) {
+      el.innerHTML = '<div class="loading">No tickets found</div>';
+      return;
+    }
+    el.innerHTML = d.tickets.map(function(t) {
+      var pc = SUP_PC[t.priority] || '#94A3B8';
+      var sc = SUP_SC[t.status] || '#6B7280';
+      var sl = supSlaBadge(t.sla_deadline, t.status, false);
+      var role = t.role === 'driver' ? '🚗' : '👤';
+      var bg = supSelected === t.id ? 'background:#f0f4ff;' : '';
+      return '<div onclick="openSupTicket(' + t.id + ')" style="display:flex;align-items:stretch;border-bottom:1px solid #f5f5f5;cursor:pointer;' + bg + '">' +
+        '<div style="width:4px;background:' + pc + ';flex-shrink:0"></div>' +
+        '<div style="padding:10px 12px;flex:1;min-width:0">' +
+          '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:3px">' +
+            '<span style="font-size:11px;font-weight:700;color:#374151">' + t.ticket_no + '</span>' +
+            '<span style="font-size:10px;color:' + sc + ';font-weight:600;background:' + sc + '18;padding:2px 6px;border-radius:10px">' + (SUP_SL[t.status] || t.status) + '</span>' +
+          '</div>' +
+          '<div style="font-size:11px;color:#6B7280;margin-bottom:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + role + ' ' + t.user_phone + ' · ' + (t.category||'').replace(/_/g,' ') + '</div>' +
+          '<div style="display:flex;justify-content:space-between;font-size:10px;color:#9CA3AF"><span>' + fmt(t.created_at) + '</span><span>' + sl + '</span></div>' +
+        '</div>' +
+      '</div>';
+    }).join('');
+  } catch(e) {
+    el.innerHTML = '<div class="loading">Error loading tickets</div>';
+  }
+}
+
+function supSetF(status, priority, role) {
+  supFilter.status = status; supFilter.priority = priority; supFilter.role = role;
+  document.querySelectorAll('[id^="supf-"]').forEach(function(b){ b.classList.remove('active'); });
+  var map = {'':'supf-all','open':'supf-open','in_progress':'supf-prog','resolved':'supf-res'};
+  if (priority==='urgent') document.getElementById('supf-urg') && document.getElementById('supf-urg').classList.add('active');
+  else if (role==='driver') document.getElementById('supf-drv') && document.getElementById('supf-drv').classList.add('active');
+  else if (role==='customer') document.getElementById('supf-cus') && document.getElementById('supf-cus').classList.add('active');
+  else { var el=document.getElementById(map[status]||'supf-all'); if(el) el.classList.add('active'); }
+  loadSupList();
+}
+
+async function openSupTicket(id) {
+  supSelected = id;
+  var det = document.getElementById('sup-detail');
+  if (det) det.innerHTML = '<div class="loading" style="padding:40px">Loading ticket...</div>';
+  loadSupList();
+  try {
+    var d = await aJson('/api/admin/support/tickets/' + id);
+    renderSupDetail(d);
+  } catch(e) {
+    if (det) det.innerHTML = '<div class="loading" style="padding:40px;color:#EF4444">Failed to load ticket</div>';
+  }
+}
+
+function renderSupDetail(data) {
+  var t   = data.ticket;
+  var msgs = data.messages || [];
+  var rc  = data.ride_context;
+  var pc  = SUP_PC[t.priority] || '#94A3B8';
+  var sc  = SUP_SC[t.status]   || '#6B7280';
+  var slaFull = supSlaBadge(t.sla_deadline, t.status, true);
+
+  var actionBtns = '';
+  if (t.status !== 'resolved') {
+    var assignBtn = !t.assigned_to
+      ? '<button class="refresh-btn" style="background:#3B82F6;color:#fff" onclick="supAssign(' + t.id + ')">👤 Assign to Me</button>'
+      : '<span style="font-size:12px;color:#6B7280">Assigned: <b>' + t.assigned_to + '</b></span>';
+    var progBtn = t.status === 'open'
+      ? '<button class="refresh-btn" style="background:#8B5CF6;color:#fff" onclick="supSetStatus(' + t.id + ',\'in_progress\')">🔄 Start Progress</button>'
+      : '<button class="refresh-btn" style="background:#6B7280;color:#fff" onclick="supSetStatus(' + t.id + ',\'open\')">↩ Reopen</button>';
+    actionBtns = '<div style="display:flex;flex-wrap:wrap;gap:8px;margin:12px 0">' + assignBtn + progBtn +
+      '<button class="refresh-btn" style="background:#059669;color:#fff" onclick="showSupResolve(' + t.id + ')">✅ Resolve</button></div>' +
+      '<div id="sup-resolve-form-' + t.id + '" style="display:none;background:#f9fafb;border:1px solid #e5e7eb;border-radius:10px;padding:12px;margin-bottom:12px">' +
+        '<div style="font-weight:600;font-size:13px;margin-bottom:8px">Resolve Ticket</div>' +
+        '<textarea id="sup-res-note-' + t.id + '" placeholder="Resolution summary (visible to user)..." rows="2" style="width:100%;box-sizing:border-box;padding:8px;border:1px solid #e0e0e0;border-radius:6px;font-size:12px;resize:vertical;margin-bottom:8px"></textarea>' +
+        '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">' +
+          '<select id="sup-res-action-' + t.id + '" style="padding:7px;border:1px solid #e0e0e0;border-radius:6px;font-size:12px">' +
+            '<option value="none">No action taken</option><option value="refund">Refund issued</option><option value="warn">Warning issued</option><option value="suspend">Suspended</option>' +
+          '</select>' +
+          '<input id="sup-res-refund-' + t.id + '" type="number" placeholder="₹ if refund" style="width:90px;padding:7px;border:1px solid #e0e0e0;border-radius:6px;font-size:12px">' +
+          '<button class="refresh-btn" style="background:#059669;color:#fff" onclick="resolveSupTicket(' + t.id + ',\'' + t.user_phone + '\')">Confirm Resolve</button>' +
+        '</div>' +
+      '</div>';
+  } else {
+    actionBtns = '<div style="background:#f0fdf4;border:1px solid #bbf7d0;border-radius:10px;padding:10px 14px;margin:12px 0;font-size:13px;color:#059669">✅ Resolved — ' + (t.resolution_note || '') + '</div>';
+  }
+
+  var enforceBtns = '<div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:16px">' +
+    '<span style="font-size:11px;color:#9CA3AF;line-height:28px">Enforcement:</span>' +
+    '<button class="refresh-btn" style="background:#F59E0B;color:#fff;font-size:11px" onclick="supAction(' + t.id + ',\'warn\',\'' + t.user_phone + '\')">⚡ Warn</button>' +
+    '<button class="refresh-btn" style="background:#EF4444;color:#fff;font-size:11px" onclick="supAction(' + t.id + ',\'suspend\',\'' + t.user_phone + '\')">🔇 Suspend</button>' +
+    '<button class="refresh-btn" style="background:#6B7280;color:#fff;font-size:11px" onclick="supAction(' + t.id + ',\'ban\',\'' + t.user_phone + '\')">🚫 Ban</button>' +
+    '<button class="refresh-btn" style="background:#059669;color:#fff;font-size:11px" onclick="showSupRefund(' + t.id + ',\'' + t.user_phone + '\')">💸 Refund</button>' +
+    '</div>' +
+    '<div id="sup-refund-form-' + t.id + '" style="display:none;background:#f9fafb;border:1px solid #e5e7eb;border-radius:10px;padding:12px;margin-bottom:12px">' +
+      '<div style="font-weight:600;font-size:13px;margin-bottom:8px">Issue Wallet Refund → ' + t.user_phone + '</div>' +
+      '<div style="display:flex;gap:8px;align-items:flex-start;flex-wrap:wrap">' +
+        '<input id="sup-refund-amt-' + t.id + '" type="number" placeholder="₹ amount" style="width:100px;padding:8px;border:1px solid #e0e0e0;border-radius:6px;font-size:13px">' +
+        '<textarea id="sup-refund-reason-' + t.id + '" placeholder="Reason..." rows="1" style="flex:1;min-width:140px;padding:8px;border:1px solid #e0e0e0;border-radius:6px;font-size:12px;resize:none"></textarea>' +
+        '<button class="refresh-btn" style="background:#059669;color:#fff" onclick="doSupRefund(' + t.id + ',\'' + t.user_phone + '\')">Credit Wallet</button>' +
+      '</div>' +
+    '</div>';
+
+  var rideHtml = rc
+    ? '<div style="background:#f5f3ff;border:1px solid #ddd6fe;border-radius:10px;padding:10px 14px;margin-bottom:12px;font-size:12px">' +
+        '<div style="font-weight:600;color:#7C3AED;margin-bottom:4px">🛺 Linked Ride #' + rc.id + '</div>' +
+        '<div style="color:#374151">📍 ' + (rc.pickup||'') + ' → ' + (rc.drop_location||'') + '</div>' +
+        '<div style="color:#6B7280;margin-top:2px">Fare: ₹' + (rc.fare||'—') + ' · ' + (rc.status||'—') + ' · ' + fmt(rc.created_at) + '</div>' +
+      '</div>'
+    : '';
+
+  var thread = msgs.length ? msgs.map(function(m) {
+    var isAdmin   = m.sender === 'admin';
+    var isSystem  = m.sender === 'system';
+    var isInternal = m.is_internal;
+    var bg     = isSystem ? '#f9fafb' : isInternal ? '#fffbeb' : isAdmin ? '#eff6ff' : '#fff';
+    var border = isSystem ? '#e5e7eb' : isInternal ? '#fcd34d' : isAdmin ? '#bfdbfe' : '#e5e7eb';
+    var label  = isSystem ? '🔧 System' : isInternal ? '🔒 ' + m.sender_name + ' (internal)' : isAdmin ? '👤 ' + m.sender_name : '🙋 User';
+    return '<div style="margin-bottom:10px;background:' + bg + ';border:1px solid ' + border + ';border-radius:10px;padding:10px 12px">' +
+      '<div style="display:flex;justify-content:space-between;margin-bottom:4px">' +
+        '<span style="font-size:11px;font-weight:600;color:#374151">' + label + '</span>' +
+        '<span style="font-size:10px;color:#9CA3AF">' + fmt(m.created_at) + '</span>' +
+      '</div>' +
+      '<div style="font-size:13px;color:#1F2937;white-space:pre-wrap">' + (m.message||'').replace(/</g,'&lt;') + '</div>' +
+    '</div>';
+  }).join('')
+  : '<div style="color:#9CA3AF;font-size:12px;text-align:center;padding:12px">No messages yet</div>';
+
+  var replyForm = t.status !== 'resolved'
+    ? '<div style="border-top:1px solid #e5e7eb;padding-top:12px;margin-top:4px">' +
+        '<textarea id="sup-reply-' + t.id + '" placeholder="Reply to user..." rows="3" style="width:100%;box-sizing:border-box;padding:9px;border:1px solid #e0e0e0;border-radius:8px;font-size:13px;resize:vertical;margin-bottom:8px"></textarea>' +
+        '<div style="display:flex;gap:8px">' +
+          '<button class="refresh-btn" style="background:#3B82F6;color:#fff" onclick="sendSupReply(' + t.id + ',false)">📤 Send Reply</button>' +
+          '<button class="refresh-btn" style="background:#6B7280;color:#fff" onclick="sendSupReply(' + t.id + ',true)">🔒 Internal Note</button>' +
+          '<button class="refresh-btn" onclick="openSupTicket(' + t.id + ')">⟳ Refresh</button>' +
+        '</div>' +
+      '</div>'
+    : '<div style="text-align:center;padding:8px;font-size:12px;color:#9CA3AF">Ticket closed · no further replies</div>';
+
+  var actionInfo = t.action_taken && t.action_taken !== 'none'
+    ? '<div style="font-size:11px;color:#9CA3AF;margin-bottom:4px">Action: <b>' + t.action_taken + '</b>' + (t.refund_amount ? ' — ₹' + t.refund_amount : '') + '</div>'
+    : '';
+
+  document.getElementById('sup-detail').innerHTML =
+    '<div style="padding:16px">' +
+      '<div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:8px">' +
+        '<div>' +
+          '<div style="font-size:18px;font-weight:700;color:#111">' + t.ticket_no + '</div>' +
+          '<div style="font-size:12px;color:#6B7280;margin-top:2px">' + (t.category||'').replace(/_/g,' ') + ' · ' + (t.role==='driver'?'🚗 Driver':'👤 Customer') + ' · ' + fmt(t.created_at) + '</div>' +
+        '</div>' +
+        '<div style="display:flex;flex-direction:column;align-items:flex-end;gap:4px">' +
+          '<span style="background:' + sc + '18;color:' + sc + ';font-size:12px;font-weight:700;padding:4px 10px;border-radius:20px">' + (SUP_SL[t.status]||t.status) + '</span>' +
+          '<span style="background:' + pc + '18;color:' + pc + ';font-size:11px;font-weight:600;padding:3px 8px;border-radius:20px">' + t.priority + '</span>' +
+        '</div>' +
+      '</div>' +
+      '<div style="font-size:13px;color:#374151;margin-bottom:6px;line-height:1.5">' + (t.description||'').replace(/</g,'&lt;') + '</div>' +
+      '<div style="font-size:12px;color:#6B7280;margin-bottom:4px">📱 ' + t.user_phone + (t.ride_id?' · Ride #'+t.ride_id:'') + (slaFull?' · '+slaFull:'') + '</div>' +
+      actionInfo +
+      '<hr style="border:none;border-top:1px solid #f0f0f0;margin:10px 0">' +
+      rideHtml +
+      actionBtns +
+      enforceBtns +
+      '<div style="margin-bottom:12px">' + thread + '</div>' +
+      replyForm +
+    '</div>';
+}
+
+async function sendSupReply(id, isInternal) {
+  var ta = document.getElementById('sup-reply-' + id);
+  var msg = ta && ta.value && ta.value.trim();
+  if (!msg) return;
+  try {
+    await aFetch('/api/admin/support/tickets/' + id + '/message', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ message: msg, is_internal: isInternal, admin_name: supAdmin() })
+    });
+    ta.value = '';
+    openSupTicket(id);
+    loadSupStats();
+  } catch(e) { alert('Failed to send reply'); }
+}
+
+async function supSetStatus(id, status) {
+  try {
+    await aFetch('/api/admin/support/tickets/' + id + '/status', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ status: status })
+    });
+    openSupTicket(id); loadSupStats(); loadSupList();
+  } catch(e) { alert('Failed to update status'); }
+}
+
+async function supAssign(id) {
+  try {
+    await aFetch('/api/admin/support/tickets/' + id + '/assign', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ admin_name: supAdmin() })
+    });
+    openSupTicket(id); loadSupList();
+  } catch(e) { alert('Failed to assign ticket'); }
+}
+
+function showSupResolve(id) {
+  var f = document.getElementById('sup-resolve-form-' + id);
+  if (f) f.style.display = f.style.display === 'none' ? 'block' : 'none';
+}
+
+async function resolveSupTicket(id, phone) {
+  var note   = (document.getElementById('sup-res-note-'   + id)||{}).value || '';
+  var action = (document.getElementById('sup-res-action-' + id)||{}).value || 'none';
+  var refund = (document.getElementById('sup-res-refund-' + id)||{}).value || '';
+  note = note.trim();
+  if (!note) { alert('Resolution note required'); return; }
+  try {
+    await aFetch('/api/admin/support/tickets/' + id + '/resolve', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ resolution_note: note, action_taken: action, refund_amount: refund || null, admin_name: supAdmin() })
+    });
+    if (action === 'refund' && refund) {
+      await aFetch('/api/admin/support/tickets/' + id + '/action', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action:'refund', target_phone:phone, amount:refund, reason:note, admin_name:supAdmin() })
+      }).catch(function(){});
+    }
+    openSupTicket(id); loadSupStats(); loadSupList();
+  } catch(e) { alert('Failed to resolve ticket'); }
+}
+
+async function supAction(id, action, phone) {
+  var reason = prompt('Reason for ' + action + ' (' + phone + '):');
+  if (!reason) return;
+  if (action === 'suspend' || action === 'ban') {
+    if (!confirm('⚠️ ' + action.toUpperCase() + ' account ' + phone + '? This is a serious action.')) return;
+  }
+  try {
+    var r = await aFetch('/api/admin/support/tickets/' + id + '/action', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action:action, target_phone:phone, reason:reason, admin_name:supAdmin() })
+    });
+    var d = await r.json();
+    if (d.success) { alert('Done: ' + d.label); openSupTicket(id); loadSupStats(); }
+    else alert(d.error || 'Action failed');
+  } catch(e) { alert('Action failed'); }
+}
+
+function showSupRefund(id, phone) {
+  var f = document.getElementById('sup-refund-form-' + id);
+  if (f) f.style.display = f.style.display === 'none' ? 'block' : 'none';
+}
+
+async function doSupRefund(id, phone) {
+  var amt    = (document.getElementById('sup-refund-amt-'    + id)||{}).value || '';
+  var reason = ((document.getElementById('sup-refund-reason-'+ id)||{}).value || '').trim();
+  if (!amt || !reason) { alert('Amount and reason required'); return; }
+  try {
+    var r = await aFetch('/api/admin/support/tickets/' + id + '/action', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action:'refund', target_phone:phone, amount:amt, reason:reason, admin_name:supAdmin() })
+    });
+    var d = await r.json();
+    if (d.success) { alert('Refund credited: ₹' + amt); openSupTicket(id); }
+    else alert(d.error || 'Refund failed');
+  } catch(e) { alert('Refund request failed'); }
+}
+
 })();
 </script>
 </body>
