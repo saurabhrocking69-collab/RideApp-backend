@@ -13,12 +13,17 @@ function vehicleCategoryFor(vehicleType) {
 async function activateQueuedSubscription(driverPhone) {
   try {
     const queued = await db.query(
-      `SELECT * FROM driver_subscriptions WHERE driver_phone=$1 AND status='queued' ORDER BY created_at ASC LIMIT 1`,
+      `SELECT ds.*, sp.validity_days
+       FROM driver_subscriptions ds
+       JOIN subscription_plans sp ON ds.plan_id = sp.id
+       WHERE ds.driver_phone=$1 AND ds.status='queued'
+       ORDER BY ds.created_at ASC LIMIT 1`,
       [driverPhone]
     );
     if (!queued.rows[0]) return;
     const now = new Date();
-    const expiresAt = new Date(now.getTime() + 60 * 24 * 60 * 60 * 1000); // 60 days
+    const validityDays = parseInt(queued.rows[0].validity_days || 60);
+    const expiresAt = new Date(now.getTime() + validityDays * 24 * 60 * 60 * 1000);
     await db.query(
       `UPDATE driver_subscriptions SET status='active', starts_at=$1, expires_at=$2 WHERE id=$3`,
       [now, expiresAt, queued.rows[0].id]

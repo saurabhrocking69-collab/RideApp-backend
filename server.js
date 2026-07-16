@@ -1164,25 +1164,35 @@ setTimeout(async () => {
     )
   `).catch(() => {});
   await db.query(`CREATE INDEX IF NOT EXISTS idx_driver_subs_phone ON driver_subscriptions(driver_phone, status)`).catch(() => {});
+  // Add validity_days column if not present (default 60 for all existing plans)
+  await db.query(`ALTER TABLE subscription_plans ADD COLUMN IF NOT EXISTS validity_days INT DEFAULT 60`).catch(() => {});
   // Seed default plans once
   const subPlanCount = await db.query(`SELECT COUNT(*) FROM subscription_plans`).catch(() => ({ rows: [{ count: '1' }] }));
   if (parseInt(subPlanCount.rows[0].count) === 0) {
     await db.query(`
-      INSERT INTO subscription_plans (name, vehicle_category, ride_count, price, original_price, sort_order) VALUES
-        ('15 Ride Pack', 'bike', 15,  99,  149, 1),
-        ('30 Ride Pack', 'bike', 30, 179,  249, 2),
-        ('45 Ride Pack', 'bike', 45, 249,  349, 3),
-        ('60 Ride Pack', 'bike', 60, 299,  399, 4),
-        ('15 Ride Pack', 'auto', 15, 129,  189, 1),
-        ('30 Ride Pack', 'auto', 30, 239,  329, 2),
-        ('45 Ride Pack', 'auto', 45, 329,  449, 3),
-        ('60 Ride Pack', 'auto', 60, 399,  549, 4),
-        ('15 Ride Pack', 'car',  15, 199,  279, 1),
-        ('30 Ride Pack', 'car',  30, 369,  499, 2),
-        ('45 Ride Pack', 'car',  45, 519,  699, 3),
-        ('60 Ride Pack', 'car',  60, 649,  849, 4)
+      INSERT INTO subscription_plans (name, vehicle_category, ride_count, price, original_price, validity_days, sort_order) VALUES
+        ('15 Ride Pack', 'bike', 15,  99,  149, 60, 1),
+        ('30 Ride Pack', 'bike', 30, 179,  249, 60, 2),
+        ('45 Ride Pack', 'bike', 45, 249,  349, 60, 3),
+        ('60 Ride Pack', 'bike', 60, 299,  399, 60, 4),
+        ('15 Ride Pack', 'auto', 15, 129,  189, 60, 1),
+        ('30 Ride Pack', 'auto', 30, 239,  329, 60, 2),
+        ('45 Ride Pack', 'auto', 45, 329,  449, 60, 3),
+        ('60 Ride Pack', 'auto', 60, 399,  549, 60, 4),
+        ('15 Ride Pack', 'car',  15, 199,  279, 60, 1),
+        ('30 Ride Pack', 'car',  30, 369,  499, 60, 2),
+        ('45 Ride Pack', 'car',  45, 519,  699, 60, 3),
+        ('60 Ride Pack', 'car',  60, 649,  849, 60, 4)
     `).catch(() => {});
   }
+  // Special daily bike trial plan — insert once if not present
+  await db.query(`
+    INSERT INTO subscription_plans (name, vehicle_category, ride_count, price, original_price, validity_days, sort_order)
+    SELECT '9 Ride Day Pass', 'bike', 9, 9, 19, 1, 0
+    WHERE NOT EXISTS (
+      SELECT 1 FROM subscription_plans WHERE name='9 Ride Day Pass' AND vehicle_category='bike'
+    )
+  `).catch(() => {});
   console.log('✅ Subscription system tables ready');
 
   // ── Buddy Fund ───────────────────────────────────────────────────────────

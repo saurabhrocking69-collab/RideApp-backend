@@ -24,8 +24,11 @@ router.get('/my', async (req, res) => {
     const { phone } = req.query;
     if (!phone) return res.status(400).json({ error: 'phone required' });
 
-    // Get driver vehicle type
-    const drRes = await db.query(`SELECT vehicle_type FROM drivers WHERE phone=$1 LIMIT 1`, [phone]);
+    // Get driver vehicle type (drivers.id = users.id, phone is on users)
+    const drRes = await db.query(
+      `SELECT d.vehicle_type FROM drivers d JOIN users u ON d.id = u.id WHERE u.phone=$1 LIMIT 1`,
+      [phone]
+    );
     const vehicle_category = drRes.rows[0] ? vehicleCategoryFor(drRes.rows[0].vehicle_type) : null;
 
     // Active subscription
@@ -80,7 +83,10 @@ router.post('/create-order', async (req, res) => {
     const plan = planRes.rows[0];
 
     // Check driver vehicle category matches plan category
-    const drRes = await db.query(`SELECT vehicle_type FROM drivers WHERE phone=$1 LIMIT 1`, [phone]);
+    const drRes = await db.query(
+      `SELECT d.vehicle_type FROM drivers d JOIN users u ON d.id = u.id WHERE u.phone=$1 LIMIT 1`,
+      [phone]
+    );
     if (!drRes.rows[0]) return res.status(404).json({ error: 'Driver nahi mila' });
     const driverCat = vehicleCategoryFor(drRes.rows[0].vehicle_type);
     if (driverCat !== plan.vehicle_category) {
@@ -147,9 +153,11 @@ router.post('/verify', async (req, res) => {
       );
       res.json({ success: true, status: 'queued', message: 'Plan khareed liya! Current plan khatam hone ke baad start hoga.' });
     } else {
-      // Activate immediately
+      // Activate immediately — use plan's validity_days
+      const planRes = await db.query(`SELECT validity_days FROM subscription_plans WHERE id=$1`, [sub.plan_id]);
+      const validityDays = parseInt(planRes.rows[0]?.validity_days || 60);
       const now = new Date();
-      const expiresAt = new Date(now.getTime() + 60 * 24 * 60 * 60 * 1000); // 60 days
+      const expiresAt = new Date(now.getTime() + validityDays * 24 * 60 * 60 * 1000);
       await db.query(
         `UPDATE driver_subscriptions SET status='active', starts_at=$1, expires_at=$2, razorpay_payment_id=$3 WHERE id=$4`,
         [now, expiresAt, razorpay_payment_id, sub.id]
