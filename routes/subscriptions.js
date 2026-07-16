@@ -183,16 +183,17 @@ router.get('/admin/plans', async (req, res) => {
 // POST /api/subscriptions/admin/plans — create or update plan
 router.post('/admin/plans', async (req, res) => {
   try {
-    const { id, name, vehicle_category, ride_count, price, original_price, is_active, sort_order } = req.body || {};
+    const { id, name, vehicle_category, ride_count, price, original_price, is_active, sort_order, validity_days } = req.body || {};
+    const vdays = validity_days ? parseInt(validity_days) : 60;
     if (id) {
       await db.query(
-        `UPDATE subscription_plans SET name=$1, vehicle_category=$2, ride_count=$3, price=$4, original_price=$5, is_active=$6, sort_order=$7 WHERE id=$8`,
-        [name, vehicle_category, ride_count, price, original_price || null, is_active !== false, sort_order || 0, id]
+        `UPDATE subscription_plans SET name=$1, vehicle_category=$2, ride_count=$3, price=$4, original_price=$5, is_active=$6, sort_order=$7, validity_days=$8 WHERE id=$9`,
+        [name, vehicle_category, ride_count, price, original_price || null, is_active !== false, sort_order || 0, vdays, id]
       );
     } else {
       await db.query(
-        `INSERT INTO subscription_plans (name, vehicle_category, ride_count, price, original_price, is_active, sort_order) VALUES ($1,$2,$3,$4,$5,$6,$7)`,
-        [name, vehicle_category, ride_count, price, original_price || null, is_active !== false, sort_order || 0]
+        `INSERT INTO subscription_plans (name, vehicle_category, ride_count, price, original_price, is_active, sort_order, validity_days) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+        [name, vehicle_category, ride_count, price, original_price || null, is_active !== false, sort_order || 0, vdays]
       );
     }
     const r = await db.query(`SELECT * FROM subscription_plans ORDER BY vehicle_category, sort_order, ride_count`);

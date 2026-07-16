@@ -865,7 +865,7 @@ router.put('/incidents/:id/resolve', async (req, res) => {
 // ── POST /api/admin/incidents — create manual incident ───────────────────────
 router.post('/incidents', async (req, res) => {
   try {
-    const { incident_type, ride_id, driver_phone, customer_phone, note } = req.body || {};
+    const { incident_type, ride_id, driver_phone, customer_phone, note, fare } = req.body || {};
     if (!incident_type) return res.status(400).json({ error: 'incident_type required' });
 
     let driver_id = null, customer_id = null;
@@ -881,7 +881,8 @@ router.post('/incidents', async (req, res) => {
     const r = await db.query(
       `INSERT INTO ride_incidents (ride_id, incident_type, detected_by, driver_id, customer_id, metadata)
        VALUES ($1, $2, 'admin', $3, $4, $5) RETURNING id`,
-      [ride_id || null, incident_type, driver_id, customer_id, JSON.stringify({ note: note || null })]
+      [ride_id || null, incident_type, driver_id, customer_id,
+       JSON.stringify({ note: note || null, fare: fare ? parseFloat(fare) : null })]
     );
     res.json({ success: true, id: r.rows[0].id });
   } catch (err) { res.status(500).json({ error: err.message }); }
@@ -1048,18 +1049,20 @@ router.post('/incidents/:id/compensate-driver', async (req, res) => {
     if (inc.resolved)
       return res.status(409).json({ error: 'Yeh incident already resolved hai' });
 
-    const fare = parseFloat(inc.fare || 0);
-    if (fare <= 0) return res.status(400).json({ error: 'Fare amount nahi mila — ride record check karo' });
+    // For manual incidents without a ride record, fare may be in metadata
+    const meta = inc.metadata || {};
+    const fare = parseFloat(inc.fare || meta.fare || 0);
+    if (fare <= 0) return res.status(400).json({ error: 'Fare amount nahi mila — ride record check karo ya incident mein fare set karo' });
     if (!inc.driver_id) return res.status(400).json({ error: 'Driver ID nahi mila' });
 
     const commRate = parseFloat(inc.commission_rate || 15) / 100;
     const commission = Math.round(fare * commRate * 100) / 100;
     const compensation = Math.round((fare - commission) * 100) / 100;
 
-    // Credit driver wallet
+    // Credit driver wallet — driver_id is stored as TEXT, cast to INTEGER for driver_wallet FK
     await db.query(
       `INSERT INTO driver_wallet (driver_id, balance, total_earned)
-       VALUES ($1, $2, $3)
+       VALUES ($1::integer, $2, $3)
        ON CONFLICT (driver_id) DO UPDATE SET
          balance      = driver_wallet.balance + $2,
          total_earned = driver_wallet.total_earned + $3,
@@ -1067,8 +1070,8 @@ router.post('/incidents/:id/compensate-driver', async (req, res) => {
       [inc.driver_id, compensation, compensation]
     );
 
-    // Mark incident resolved
-    await db.query('UPDATE ride_incidents SET resolved = true WHERE id = $1', [req.params.id]);
+    // Mark incident resolved with timestamp
+    await db.query('UPDATE ride_incidents SET resolved=true, resolved_at=NOW() WHERE id=$1', [req.params.id]);
 
     // Notify driver
     if (inc.driver_phone) {
