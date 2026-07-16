@@ -467,8 +467,9 @@ input,select,textarea{outline:none}
         <div id="std-fare-status" style="font-size:12px;color:#4CAF50;margin-top:8px"></div>
       </div>
       <div class="card">
-        <div class="card-title">📊 Current Standard Fares</div>
-        <div id="std-fares-display" style="font-size:12px;color:#666">Loading...</div>
+        <div class="card-title">📊 Vehicle Fare Details <button class="refresh-btn" onclick="loadStdFares()">⟳ Reload</button></div>
+        <p style="font-size:12px;color:#6B7280;margin-bottom:14px">Har vehicle ka standard ride + hourly packages — sabhi charges ek jagah.</p>
+        <div id="std-fares-display">Loading...</div>
       </div>
 
       <!-- COMMISSION RATES -->
@@ -1436,35 +1437,93 @@ async function loadFares(){
 
 // ── Standard Ride Fares ─────────────────────────────────
 var stdFaresCache={};
+var hourlyFaresCache={};
 async function loadStdFares(){
   try{
-    const d=await fetch(API+'/api/fare-settings').then(r=>r.json());
+    const [sd, hd] = await Promise.all([
+      fetch(API+'/api/fare-settings').then(r=>r.json()),
+      fetch(API+'/api/hourly/fares').then(r=>r.json()).catch(()=>({fares:{}}))
+    ]);
     stdFaresCache={};
-    if(d.fares) d.fares.forEach(f=>{stdFaresCache[f.vehicle_type]=f;});
-    const types=[{id:'bike',icon:'🏍️',label:'Bike'},{id:'auto',icon:'🛺',label:'Auto'},{id:'car',icon:'🚕',label:'Car'},{id:'eriksha',icon:'🛵',label:'E-Riksha'},{id:'luxury',icon:'🚙',label:'Ultra Luxury'},{id:'green_bike',icon:'⚡🏍️',label:'Green Bike'},{id:'electric_auto',icon:'⚡🛺',label:'Electric Auto'}];
-    let html='<div style="overflow-x:auto"><table style="font-size:11px;width:100%"><thead><tr><th>Vehicle</th><th>Base</th><th>0–8km</th><th>8–20km</th><th>20km+</th><th>₹/min</th><th>PF</th><th>Min</th><th>Night×</th><th>Comm%</th></tr></thead><tbody>';
+    hourlyFaresCache=hd.fares||{};
+    if(sd.fares) sd.fares.forEach(f=>{stdFaresCache[f.vehicle_type]=f;});
+    const types=[
+      {id:'bike',        hid:'bike',         icon:'🏍️',  label:'Bike'},
+      {id:'auto',        hid:'auto',         icon:'🛺',  label:'Auto'},
+      {id:'car',         hid:'car',          icon:'🚕',  label:'Car'},
+      {id:'eriksha',     hid:'eriksha',      icon:'🛵',  label:'E-Riksha'},
+      {id:'luxury',      hid:'ultra_luxury', icon:'🚙',  label:'Ultra Luxury'},
+      {id:'green_bike',  hid:'green_bike',   icon:'⚡🏍️',label:'Green Bike'},
+      {id:'electric_auto',hid:'electric_auto',icon:'⚡🛺',label:'Electric Auto'}
+    ];
+    var chips='background:#f0fdf4;color:#166534;padding:3px 8px;border-radius:4px;font-weight:700;font-size:12px';
+    var label='color:#6B7280;font-size:11px;margin-bottom:2px';
+    var val='font-size:14px;font-weight:800;color:#111827';
+    var pkgs=[2,4,6,8,24,48,72];
+    var html='<div style="display:flex;flex-direction:column;gap:14px">';
     types.forEach(function(t){
       var f=stdFaresCache[t.id];
-      if(f){
-        var r1=parseFloat(f.per_km_rate)||0;
-        var r2=f.per_km_rate_t2!=null?parseFloat(f.per_km_rate_t2):r1;
-        var r3=f.per_km_rate_t3!=null?parseFloat(f.per_km_rate_t3):r2;
-        html+='<tr'+(t.id==='luxury'?' style="background:#f3e5f5;font-weight:600"':'')+'>'+
-          '<td>'+t.icon+' '+t.label+'</td>'+
-          '<td>₹'+parseFloat(f.base_fare).toFixed(0)+'</td>'+
-          '<td>₹'+r1.toFixed(0)+'/km</td>'+
-          '<td>₹'+r2.toFixed(0)+'/km</td>'+
-          '<td>₹'+r3.toFixed(0)+'/km</td>'+
-          '<td>₹'+(parseFloat(f.time_rate)||0).toFixed(2)+'/m</td>'+
-          '<td>₹'+(parseFloat(f.platform_fee)||2).toFixed(1)+'</td>'+
-          '<td>₹'+(parseFloat(f.min_fare)||0).toFixed(0)+'</td>'+
-          '<td>'+parseFloat(f.night_multiplier).toFixed(1)+'×</td>'+
-          '<td>'+(parseFloat(f.commission_rate)||15).toFixed(0)+'%</td></tr>';
+      var h=hourlyFaresCache[t.hid]||{};
+      var r1=f?parseFloat(f.per_km_rate)||0:0;
+      var r2=f?(f.per_km_rate_t2!=null?parseFloat(f.per_km_rate_t2):r1):0;
+      var r3=f?(f.per_km_rate_t3!=null?parseFloat(f.per_km_rate_t3):r2):0;
+      var cr= f?(parseFloat(f.commission_rate)||15):15;
+      var hcr=f?(parseFloat(f.hourly_commission_rate)||12):12;
+      var hasHourly=pkgs.some(function(p){return h[p];});
+      html+='<div style="border:1px solid #e5e7eb;border-radius:12px;overflow:hidden">';
+      // Header
+      html+='<div style="background:#1a1a2e;padding:10px 14px;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px">';
+      html+='<span style="font-size:15px;font-weight:900;color:#fff">'+t.icon+' '+t.label+'</span>';
+      html+='<span style="display:flex;gap:6px"><span style="background:rgba(255,255,255,0.12);color:#d1d5db;padding:3px 9px;border-radius:20px;font-size:11px;font-weight:700">Std '+cr.toFixed(0)+'%</span>';
+      html+='<span style="background:rgba(59,130,246,0.25);color:#93c5fd;padding:3px 9px;border-radius:20px;font-size:11px;font-weight:700">Hourly '+hcr.toFixed(0)+'%</span></span></div>';
+      if(!f){
+        html+='<div style="padding:12px;color:#9ca3af;font-size:12px;text-align:center">Default — fare settings mein save karo</div>';
       } else {
-        html+='<tr><td>'+t.icon+' '+t.label+'</td><td colspan="9" style="color:#bbb;text-align:center;font-size:10px">Default (not yet saved)</td></tr>';
+        // Standard ride section
+        html+='<div style="padding:12px 14px">';
+        html+='<div style="font-size:10px;font-weight:800;color:#6B7280;letter-spacing:.8px;margin-bottom:10px">STANDARD RIDE</div>';
+        html+='<div style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:10px">';
+        var items=[
+          {l:'Base Fare',    v:'₹'+parseFloat(f.base_fare).toFixed(0)},
+          {l:'Min Fare',     v:'₹'+parseFloat(f.min_fare||0).toFixed(0)},
+          {l:'Platform Fee', v:'₹'+parseFloat(f.platform_fee||2).toFixed(1)},
+          {l:'Time Rate',    v:'₹'+parseFloat(f.time_rate||0).toFixed(2)+'/min'},
+          {l:'Night',        v:parseFloat(f.night_multiplier||1.3).toFixed(1)+'×  ('+f.night_start+'–'+f.night_end+')'}
+        ];
+        items.forEach(function(i){
+          html+='<div style="background:#f9fafb;border:1px solid #e5e7eb;border-radius:8px;padding:7px 12px;min-width:100px">';
+          html+='<div style="'+label+'">'+i.l+'</div><div style="'+val+'">'+i.v+'</div></div>';
+        });
+        html+='</div>';
+        // Per km tiers
+        html+='<div style="background:#eff6ff;border-radius:8px;padding:9px 12px;display:flex;gap:16px;flex-wrap:wrap">';
+        html+='<span style="font-size:11px;font-weight:700;color:#1e40af">Per KM</span>';
+        html+='<span style="font-size:12px;color:#1e3a8a"><b>0–8 km:</b> ₹'+r1.toFixed(0)+'</span>';
+        html+='<span style="font-size:12px;color:#1e3a8a"><b>8–20 km:</b> ₹'+r2.toFixed(0)+'</span>';
+        html+='<span style="font-size:12px;color:#1e3a8a"><b>20km+:</b> ₹'+r3.toFixed(0)+'</span>';
+        html+='</div>';
+        html+='</div>';
+        // Hourly packages section
+        if(hasHourly){
+          html+='<div style="border-top:1px solid #e5e7eb;padding:12px 14px">';
+          html+='<div style="font-size:10px;font-weight:800;color:#6B7280;letter-spacing:.8px;margin-bottom:10px">HOURLY PACKAGES &nbsp;<span style="font-weight:500;color:#9ca3af">Extra km: ₹'+(h.extra||'—')+'/km</span></div>';
+          html+='<div style="display:flex;flex-wrap:wrap;gap:6px">';
+          pkgs.forEach(function(p){
+            var pkg=h[p];
+            if(!pkg) return;
+            var lbl=p>=24?(p/24)+'d':p+'h';
+            html+='<div style="background:#f0fdf4;border:1px solid #bbf7d0;border-radius:8px;padding:6px 10px;text-align:center;min-width:64px">';
+            html+='<div style="font-size:10px;font-weight:800;color:#166534">'+lbl+'</div>';
+            html+='<div style="font-size:13px;font-weight:900;color:#15803d">₹'+pkg.fare+'</div>';
+            html+='<div style="font-size:10px;color:#4ade80">'+pkg.km+' km</div>';
+            html+='</div>';
+          });
+          html+='</div></div>';
+        }
       }
+      html+='</div>';
     });
-    html+='</tbody></table></div>';
+    html+='</div>';
     document.getElementById('std-fares-display').innerHTML=html;
     loadStdFare();
   }catch(e){document.getElementById('std-fares-display').textContent='Error loading';}
