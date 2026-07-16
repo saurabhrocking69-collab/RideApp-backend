@@ -136,6 +136,84 @@ input,select,textarea{outline:none}
   </div>
 </div>
 
+<!-- Resolve Incident Modal -->
+<div class="modal-overlay" id="resolve-modal" onclick="closeResolveModal()">
+  <div class="modal-box" style="min-width:340px;max-width:460px" onclick="event.stopPropagation()">
+    <button class="modal-close" onclick="closeResolveModal()">✕</button>
+    <div style="font-size:17px;font-weight:900;margin-bottom:6px">✅ Resolve Incident</div>
+    <div style="font-size:13px;color:#666;margin-bottom:16px">Incident ka optional resolution note add karo, phir resolve karo.</div>
+    <input type="hidden" id="resolve-inc-id">
+    <div style="margin-bottom:12px">
+      <label style="font-size:12px;font-weight:700;display:block;margin-bottom:4px">Resolution Note (optional)</label>
+      <textarea id="resolve-note" placeholder="e.g. Driver ne galti mani, warning di gayi." rows="3"
+        style="width:100%;border:1px solid #ddd;border-radius:8px;padding:10px;font-size:13px;resize:none;box-sizing:border-box"></textarea>
+    </div>
+    <div style="display:flex;gap:10px">
+      <button onclick="submitResolveIncident()" style="background:#2e7d32;color:#fff;border:none;border-radius:8px;padding:10px 24px;font-size:13px;font-weight:800;cursor:pointer;flex:1">✅ Mark Resolved</button>
+      <button onclick="closeResolveModal()" style="background:#f5f5f5;color:#333;border:none;border-radius:8px;padding:10px 18px;font-size:13px;font-weight:700;cursor:pointer">Cancel</button>
+    </div>
+    <div id="resolve-result" style="margin-top:10px;font-size:13px;font-weight:700"></div>
+  </div>
+</div>
+
+<!-- Compensate Driver Modal -->
+<div class="modal-overlay" id="comp-modal" onclick="closeCompModal()">
+  <div class="modal-box" style="min-width:340px;max-width:460px" onclick="event.stopPropagation()">
+    <button class="modal-close" onclick="closeCompModal()">✕</button>
+    <div style="font-size:17px;font-weight:900;margin-bottom:4px">💰 Compensate Driver</div>
+    <div id="comp-summary" style="background:#fff3e0;border-radius:10px;padding:14px;margin:12px 0;font-size:13px;line-height:1.8"></div>
+    <div style="margin-bottom:12px">
+      <label style="font-size:12px;font-weight:700;display:block;margin-bottom:4px">Your Name (confirmation)</label>
+      <input id="comp-admin-name" type="text" placeholder="Admin name" class="input-sm" style="width:100%">
+    </div>
+    <div style="display:flex;gap:10px">
+      <button onclick="submitCompensate()" style="background:#e65100;color:#fff;border:none;border-radius:8px;padding:10px 24px;font-size:13px;font-weight:800;cursor:pointer;flex:1">💰 Credit Wallet</button>
+      <button onclick="closeCompModal()" style="background:#f5f5f5;color:#333;border:none;border-radius:8px;padding:10px 18px;font-size:13px;font-weight:700;cursor:pointer">Cancel</button>
+    </div>
+    <div id="comp-result" style="margin-top:10px;font-size:13px;font-weight:700"></div>
+  </div>
+</div>
+
+<!-- Create Manual Incident Modal -->
+<div class="modal-overlay" id="create-inc-modal" onclick="closeCreateIncidentModal()">
+  <div class="modal-box" style="min-width:340px;max-width:500px" onclick="event.stopPropagation()">
+    <button class="modal-close" onclick="closeCreateIncidentModal()">✕</button>
+    <div style="font-size:17px;font-weight:900;margin-bottom:6px">⚠️ Create Manual Incident</div>
+    <div style="font-size:12px;color:#888;margin-bottom:16px">Admin-detected issue ko record karo. Driver ya Customer phone se identify hoga.</div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:12px">
+      <div>
+        <label style="font-size:11px;font-weight:700;display:block;margin-bottom:4px">Type</label>
+        <select id="ci-type" class="input-sm" style="width:100%">
+          <option value="early_completion">🛑 Early Completion</option>
+          <option value="payment_skipped">💸 Payment Skipped</option>
+        </select>
+      </div>
+      <div>
+        <label style="font-size:11px;font-weight:700;display:block;margin-bottom:4px">Driver Phone</label>
+        <input id="ci-driver" type="text" placeholder="10-digit" class="input-sm" style="width:100%">
+      </div>
+      <div>
+        <label style="font-size:11px;font-weight:700;display:block;margin-bottom:4px">Customer Phone (optional)</label>
+        <input id="ci-customer" type="text" placeholder="10-digit" class="input-sm" style="width:100%">
+      </div>
+      <div>
+        <label style="font-size:11px;font-weight:700;display:block;margin-bottom:4px">Ride Fare (₹)</label>
+        <input id="ci-fare" type="number" placeholder="e.g. 250" class="input-sm" style="width:100%" min="0">
+      </div>
+    </div>
+    <div style="margin-bottom:14px">
+      <label style="font-size:11px;font-weight:700;display:block;margin-bottom:4px">Note / Description</label>
+      <textarea id="ci-note" placeholder="Kya hua, context dalo." rows="3"
+        style="width:100%;border:1px solid #ddd;border-radius:8px;padding:10px;font-size:13px;resize:none;box-sizing:border-box"></textarea>
+    </div>
+    <div style="display:flex;gap:10px">
+      <button onclick="submitCreateIncident()" style="background:#5c35c9;color:#fff;border:none;border-radius:8px;padding:10px 24px;font-size:13px;font-weight:800;cursor:pointer;flex:1">⚠️ Create Incident</button>
+      <button onclick="closeCreateIncidentModal()" style="background:#f5f5f5;color:#333;border:none;border-radius:8px;padding:10px 18px;font-size:13px;font-weight:700;cursor:pointer">Cancel</button>
+    </div>
+    <div id="ci-result" style="margin-top:10px;font-size:13px;font-weight:700"></div>
+  </div>
+</div>
+
 <div class="header">
   <div class="logo">Ride<span>App</span> Admin</div>
   <div style="display:flex;gap:10px;align-items:center">
@@ -335,15 +413,39 @@ input,select,textarea{outline:none}
   <!-- SETTINGS -->
   <div id="settings" class="section">
     <div style="background:#e8f5e9;border:2px solid #2e7d32;border-radius:14px;padding:18px;margin-bottom:20px">
-      <div style="font-size:16px;font-weight:900;color:#1b5e20;margin-bottom:8px">💳 Manual Wallet Credit (Admin)</div>
-      <p style="font-size:13px;color:#2e7d32;margin-bottom:12px">Kisi bhi customer ke wallet mein test balance add karo. Razorpay ki zaroorat nahi.</p>
-      <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end">
-        <input id="wc-phone" type="text" placeholder="Customer phone (10 digits)" class="input-sm" style="width:180px">
-        <input id="wc-amount" type="number" placeholder="₹ Amount" class="input-sm" style="width:100px" min="1">
-        <input id="wc-note" type="text" placeholder="Note (optional)" class="input-sm" style="width:160px">
-        <button onclick="adminWalletCredit()" style="background:#2e7d32;color:#fff;border:none;border-radius:8px;padding:10px 20px;font-size:13px;font-weight:800;cursor:pointer">➕ Add Money</button>
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px">
+        <div style="font-size:16px;font-weight:900;color:#1b5e20">💳 Manual Wallet Credit</div>
+        <button class="refresh-btn" onclick="loadWalletCreditHistory()">⟳ History</button>
       </div>
+      <p style="font-size:12px;color:#2e7d32;margin-bottom:14px">Customer ya Driver ke wallet mein directly balance add karo. Razorpay ki zaroorat nahi.</p>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin-bottom:12px">
+        <div>
+          <label style="font-size:11px;font-weight:700;color:#1b5e20">Role</label>
+          <select id="wc-role" class="input-sm" style="width:100%;margin-top:4px">
+            <option value="customer">👤 Customer</option>
+            <option value="driver">🚗 Driver</option>
+          </select>
+        </div>
+        <div>
+          <label style="font-size:11px;font-weight:700;color:#1b5e20">Phone</label>
+          <input id="wc-phone" type="text" placeholder="10-digit phone" class="input-sm" style="width:100%;margin-top:4px">
+        </div>
+        <div>
+          <label style="font-size:11px;font-weight:700;color:#1b5e20">₹ Amount</label>
+          <input id="wc-amount" type="number" placeholder="Amount" class="input-sm" style="width:100%;margin-top:4px" min="1">
+        </div>
+        <div>
+          <label style="font-size:11px;font-weight:700;color:#1b5e20">Reason / Note</label>
+          <input id="wc-note" type="text" placeholder="e.g. Compensation, Refund" class="input-sm" style="width:100%;margin-top:4px">
+        </div>
+      </div>
+      <button onclick="adminWalletCredit()" style="background:#2e7d32;color:#fff;border:none;border-radius:8px;padding:10px 24px;font-size:13px;font-weight:800;cursor:pointer">➕ Credit Wallet</button>
       <div id="wc-result" style="margin-top:10px;font-size:13px;font-weight:700"></div>
+      <div id="wc-history" style="margin-top:16px;display:none">
+        <div style="font-size:13px;font-weight:800;margin-bottom:8px;color:#1b5e20">Recent Manual Credits</div>
+        <div style="overflow-x:auto"><table><thead><tr><th>Date</th><th>Role</th><th>Phone</th><th>Name</th><th>Amount</th><th>Note</th><th>New Balance</th></tr></thead>
+        <tbody id="wc-history-body"><tr><td colspan=7 class=loading>Loading...</td></tr></tbody></table></div>
+      </div>
     </div>
     <!-- Cancellation Fee Settings -->
     <div id="cancel-settings-card" style="background:#f3e5f5;border:2px solid #7b1fa2;border-radius:14px;padding:18px;margin-bottom:20px">
@@ -593,6 +695,7 @@ input,select,textarea{outline:none}
           <option value="true">Resolved</option>
         </select>
         <button class="refresh-btn" onclick="loadIncidents()">⟳ Reload</button>
+        <button onclick="openCreateIncidentModal()" style="background:#5c35c9;color:#fff;border:none;border-radius:8px;padding:7px 14px;font-size:12px;font-weight:700;cursor:pointer;margin-left:auto">➕ Manual Incident</button>
       </div>
     </div>
     <div class="card">
@@ -1417,12 +1520,37 @@ async function adminWalletCredit(){
   const phone = document.getElementById('wc-phone').value.trim();
   const amount = parseFloat(document.getElementById('wc-amount').value);
   const note = document.getElementById('wc-note').value.trim();
+  const role = document.getElementById('wc-role').value;
   const el = document.getElementById('wc-result');
   if (!phone || phone.length !== 10) { el.innerHTML='<span style="color:red">❌ Valid 10-digit phone enter karo</span>'; return; }
   if (!amount || amount <= 0) { el.innerHTML='<span style="color:red">❌ Valid amount enter karo</span>'; return; }
-  el.innerHTML='Adding...';
-  const d = await aJson('/api/admin/wallet-credit', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ phone, amount, note }) });
-  el.innerHTML = d.success ? `<span style="color:#2e7d32">✅ ₹${amount} added! New balance: ₹${d.new_balance}</span>` : `<span style="color:red">❌ ${d.error}</span>`;
+  el.innerHTML='<span style="color:#888">Adding...</span>';
+  const d = await aJson('/api/admin/wallet-credit', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ phone, amount, note, role }) });
+  if(d.success){
+    el.innerHTML = `<span style="color:#2e7d32">✅ ₹${amount} credited! New balance: ₹${d.new_balance} (${role === 'driver' ? '🚗 Driver' : '👤 Customer'})</span>`;
+    loadWalletCreditHistory();
+  } else {
+    el.innerHTML = `<span style="color:red">❌ ${d.error}</span>`;
+  }
+}
+async function loadWalletCreditHistory(){
+  const hist = document.getElementById('wc-history');
+  const body = document.getElementById('wc-history-body');
+  hist.style.display = '';
+  body.innerHTML = '<tr><td colspan=7 class=loading>Loading...</td></tr>';
+  try{
+    const d = await aJson('/api/admin/wallet-credits');
+    if(!d.credits || d.credits.length === 0){ body.innerHTML='<tr><td colspan=7 style="text-align:center;color:#aaa">Koi credit record nahi</td></tr>'; return; }
+    body.innerHTML = d.credits.map(c=>`<tr>
+      <td style="font-size:12px;white-space:nowrap">${new Date(c.created_at).toLocaleString('en-IN',{day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'})}</td>
+      <td>${c.role==='driver'?'🚗 Driver':'👤 Customer'}</td>
+      <td style="font-family:monospace">${c.phone||'—'}</td>
+      <td>${c.user_name||'—'}</td>
+      <td style="color:#2e7d32;font-weight:700">₹${c.amount}</td>
+      <td style="color:#888;font-size:12px">${c.note||'—'}</td>
+      <td style="font-weight:700">₹${c.new_balance}</td>
+    </tr>`).join('');
+  }catch(e){body.innerHTML=`<tr><td colspan=7 style="color:red">Error: ${e.message}</td></tr>`;}
 }
 async function loadCancelSettings(){
   try {
@@ -2220,7 +2348,7 @@ async function loadIncidents(){
         <td><span class="chip" style="background:${i.resolved?'#4CAF50':'#f44336'};color:#fff">${i.resolved?'✅ Resolved':'🔴 Open'}</span></td>
         <td style="white-space:nowrap">
           ${!i.resolved&&isPaySkip?`<button class="action-btn" style="background:#e65100;color:#fff;margin-bottom:4px" onclick="compensateDriver(${i.id},'${(i.driver_name||'Driver').replace(/'/g,'\\x27')}',${fareVal})">💰 Compensate (₹${compAmt})</button><br>`:''}
-          ${!i.resolved&&!isPaySkip?`<button class="action-btn btn-green" onclick="resolveIncident(${i.id})">✅ Resolve</button>`:''}
+          ${!i.resolved?`<button class="action-btn btn-green" onclick="resolveIncident(${i.id})">✅ Resolve</button>`:''}
           ${i.customer_id?`<button class="action-btn btn-blue" onclick="viewCustomerProfile(${i.customer_id})">👤 Customer</button>`:''}
         </td>
       </tr>`;
@@ -2228,41 +2356,89 @@ async function loadIncidents(){
   }catch(e){body.innerHTML='<tr><td colspan=8 style="color:#c62828;text-align:center">Error: '+e.message+'</td></tr>';}
 }
 
-async function resolveIncident(id){
+// resolve modal
+function resolveIncident(id){
+  document.getElementById('resolve-inc-id').value = id;
+  document.getElementById('resolve-note').value = '';
+  document.getElementById('resolve-result').innerHTML = '';
+  document.getElementById('resolve-modal').classList.add('open');
+}
+function closeResolveModal(){ document.getElementById('resolve-modal').classList.remove('open'); }
+async function submitResolveIncident(){
+  const id = document.getElementById('resolve-inc-id').value;
+  const note = document.getElementById('resolve-note').value.trim();
+  const el = document.getElementById('resolve-result');
+  el.innerHTML = '<span style="color:#888">Resolving...</span>';
   try{
-    await aJson('/api/admin/incidents/'+id+'/resolve',{method:'PUT'});
-    loadIncidents();
-  }catch(e){alert('Error: '+e.message);}
+    const d = await aJson('/api/admin/incidents/'+id+'/resolve',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({note})});
+    if(d.success){ closeResolveModal(); loadIncidents(); }
+    else el.innerHTML = `<span style="color:red">❌ ${d.error}</span>`;
+  }catch(e){ el.innerHTML = `<span style="color:red">❌ ${e.message}</span>`; }
 }
 
-async function compensateDriver(incidentId, driverName, fareAmt){
-  const commission=Math.round(fareAmt*0.15*100)/100;
-  const compensation=Math.round((fareAmt-commission)*100)/100;
-  const confirmed=confirm(
-    `💰 Driver Compensation Confirm\n\n`+
-    `Driver: ${driverName}\n`+
-    `Ride Fare: ₹${fareAmt}\n`+
-    `15% Commission: ₹${commission}\n`+
-    `──────────────────────────\n`+
-    `Net Compensation: ₹${compensation}\n\n`+
-    `Yeh amount driver ke Sppero wallet mein credit hoga.\n`+
-    `Incident resolve hoga. Kya aap confirm karte ho?`
-  );
-  if(!confirmed) return;
+// compensate modal
+let _compIncId = null;
+function compensateDriver(incidentId, driverName, fareAmt){
+  const commission = Math.round(fareAmt*0.15*100)/100;
+  const compensation = Math.round((fareAmt-commission)*100)/100;
+  _compIncId = incidentId;
+  document.getElementById('comp-summary').innerHTML =
+    `<b>Driver:</b> ${driverName}<br>`+
+    `<b>Ride Fare:</b> ₹${fareAmt}<br>`+
+    `<b>15% Commission:</b> ₹${commission}<br>`+
+    `<hr style="border:none;border-top:1px solid #e0e0e0;margin:8px 0">`+
+    `<b style="color:#e65100;font-size:15px">Net Compensation: ₹${compensation}</b><br>`+
+    `<span style="font-size:12px;color:#888">Driver ke Sppero wallet mein credit hoga. Incident resolve hoga.</span>`;
+  document.getElementById('comp-admin-name').value = '';
+  document.getElementById('comp-result').innerHTML = '';
+  document.getElementById('comp-modal').classList.add('open');
+}
+function closeCompModal(){ document.getElementById('comp-modal').classList.remove('open'); _compIncId=null; }
+async function submitCompensate(){
+  const admin = document.getElementById('comp-admin-name').value.trim() || 'Admin';
+  const el = document.getElementById('comp-result');
+  if(!_compIncId) return;
+  el.innerHTML = '<span style="color:#888">Processing...</span>';
   try{
-    const admin=prompt('Admin name (confirmation ke liye):') || 'Admin';
-    const d=await aJson('/api/admin/incidents/'+incidentId+'/compensate-driver',{
-      method:'POST',
-      headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({admin_name:admin})
+    const d = await aJson('/api/admin/incidents/'+_compIncId+'/compensate-driver',{
+      method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({admin_name:admin})
     });
     if(d.success){
-      alert(`✅ Done!\n\n₹${d.compensation_amount} ${d.driver_name} ke wallet mein credit hua.\nDriver ko notification bhi bheja gaya.`);
-      loadIncidents();
+      el.innerHTML = `<span style="color:#2e7d32">✅ ₹${d.compensation_amount} credited to ${d.driver_name}. Notification sent.</span>`;
+      setTimeout(()=>{ closeCompModal(); loadIncidents(); }, 1500);
     } else {
-      alert('❌ Error: '+(d.error||'Unknown error'));
+      el.innerHTML = `<span style="color:red">❌ ${d.error||'Unknown error'}</span>`;
     }
-  }catch(e){alert('❌ Network error: '+e.message);}
+  }catch(e){ el.innerHTML = `<span style="color:red">❌ ${e.message}</span>`; }
+}
+
+// create manual incident modal
+function openCreateIncidentModal(){
+  ['ci-driver','ci-customer','ci-fare','ci-note'].forEach(id=>{ const el=document.getElementById(id); if(el) el.value=''; });
+  document.getElementById('ci-result').innerHTML='';
+  document.getElementById('create-inc-modal').classList.add('open');
+}
+function closeCreateIncidentModal(){ document.getElementById('create-inc-modal').classList.remove('open'); }
+async function submitCreateIncident(){
+  const type = document.getElementById('ci-type').value;
+  const driver_phone = document.getElementById('ci-driver').value.trim();
+  const customer_phone = document.getElementById('ci-customer').value.trim();
+  const fare = parseFloat(document.getElementById('ci-fare').value)||0;
+  const note = document.getElementById('ci-note').value.trim();
+  const el = document.getElementById('ci-result');
+  if(!driver_phone||driver_phone.length!==10){ el.innerHTML='<span style="color:red">❌ Valid driver phone required</span>'; return; }
+  el.innerHTML='<span style="color:#888">Creating...</span>';
+  try{
+    const d = await aJson('/api/admin/incidents',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({incident_type:type,driver_phone,customer_phone:customer_phone||null,fare,note})
+    });
+    if(d.success){
+      el.innerHTML='<span style="color:#2e7d32">✅ Incident created!</span>';
+      setTimeout(()=>{ closeCreateIncidentModal(); loadIncidents(); },1200);
+    } else {
+      el.innerHTML=`<span style="color:red">❌ ${d.error}</span>`;
+    }
+  }catch(e){ el.innerHTML=`<span style="color:red">❌ ${e.message}</span>`; }
 }
 
 async function viewCustomerProfile(id){

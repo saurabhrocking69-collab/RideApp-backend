@@ -826,8 +826,8 @@ router.get('/incidents', async (req, res) => {
               uc.name AS customer_name, uc.phone AS customer_phone
        FROM ride_incidents i
        LEFT JOIN rides r ON i.ride_id = r.id::text
-       LEFT JOIN users ud ON i.driver_id = ud.id
-       LEFT JOIN users uc ON i.customer_id = uc.id
+       LEFT JOIN users ud ON i.driver_id = ud.id::text
+       LEFT JOIN users uc ON i.customer_id = uc.id::text
        ${where}
        ORDER BY i.created_at DESC LIMIT $${params.length+1} OFFSET $${params.length+2}`,
       [...params, limit, offset]
@@ -850,8 +850,40 @@ router.get('/incidents', async (req, res) => {
 // ── PUT /api/admin/incidents/:id/resolve ────────────────────────────────────
 router.put('/incidents/:id/resolve', async (req, res) => {
   try {
-    await db.query('UPDATE ride_incidents SET resolved=true WHERE id=$1', [req.params.id]);
+    const { note } = req.body || {};
+    await db.query(
+      `UPDATE ride_incidents
+          SET resolved=true, resolved_at=NOW(),
+              metadata = COALESCE(metadata,'{}') || $1::jsonb
+        WHERE id=$2`,
+      [JSON.stringify({ resolved_note: note || null }), req.params.id]
+    );
     res.json({ success: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ── POST /api/admin/incidents — create manual incident ───────────────────────
+router.post('/incidents', async (req, res) => {
+  try {
+    const { incident_type, ride_id, driver_phone, customer_phone, note } = req.body || {};
+    if (!incident_type) return res.status(400).json({ error: 'incident_type required' });
+
+    let driver_id = null, customer_id = null;
+    if (driver_phone) {
+      const dr = await db.query('SELECT id FROM users WHERE phone=$1', [driver_phone]);
+      if (dr.rows[0]) driver_id = String(dr.rows[0].id);
+    }
+    if (customer_phone) {
+      const cu = await db.query('SELECT id FROM users WHERE phone=$1', [customer_phone]);
+      if (cu.rows[0]) customer_id = String(cu.rows[0].id);
+    }
+
+    const r = await db.query(
+      `INSERT INTO ride_incidents (ride_id, incident_type, detected_by, driver_id, customer_id, metadata)
+       VALUES ($1, $2, 'admin', $3, $4, $5) RETURNING id`,
+      [ride_id || null, incident_type, driver_id, customer_id, JSON.stringify({ note: note || null })]
+    );
+    res.json({ success: true, id: r.rows[0].id });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
@@ -1003,8 +1035,8 @@ router.post('/incidents/:id/compensate-driver', async (req, res) => {
        FROM ride_incidents i
        LEFT JOIN rides r ON i.ride_id = r.id::text
        LEFT JOIN fare_settings fs ON fs.vehicle_type = r.ride_type
-       LEFT JOIN users ud ON i.driver_id = ud.id
-       LEFT JOIN users uc ON i.customer_id = uc.id
+       LEFT JOIN users ud ON i.driver_id = ud.id::text
+       LEFT JOIN users uc ON i.customer_id = uc.id::text
        WHERE i.id = $1`,
       [req.params.id]
     );
@@ -1074,22 +1106,68 @@ router.post('/incidents/:id/compensate-driver', async (req, res) => {
     await db.query(`ALTER TABLE ride_incidents ADD COLUMN IF NOT EXISTS metadata JSONB DEFAULT '{}'`).catch(() => {});
     await db.query(`ALTER TABLE ride_incidents ADD COLUMN IF NOT EXISTS detected_by TEXT DEFAULT 'system'`).catch(() => {});
     await db.query(`ALTER TABLE ride_incidents ADD COLUMN IF NOT EXISTS details JSONB DEFAULT '{}'`).catch(() => {});
+    await db.query(`ALTER TABLE ride_incidents ADD COLUMN IF NOT EXISTS resolved_at TIMESTAMPTZ`).catch(() => {});
+
+    await db.query(`CREATE TABLE IF NOT EXISTS wallet_credits_log (
+      id SERIAL PRIMARY KEY,
+      phone TEXT NOT NULL,
+      user_name TEXT,
+      amount NUMERIC NOT NULL,
+      note TEXT,
+      role TEXT DEFAULT 'customer',
+      new_balance NUMERIC,
+      created_at TIMESTAMPTZ DEFAULT NOW()
+    )`).catch(() => {});
   } catch (_) {}
 })();
 
-// POST /api/admin/wallet-credit — manually credit a customer wallet (for testing / support)
+// POST /api/admin/wallet-credit — manually credit customer or driver wallet
 router.post('/wallet-credit', async (req, res) => {
-  const { phone, amount, note } = req.body;
+  const { phone, amount, note, role = 'customer' } = req.body;
   const amt = parseFloat(amount);
   if (!phone || !amt || amt <= 0) return res.status(400).json({ error: 'phone and amount required' });
   try {
-    const user = await db.query('SELECT id FROM users WHERE phone=$1', [phone]);
-    if (!user.rows[0]) return res.status(404).json({ error: 'User not found' });
+    const user = await db.query('SELECT id, name FROM users WHERE phone=$1', [phone]);
+    if (!user.rows[0]) return res.status(404).json({ error: 'User not found — phone check karo' });
     const uid = user.rows[0].id;
-    await db.query(`INSERT INTO customer_wallet (user_id, balance) VALUES ($1, $2) ON CONFLICT (user_id) DO UPDATE SET balance = customer_wallet.balance + $2, updated_at = NOW()`, [uid, amt]);
-    await db.query(`INSERT INTO transactions (user_id, type, amount, description) VALUES ($1, 'credit', $2, $3)`, [uid, amt, note || 'Admin manual credit']);
-    const bal = await db.query('SELECT balance FROM customer_wallet WHERE user_id=$1', [uid]);
-    res.json({ success: true, new_balance: parseFloat(bal.rows[0]?.balance || 0) });
+    const userName = user.rows[0].name || phone;
+    let newBalance;
+
+    if (role === 'driver') {
+      const drCheck = await db.query('SELECT id FROM drivers WHERE id=$1', [uid]);
+      if (!drCheck.rows[0]) return res.status(400).json({ error: 'Yeh number driver nahi hai' });
+      await db.query(
+        `INSERT INTO driver_wallet (driver_id, balance, total_earned) VALUES ($1, $2, $2)
+         ON CONFLICT (driver_id) DO UPDATE SET balance=driver_wallet.balance+$2, total_earned=driver_wallet.total_earned+$2, updated_at=NOW()`,
+        [uid, amt]
+      );
+      const bal = await db.query('SELECT balance FROM driver_wallet WHERE driver_id=$1', [uid]);
+      newBalance = parseFloat(bal.rows[0]?.balance || 0);
+      sendFCM(phone, '💰 Wallet Credit!', `Admin ne ₹${amt} wallet mein add kiye!${note ? ' (' + note + ')' : ''}`, { type: 'admin_wallet_credit' }, { role: 'driver' }).catch(() => {});
+    } else {
+      await db.query(
+        `INSERT INTO customer_wallet (user_id, balance) VALUES ($1, $2) ON CONFLICT (user_id) DO UPDATE SET balance=customer_wallet.balance+$2, updated_at=NOW()`,
+        [uid, amt]
+      );
+      await db.query(`INSERT INTO transactions (user_id, type, amount, description) VALUES ($1,'credit',$2,$3)`, [uid, amt, note || 'Admin manual credit']);
+      const bal = await db.query('SELECT balance FROM customer_wallet WHERE user_id=$1', [uid]);
+      newBalance = parseFloat(bal.rows[0]?.balance || 0);
+    }
+
+    await db.query(
+      `INSERT INTO wallet_credits_log (phone, user_name, amount, note, role, new_balance) VALUES ($1,$2,$3,$4,$5,$6)`,
+      [phone, userName, amt, note || null, role, newBalance]
+    ).catch(() => {});
+
+    res.json({ success: true, new_balance: newBalance, user_name: userName });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// GET /api/admin/wallet-credits — recent manual credit history
+router.get('/wallet-credits', async (req, res) => {
+  try {
+    const r = await db.query(`SELECT * FROM wallet_credits_log ORDER BY created_at DESC LIMIT 50`);
+    res.json({ credits: r.rows });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
