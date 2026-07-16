@@ -458,6 +458,19 @@ input,select,textarea{outline:none}
         <div class="card-title">📊 Current Standard Fares</div>
         <div id="std-fares-display" style="font-size:12px;color:#666">Loading...</div>
       </div>
+
+      <!-- COMMISSION RATES -->
+      <div class="card">
+        <div class="card-title">💰 Platform Commission Rates <button class="refresh-btn" onclick="loadCommRates()">⟳ Reload</button></div>
+        <p style="font-size:12px;color:#6B7280;margin-bottom:14px">Ride fare pe platform ka cut — driver ke payment confirm hone par apply hota hai. Standard rides aur cash dono pe.</p>
+        <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;padding:12px;background:#f9fafb;border-radius:10px;margin-bottom:14px">
+          <span style="font-size:13px;font-weight:700;color:#374151">Sabhi vehicles ke liye ek rate set karo:</span>
+          <input id="comm-bulk-rate" type="number" min="0" max="50" step="0.5" placeholder="e.g. 15" style="width:80px;padding:7px 10px;border:1px solid #e0e0e0;border-radius:6px;font-size:13px">
+          <button onclick="saveCommBulk()" class="refresh-btn" style="background:#1a1a2e;color:#fff">✅ Apply to All</button>
+          <span id="comm-bulk-status" style="font-size:12px"></span>
+        </div>
+        <div id="comm-rates-table"><div class="loading">Loading...</div></div>
+      </div>
     </div>
   </div>
 
@@ -762,7 +775,7 @@ function showSection(id,btn){
   if(id==='rides') loadRides();
   if(id==='topups') loadTopups();
   if(id==='verify') loadVerifications();
-  if(id==='settings'){loadFares();loadStdFares();loadCancelSettings();}
+  if(id==='settings'){loadFares();loadStdFares();loadCancelSettings();loadCommRates();}
   if(id==='marketing'){loadCampaigns();loadPromos();loadReferrals();}
   if(id==='payouts'){loadPayouts('pending');}
   if(id==='location'){loadLocationIntel();}
@@ -2235,6 +2248,90 @@ async function loadAll(){
     hideLogin();
     loadAll();
   }
+// ── COMMISSION RATES ─────────────────────────────────────────────────
+var commRatesCache = [];
+const COMM_LABELS = {
+  bike:'🏍️ Bike', auto:'🛺 Auto', car:'🚕 Car', eriksha:'🛵 E-Riksha',
+  luxury:'🚙 Luxury', green_bike:'⚡🏍️ Green Bike', electric_auto:'⚡🛺 Electric Auto'
+};
+
+async function loadCommRates() {
+  var el = document.getElementById('comm-rates-table');
+  if (!el) return;
+  el.innerHTML = '<div class="loading">Loading...</div>';
+  try {
+    var d = await aJson('/api/admin/commission-rates');
+    if (d.error) { el.innerHTML = '<div class="loading" style="color:#EF4444">❌ ' + d.error + '</div>'; return; }
+    commRatesCache = d.rates || [];
+    renderCommRates();
+  } catch(e) { el.innerHTML = '<div class="loading" style="color:#EF4444">Error loading commission rates</div>'; }
+}
+
+function renderCommRates() {
+  var el = document.getElementById('comm-rates-table');
+  if (!el || !commRatesCache.length) { if(el) el.innerHTML = '<div class="loading">No fare settings found — Settings > Fare Editor mein save karo pehle</div>'; return; }
+  var html = '<div style="overflow-x:auto"><table style="width:100%;font-size:13px;border-collapse:collapse">' +
+    '<thead><tr style="background:#f9fafb">' +
+    '<th style="text-align:left;padding:8px 10px;font-weight:600">Vehicle</th>' +
+    '<th style="padding:8px 10px;font-weight:600">Current Rate</th>' +
+    '<th style="padding:8px 10px;font-weight:600">New Rate</th>' +
+    '<th style="padding:8px 10px"></th>' +
+    '</tr></thead><tbody>';
+  commRatesCache.forEach(function(r) {
+    var cr = parseFloat(r.commission_rate || 15);
+    var color = cr >= 15 ? '#3B82F6' : cr >= 12 ? '#059669' : '#F59E0B';
+    html += '<tr style="border-top:1px solid #f3f4f6">' +
+      '<td style="padding:8px 10px">' + (COMM_LABELS[r.vehicle_type] || r.vehicle_type) + '</td>' +
+      '<td style="text-align:center;padding:8px 10px;font-weight:700;font-size:15px;color:' + color + '">' + cr.toFixed(0) + '%</td>' +
+      '<td style="padding:6px 10px"><input id="comm-' + r.vehicle_type + '" type="number" min="0" max="50" step="0.5" value="' + cr.toFixed(0) + '" style="width:72px;padding:6px 8px;border:1px solid #e0e0e0;border-radius:6px;font-size:13px;text-align:center"></td>' +
+      '<td style="padding:6px 10px"><button class="refresh-btn" onclick="saveCommVehicle(\'' + r.vehicle_type + '\')" style="font-size:11px">💾 Save</button></td>' +
+      '</tr>';
+  });
+  html += '</tbody></table></div>';
+  el.innerHTML = html;
+}
+
+async function saveCommVehicle(vt) {
+  var input = document.getElementById('comm-' + vt);
+  var rate = input && input.value;
+  if (!rate) return;
+  try {
+    var d = await aJson('/api/admin/commission-rates', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ vehicle_type: vt, rate: rate })
+    });
+    if (d.success) {
+      commRatesCache = d.rates || commRatesCache;
+      renderCommRates();
+      loadStdFares();
+      alert('✅ ' + (COMM_LABELS[vt] || vt) + ' commission → ' + rate + '%');
+    } else { alert('❌ ' + (d.error || 'Failed')); }
+  } catch(e) { alert('❌ Network error'); }
+}
+
+async function saveCommBulk() {
+  var rate = (document.getElementById('comm-bulk-rate') || {}).value;
+  var st = document.getElementById('comm-bulk-status');
+  if (!rate) { if(st) { st.style.color='#EF4444'; st.textContent='❌ Rate enter karo'; } return; }
+  if(st) st.textContent = 'Saving...';
+  try {
+    var d = await aJson('/api/admin/commission-rates', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ rate: rate })
+    });
+    if (d.success) {
+      if(st) { st.style.color='#059669'; st.textContent='✅ Sabhi vehicles → ' + rate + '%'; }
+      commRatesCache = d.rates || commRatesCache;
+      renderCommRates();
+      loadStdFares();
+    } else {
+      if(st) { st.style.color='#EF4444'; st.textContent='❌ ' + (d.error || 'Failed'); }
+    }
+  } catch(e) { if(st) { st.style.color='#EF4444'; st.textContent='❌ Network error'; } }
+}
+
 // ── SUPPORT TICKETS ──────────────────────────────────────────────────
 let supFilter = { status:'', priority:'', role:'', search:'' };
 let supSearchTimer = null;

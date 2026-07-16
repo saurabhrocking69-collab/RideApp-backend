@@ -852,8 +852,9 @@ router.post('/cash-confirm', async (req, res) => {
   const method = payment_method === 'upi_direct' ? 'upi' : 'cash';
   try {
     const rideRes = await db.query(
-      `SELECT r.*, u.phone AS driver_phone FROM rides r
+      `SELECT r.*, u.phone AS driver_phone, fs.commission_rate FROM rides r
        JOIN users u ON r.driver_id = u.id
+       LEFT JOIN fare_settings fs ON fs.vehicle_type = r.ride_type
        WHERE r.id = $1 AND r.status = 'completed'`,
       [ride_id]
     );
@@ -863,7 +864,8 @@ router.post('/cash-confirm', async (req, res) => {
     if (rideRes.rows[0].payment_status === 'completed')
       return res.json({ success: true, message: 'Payment already confirmed hai' });
     const fare = Math.max(0, parseFloat(rideRes.rows[0].fare) - parseFloat(rideRes.rows[0].discount || 0));
-    const commission = Math.round(fare * 0.15 * 100) / 100;
+    const commRate = parseFloat(rideRes.rows[0].commission_rate || 15) / 100;
+    const commission = Math.round(fare * commRate * 100) / 100;
 
     await db.query(`UPDATE rides SET payment_status = 'completed', payment_method = $1, commission_amount = $2 WHERE id = $3`, [method, commission, ride_id]);
     await db.query(`UPDATE driver_commissions SET status = 'cash_owed', payment_method = $1 WHERE ride_id = $2`, [method, ride_id]);

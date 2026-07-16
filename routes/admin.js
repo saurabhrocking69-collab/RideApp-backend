@@ -351,7 +351,9 @@ router.post('/resolve-dispute', async (req, res) => {
         const extraKm = Math.max(0, (b.actual_km || 0) - parseFloat(b.km_included));
         const extraCharge = extraKm * (HF[b.vehicle_type]?.extra || 8);
         const totalFare = parseFloat(b.base_fare) + extraCharge;
-        const commission = Math.round(totalFare * 0.12 * 100) / 100;
+        const fsRate = await client.query(`SELECT commission_rate FROM fare_settings WHERE vehicle_type=$1 LIMIT 1`, [b.vehicle_type]);
+        const commRate = parseFloat(fsRate.rows[0]?.commission_rate || 15) / 100;
+        const commission = Math.round(totalFare * commRate * 100) / 100;
         const driverEarning = Math.round((totalFare - commission) * 100) / 100;
         const driverUser = await client.query('SELECT id FROM users WHERE phone=$1', [b.driver_phone]);
         if (driverUser.rows[0]) await client.query('UPDATE driver_wallet SET balance=balance+$1, total_earned=total_earned+$1 WHERE driver_id=$2', [driverEarning, driverUser.rows[0].id]);
@@ -480,6 +482,36 @@ router.get('/referrals', async (req, res) => {
       db.query(`SELECT r.*, u1.name AS referrer_name, u1.phone AS referrer_phone, u2.name AS referred_name, u2.phone AS referred_phone FROM referrals r JOIN users u1 ON r.referrer_id=u1.id JOIN users u2 ON r.referred_id=u2.id ORDER BY r.created_at DESC LIMIT 50`),
     ]);
     res.json({ total: parseInt(total.rows[0].cnt), completed: parseInt(completed.rows[0].cnt), total_reward: parseFloat(totalReward.rows[0].total), top_referrers: topReferrers.rows, recent: recent.rows });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// GET /api/admin/commission-rates
+router.get('/commission-rates', async (req, res) => {
+  try {
+    const r = await db.query(
+      `SELECT vehicle_type, commission_rate FROM fare_settings ORDER BY vehicle_type`
+    );
+    res.json({ rates: r.rows });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// POST /api/admin/commission-rates — update one or all vehicle types
+router.post('/commission-rates', async (req, res) => {
+  const { vehicle_type, rate } = req.body;
+  const cr = parseFloat(rate);
+  if (isNaN(cr) || cr < 0 || cr > 50)
+    return res.status(400).json({ error: 'rate must be a number between 0 and 50' });
+  try {
+    if (vehicle_type) {
+      await db.query(
+        `UPDATE fare_settings SET commission_rate=$1, updated_at=NOW() WHERE vehicle_type=$2`,
+        [cr, vehicle_type]
+      );
+    } else {
+      await db.query(`UPDATE fare_settings SET commission_rate=$1, updated_at=NOW()`, [cr]);
+    }
+    const r = await db.query(`SELECT vehicle_type, commission_rate FROM fare_settings ORDER BY vehicle_type`);
+    res.json({ success: true, rates: r.rows });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
@@ -952,11 +984,13 @@ router.post('/incidents/:id/compensate-driver', async (req, res) => {
   try {
     const incRes = await db.query(
       `SELECT i.*,
-              r.fare,
+              r.fare, r.ride_type,
+              fs.commission_rate,
               ud.name AS driver_name, ud.phone AS driver_phone,
               uc.name AS customer_name, uc.phone AS customer_phone
        FROM ride_incidents i
        LEFT JOIN rides r ON i.ride_id = r.id::text
+       LEFT JOIN fare_settings fs ON fs.vehicle_type = r.ride_type
        LEFT JOIN users ud ON i.driver_id = ud.id
        LEFT JOIN users uc ON i.customer_id = uc.id
        WHERE i.id = $1`,
@@ -974,7 +1008,8 @@ router.post('/incidents/:id/compensate-driver', async (req, res) => {
     if (fare <= 0) return res.status(400).json({ error: 'Fare amount nahi mila — ride record check karo' });
     if (!inc.driver_id) return res.status(400).json({ error: 'Driver ID nahi mila' });
 
-    const commission = Math.round(fare * 0.15 * 100) / 100;
+    const commRate = parseFloat(inc.commission_rate || 15) / 100;
+    const commission = Math.round(fare * commRate * 100) / 100;
     const compensation = Math.round((fare - commission) * 100) / 100;
 
     // Credit driver wallet
