@@ -121,6 +121,12 @@ router.put('/tickets/:id/status', async (req, res) => {
   if (!['open', 'in_progress', 'resolved'].includes(status))
     return res.status(400).json({ error: 'Invalid status' });
   try {
+    const ticketRes = await db.query(
+      `SELECT user_phone, ticket_no, role FROM support_tickets WHERE id=$1`, [id]
+    );
+    if (!ticketRes.rows[0]) return res.status(404).json({ error: 'Ticket not found' });
+    const ticket = ticketRes.rows[0];
+
     await db.query(
       `UPDATE support_tickets
        SET status=$1, updated_at=NOW() ${status === 'resolved' ? ', resolved_at=NOW()' : ''}
@@ -134,6 +140,17 @@ router.put('/tickets/:id/status', async (req, res) => {
         [id, note]
       );
     }
+
+    if (status === 'in_progress') {
+      sendFCM(
+        ticket.user_phone,
+        'Ticket Update',
+        `Your ticket ${ticket.ticket_no} is now being reviewed by our team.`,
+        { type: 'support_reply', ticket_id: String(id), ticket_no: ticket.ticket_no },
+        { role: ticket.role }
+      ).catch(() => {});
+    }
+
     res.json({ success: true });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
