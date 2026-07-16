@@ -590,6 +590,7 @@ app.use('/api/driver',   driversRouter);
 app.use('/api/hourly',   hourlyRouter);
 app.use('/api/admin/support', adminAuth, adminSupportRouter);
 app.use('/api/admin',         adminAuth, adminRouter);
+app.use('/api/subscriptions', require('./routes/subscriptions'));
 app.use('/api/support',       supportRouter);
 app.use('/api/favourites',    favouritesRouter);
 app.use('/api/bonus',         bonusRouter);
@@ -1118,6 +1119,70 @@ setTimeout(async () => {
   await db.query(`CREATE INDEX IF NOT EXISTS idx_dcp_phone ON driver_commission_payments(driver_phone)`).catch(() => {});
   await db.query(`CREATE INDEX IF NOT EXISTS idx_dcp_payment ON driver_commission_payments(payment_id)`).catch(() => {});
   console.log('✅ driver_commission_payments table ready');
+
+  // ── Driver Subscription System ────────────────────────────────────────────
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS subscription_plans (
+      id               SERIAL PRIMARY KEY,
+      name             TEXT NOT NULL,
+      vehicle_category TEXT NOT NULL,
+      ride_count       INT NOT NULL,
+      price            NUMERIC NOT NULL,
+      original_price   NUMERIC,
+      is_active        BOOL DEFAULT true,
+      sort_order       INT DEFAULT 0,
+      created_at       TIMESTAMPTZ DEFAULT NOW()
+    )
+  `).catch(() => {});
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS driver_subscriptions (
+      id                   SERIAL PRIMARY KEY,
+      driver_phone         TEXT NOT NULL,
+      plan_id              INT REFERENCES subscription_plans(id),
+      vehicle_category     TEXT NOT NULL,
+      rides_total          INT NOT NULL,
+      rides_used           INT DEFAULT 0,
+      rides_remaining      INT NOT NULL,
+      starts_at            TIMESTAMPTZ,
+      expires_at           TIMESTAMPTZ,
+      amount_paid          NUMERIC NOT NULL,
+      razorpay_order_id    TEXT,
+      razorpay_payment_id  TEXT,
+      status               TEXT DEFAULT 'pending',
+      created_at           TIMESTAMPTZ DEFAULT NOW()
+    )
+  `).catch(() => {});
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS subscription_ride_log (
+      id               SERIAL PRIMARY KEY,
+      subscription_id  INT REFERENCES driver_subscriptions(id),
+      ride_id          INT,
+      ride_type        TEXT DEFAULT 'standard',
+      commission_saved NUMERIC NOT NULL,
+      logged_at        TIMESTAMPTZ DEFAULT NOW()
+    )
+  `).catch(() => {});
+  await db.query(`CREATE INDEX IF NOT EXISTS idx_driver_subs_phone ON driver_subscriptions(driver_phone, status)`).catch(() => {});
+  // Seed default plans once
+  const subPlanCount = await db.query(`SELECT COUNT(*) FROM subscription_plans`).catch(() => ({ rows: [{ count: '1' }] }));
+  if (parseInt(subPlanCount.rows[0].count) === 0) {
+    await db.query(`
+      INSERT INTO subscription_plans (name, vehicle_category, ride_count, price, original_price, sort_order) VALUES
+        ('15 Ride Pack', 'bike', 15,  99,  149, 1),
+        ('30 Ride Pack', 'bike', 30, 179,  249, 2),
+        ('45 Ride Pack', 'bike', 45, 249,  349, 3),
+        ('60 Ride Pack', 'bike', 60, 299,  399, 4),
+        ('15 Ride Pack', 'auto', 15, 129,  189, 1),
+        ('30 Ride Pack', 'auto', 30, 239,  329, 2),
+        ('45 Ride Pack', 'auto', 45, 329,  449, 3),
+        ('60 Ride Pack', 'auto', 60, 399,  549, 4),
+        ('15 Ride Pack', 'car',  15, 199,  279, 1),
+        ('30 Ride Pack', 'car',  30, 369,  499, 2),
+        ('45 Ride Pack', 'car',  45, 519,  699, 3),
+        ('60 Ride Pack', 'car',  60, 649,  849, 4)
+    `).catch(() => {});
+  }
+  console.log('✅ Subscription system tables ready');
 
   // ── Cancel stuck matched/arrived rides at startup ────────────────────────
   // These hold drivers hostage: worker excludes any driver with an active matched/arrived/started ride.

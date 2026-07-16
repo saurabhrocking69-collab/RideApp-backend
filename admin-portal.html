@@ -163,6 +163,7 @@ input,select,textarea{outline:none}
     <button class="tab" onclick="showSection('rewards',this);loadRewards()">💎 Rewards</button>
     <button class="tab" onclick="showSection('location',this);loadLocationIntel()">🗺️ Location Intel</button>
     <button class="tab" onclick="showSection('support',this);loadSupport()">🎫 Support Tickets</button>
+    <button class="tab" onclick="showSection('subscriptions',this);loadSubscriptions()">🎯 Subscriptions</button>
   </div>
 
   <!-- TRANSACTIONS -->
@@ -690,6 +691,85 @@ input,select,textarea{outline:none}
             <tbody id="ref-detail-body"><tr><td colspan=7 class=loading>Loading...</td></tr></tbody>
           </table>
         </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- SUBSCRIPTIONS -->
+  <div id="subscriptions" class="section">
+    <div style="font-size:18px;font-weight:700;margin-bottom:16px">🎯 Driver Subscription Plans</div>
+
+    <!-- Revenue summary -->
+    <div id="sub-revenue" style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:20px"></div>
+
+    <!-- Plans management -->
+    <div class="card" style="margin-bottom:16px">
+      <div class="card-title">📋 Subscription Plans <button class="refresh-btn" onclick="loadSubscriptions()">⟳</button></div>
+      <div style="overflow-x:auto">
+        <table style="width:100%;border-collapse:collapse;font-size:13px" id="sub-plans-table">
+          <thead>
+            <tr style="background:#f1f5f9;text-align:left">
+              <th style="padding:8px 10px">Category</th>
+              <th style="padding:8px 10px">Name</th>
+              <th style="padding:8px 10px">Rides</th>
+              <th style="padding:8px 10px">Price</th>
+              <th style="padding:8px 10px">MRP</th>
+              <th style="padding:8px 10px">Active</th>
+              <th style="padding:8px 10px">Actions</th>
+            </tr>
+          </thead>
+          <tbody id="sub-plans-body"></tbody>
+        </table>
+      </div>
+      <div style="margin-top:14px;padding:14px;background:#f8fafc;border-radius:10px;border:1px solid #e2e8f0">
+        <div style="font-size:13px;font-weight:700;margin-bottom:10px;color:#334155">➕ Add / Edit Plan</div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end">
+          <input type="hidden" id="sub-edit-id">
+          <div style="display:flex;flex-direction:column;gap:4px">
+            <label style="font-size:11px;color:#64748B">Category</label>
+            <select id="sub-cat" style="padding:6px 8px;border:1px solid #d1d5db;border-radius:6px;font-size:13px">
+              <option value="bike">🏍️ Bike</option>
+              <option value="auto">🛺 Auto</option>
+              <option value="car">🚗 Car</option>
+            </select>
+          </div>
+          <div style="display:flex;flex-direction:column;gap:4px">
+            <label style="font-size:11px;color:#64748B">Rides</label>
+            <input id="sub-rides" type="number" placeholder="e.g. 30" style="width:80px;padding:6px 8px;border:1px solid #d1d5db;border-radius:6px;font-size:13px">
+          </div>
+          <div style="display:flex;flex-direction:column;gap:4px">
+            <label style="font-size:11px;color:#64748B">Price (₹)</label>
+            <input id="sub-price" type="number" placeholder="e.g. 179" style="width:90px;padding:6px 8px;border:1px solid #d1d5db;border-radius:6px;font-size:13px">
+          </div>
+          <div style="display:flex;flex-direction:column;gap:4px">
+            <label style="font-size:11px;color:#64748B">MRP (₹)</label>
+            <input id="sub-mrp" type="number" placeholder="e.g. 249" style="width:90px;padding:6px 8px;border:1px solid #d1d5db;border-radius:6px;font-size:13px">
+          </div>
+          <button onclick="savePlan()" style="padding:7px 16px;background:#0F172A;color:#fff;border:none;border-radius:8px;font-size:13px;cursor:pointer;margin-top:auto">💾 Save</button>
+          <button onclick="clearPlanForm()" style="padding:7px 12px;background:#6B7280;color:#fff;border:none;border-radius:8px;font-size:13px;cursor:pointer;margin-top:auto">✕ Clear</button>
+          <span id="sub-plan-status" style="font-size:12px;margin-top:auto"></span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Active subscribers -->
+    <div class="card">
+      <div class="card-title">👥 Active Subscribers <span id="sub-count" style="font-size:12px;font-weight:400;color:#64748B"></span></div>
+      <div style="overflow-x:auto">
+        <table style="width:100%;border-collapse:collapse;font-size:13px" id="sub-subs-table">
+          <thead>
+            <tr style="background:#f1f5f9;text-align:left">
+              <th style="padding:8px 10px">Driver</th>
+              <th style="padding:8px 10px">Plan</th>
+              <th style="padding:8px 10px">Rides Left</th>
+              <th style="padding:8px 10px">Expires</th>
+              <th style="padding:8px 10px">Paid</th>
+              <th style="padding:8px 10px">Saved</th>
+              <th style="padding:8px 10px">Status</th>
+            </tr>
+          </thead>
+          <tbody id="sub-subs-body"></tbody>
+        </table>
       </div>
     </div>
   </div>
@@ -2455,6 +2535,117 @@ async function saveCommBulk(type) {
       if(st) { st.style.color='#EF4444'; st.textContent='❌ ' + (d.error || 'Failed'); }
     }
   } catch(e) { if(st) { st.style.color='#EF4444'; st.textContent='❌ ' + (e && e.message ? e.message : 'Network error'); } }
+}
+
+// ── SUBSCRIPTIONS ────────────────────────────────────────────────────
+const CAT_LABELS = { bike: '🏍️ Bike', auto: '🛺 Auto', car: '🚗 Car' };
+
+async function loadSubscriptions() {
+  try {
+    const [plansData, subsData] = await Promise.all([
+      aJson('/api/subscriptions/admin/plans'),
+      aJson('/api/subscriptions/admin/subscribers'),
+    ]);
+    renderSubRevenue(subsData.revenue || {});
+    renderSubPlans(plansData.plans || []);
+    renderSubSubscribers(subsData.subscribers || []);
+    var sc = document.getElementById('sub-count');
+    if (sc) sc.textContent = '(' + (subsData.subscribers || []).length + ' active/queued)';
+  } catch(e) { console.error('[sub]', e.message); }
+}
+
+function renderSubRevenue(rv) {
+  var el = document.getElementById('sub-revenue');
+  if (!el) return;
+  el.innerHTML = [
+    { label: 'Today', val: rv.today },
+    { label: 'This Month', val: rv.this_month },
+    { label: 'All Time', val: rv.total },
+  ].map(function(c) {
+    return '<div style="background:#fff;border:1px solid #e2e8f0;border-radius:12px;padding:14px 20px;min-width:140px;text-align:center">'
+      + '<div style="font-size:11px;color:#64748B;font-weight:600;letter-spacing:.5px">' + c.label.toUpperCase() + '</div>'
+      + '<div style="font-size:22px;font-weight:800;color:#0F172A;margin-top:4px">₹' + parseFloat(c.val||0).toLocaleString('en-IN') + '</div>'
+      + '</div>';
+  }).join('');
+}
+
+function renderSubPlans(plans) {
+  var tbody = document.getElementById('sub-plans-body');
+  if (!tbody) return;
+  if (!plans.length) { tbody.innerHTML = '<tr><td colspan="7" style="padding:16px;text-align:center;color:#94A3B8">Koi plan nahi mila</td></tr>'; return; }
+  tbody.innerHTML = plans.map(function(p) {
+    return '<tr style="border-bottom:1px solid #f1f5f9">'
+      + '<td style="padding:8px 10px">' + (CAT_LABELS[p.vehicle_category]||p.vehicle_category) + '</td>'
+      + '<td style="padding:8px 10px;font-weight:600">' + p.name + '</td>'
+      + '<td style="padding:8px 10px">' + p.ride_count + '</td>'
+      + '<td style="padding:8px 10px;color:#059669;font-weight:700">₹' + p.price + '</td>'
+      + '<td style="padding:8px 10px;color:#94A3B8;text-decoration:line-through">₹' + (p.original_price||'-') + '</td>'
+      + '<td style="padding:8px 10px"><span style="padding:2px 8px;border-radius:20px;font-size:11px;background:' + (p.is_active?'#D1FAE5':'#FEE2E2') + ';color:' + (p.is_active?'#065F46':'#991B1B') + '">' + (p.is_active?'Active':'Off') + '</span></td>'
+      + '<td style="padding:8px 10px">'
+      + '<button onclick="editPlan(' + JSON.stringify(p).replace(/"/g,'&quot;') + ')" style="padding:3px 10px;font-size:11px;background:#3B82F6;color:#fff;border:none;border-radius:6px;cursor:pointer;margin-right:4px">✏️ Edit</button>'
+      + '<button onclick="togglePlan(' + p.id + ',' + !p.is_active + ')" style="padding:3px 10px;font-size:11px;background:' + (p.is_active?'#EF4444':'#22C55E') + ';color:#fff;border:none;border-radius:6px;cursor:pointer">' + (p.is_active?'Deactivate':'Activate') + '</button>'
+      + '</td></tr>';
+  }).join('');
+}
+
+function renderSubSubscribers(subs) {
+  var tbody = document.getElementById('sub-subs-body');
+  if (!tbody) return;
+  if (!subs.length) { tbody.innerHTML = '<tr><td colspan="7" style="padding:16px;text-align:center;color:#94A3B8">Koi active subscriber nahi</td></tr>'; return; }
+  tbody.innerHTML = subs.map(function(s) {
+    var exp = s.expires_at ? new Date(s.expires_at).toLocaleDateString('en-IN') : 'N/A';
+    return '<tr style="border-bottom:1px solid #f1f5f9">'
+      + '<td style="padding:8px 10px;font-family:monospace">' + s.driver_phone + '</td>'
+      + '<td style="padding:8px 10px">' + (CAT_LABELS[s.vehicle_category]||s.vehicle_category) + ' · ' + s.plan_name + '</td>'
+      + '<td style="padding:8px 10px;font-weight:700;color:#0F172A">' + s.rides_remaining + ' / ' + s.rides_total + '</td>'
+      + '<td style="padding:8px 10px;font-size:12px">' + exp + '</td>'
+      + '<td style="padding:8px 10px;color:#059669;font-weight:600">₹' + parseFloat(s.amount_paid).toFixed(0) + '</td>'
+      + '<td style="padding:8px 10px;color:#7C3AED;font-weight:600">₹' + parseFloat(s.total_saved||0).toFixed(0) + '</td>'
+      + '<td style="padding:8px 10px"><span style="padding:2px 8px;border-radius:20px;font-size:11px;background:' + (s.status==='active'?'#D1FAE5':'#FEF9C3') + ';color:' + (s.status==='active'?'#065F46':'#78350F') + '">' + s.status + '</span></td>'
+      + '</tr>';
+  }).join('');
+}
+
+function editPlan(p) {
+  document.getElementById('sub-edit-id').value = p.id;
+  document.getElementById('sub-cat').value = p.vehicle_category;
+  document.getElementById('sub-rides').value = p.ride_count;
+  document.getElementById('sub-price').value = p.price;
+  document.getElementById('sub-mrp').value = p.original_price || '';
+}
+
+function clearPlanForm() {
+  document.getElementById('sub-edit-id').value = '';
+  document.getElementById('sub-rides').value = '';
+  document.getElementById('sub-price').value = '';
+  document.getElementById('sub-mrp').value = '';
+}
+
+async function savePlan() {
+  var id = document.getElementById('sub-edit-id').value;
+  var cat = document.getElementById('sub-cat').value;
+  var rides = parseInt(document.getElementById('sub-rides').value);
+  var price = parseFloat(document.getElementById('sub-price').value);
+  var mrp = parseFloat(document.getElementById('sub-mrp').value) || null;
+  var st = document.getElementById('sub-plan-status');
+  if (!rides || !price) { if(st) { st.style.color='#EF4444'; st.textContent='❌ Rides aur price required'; } return; }
+  try {
+    var body = { name: rides + ' Ride Pack', vehicle_category: cat, ride_count: rides, price, original_price: mrp, is_active: true };
+    if (id) body.id = parseInt(id);
+    var d = await aJson('/api/subscriptions/admin/plans', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body) });
+    if (d.success) {
+      if(st) { st.style.color='#059669'; st.textContent='✅ Saved!'; }
+      renderSubPlans(d.plans);
+      clearPlanForm();
+    } else { if(st) { st.style.color='#EF4444'; st.textContent='❌ ' + (d.error||'Failed'); } }
+  } catch(e) { if(st) { st.style.color='#EF4444'; st.textContent='❌ ' + (e.message||'Error'); } }
+}
+
+async function togglePlan(id, setActive) {
+  try {
+    var d = await aJson('/api/subscriptions/admin/plans', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ id, is_active: setActive }) });
+    if (d.success) renderSubPlans(d.plans);
+  } catch(e) { alert('❌ ' + (e.message||'Error')); }
 }
 
 // ── SUPPORT TICKETS ──────────────────────────────────────────────────

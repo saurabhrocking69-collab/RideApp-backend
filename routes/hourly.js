@@ -4,6 +4,7 @@ const db = require('../config/db');
 const { sendFCM } = require('../config/firebase');
 const { emitToRoom, getIO } = require('../config/socket');
 const { HOURLY_FARES, getSurge } = require('../services/pricing');
+const { useSubscriptionIfActive } = require('../services/subscription');
 
 async function doCompleteHourly(booking_id, actual_km) {
   const client = await db.connect();
@@ -18,7 +19,8 @@ async function doCompleteHourly(booking_id, actual_km) {
     const totalFare = parseFloat(b.base_fare) + extraCharge + extensionFare;
     const fsRate = await client.query('SELECT hourly_commission_rate FROM fare_settings WHERE vehicle_type=$1 LIMIT 1', [b.vehicle_type]);
     const commPct = parseFloat(fsRate.rows[0]?.hourly_commission_rate ?? 12) / 100;
-    const commission = Math.round(totalFare * commPct * 100) / 100;
+    const normalCommission = Math.round(totalFare * commPct * 100) / 100;
+    const { commission } = await useSubscriptionIfActive(b.driver_phone, booking_id, 'hourly', normalCommission, client);
     const driverEarning = Math.round((totalFare - commission) * 100) / 100;
     const actualHours = b.started_at ? (Date.now() - new Date(b.started_at).getTime()) / 3600000 : b.package_hours;
     const driverUser = await client.query('SELECT id FROM users WHERE phone=$1', [b.driver_phone]);
@@ -306,7 +308,8 @@ router.post('/early-end-confirm', async (req, res) => {
     const refund = Math.round(parseFloat(b.base_fare) - driverAmount);
     const fsRate2 = await client.query('SELECT hourly_commission_rate FROM fare_settings WHERE vehicle_type=$1 LIMIT 1', [b.vehicle_type]);
     const commPct2 = parseFloat(fsRate2.rows[0]?.hourly_commission_rate ?? 12) / 100;
-    const commission = Math.round(driverAmount * commPct2);
+    const normalCommission2 = Math.round(driverAmount * commPct2);
+    const { commission } = await useSubscriptionIfActive(b.driver_phone, booking_id, 'hourly', normalCommission2, client);
     const driverEarning = driverAmount - commission;
     const driverUser = await client.query('SELECT id FROM users WHERE phone=$1', [b.driver_phone]);
     if (driverUser.rows[0]) await client.query('UPDATE driver_wallet SET balance=balance+$1, total_earned=total_earned+$1 WHERE driver_id=$2', [driverEarning, driverUser.rows[0].id]);
@@ -339,7 +342,8 @@ router.post('/customer-early-complete', async (req, res) => {
     const driverAmount = parseFloat(b.base_fare);
     const fsRate3 = await client.query('SELECT hourly_commission_rate FROM fare_settings WHERE vehicle_type=$1 LIMIT 1', [b.vehicle_type]);
     const commPct3 = parseFloat(fsRate3.rows[0]?.hourly_commission_rate ?? 12) / 100;
-    const commission = Math.round(driverAmount * commPct3);
+    const normalCommission3 = Math.round(driverAmount * commPct3);
+    const { commission } = await useSubscriptionIfActive(b.driver_phone, booking_id, 'hourly', normalCommission3, client);
     const driverEarning = driverAmount - commission;
     const driverUser = await client.query('SELECT id FROM users WHERE phone=$1', [b.driver_phone]);
     if (driverUser.rows[0]) {

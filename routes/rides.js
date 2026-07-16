@@ -14,6 +14,7 @@ const { creditPeakBonusIfApplicable } = require('./bonus');
 const { maybeGrantReferralReward } = require('./referral');
 const { getSurgeMultiplier } = require('../services/locationIntelligence');
 const { calculateFare } = require('../services/pricing');
+const { useSubscriptionIfActive } = require('../services/subscription');
 
 function emitRideUpdate(rideId, data) {
   emitToRoom('ride_' + rideId, 'rideUpdate', { rideId, ...data });
@@ -731,21 +732,25 @@ router.post('/payment-complete', async (req, res) => {
   const { ride_id, payment_method, phone } = req.body;
   try {
     const rideRes = await db.query(
-      `SELECT r.*, fs.commission_rate FROM rides r
+      `SELECT r.*, fs.commission_rate, u.phone AS driver_phone FROM rides r
        LEFT JOIN fare_settings fs ON fs.vehicle_type = r.ride_type
+       LEFT JOIN users u ON u.id = r.driver_id
        WHERE r.id = $1`, [ride_id]
     );
     if (rideRes.rows.length === 0) return res.json({ success: false, message: 'Ride nahi mili' });
     const ride = rideRes.rows[0];
     const fare = Math.max(0, parseFloat(ride.fare) - parseFloat(ride.discount || 0));
     const commRate = parseFloat(ride.commission_rate || 15) / 100;
-    const commission = Math.round(fare * commRate * 100) / 100;
+    const normalCommission = Math.round(fare * commRate * 100) / 100;
 
     // Idempotency: if already completed, just re-emit the socket so the driver gets notified
     if (ride.payment_status === 'completed') {
       emitToRoom('ride_' + ride_id, 'paymentConfirmed', { ride_id, status: 'completed', payment_method: ride.payment_method, cashbacks: [] });
       return res.json({ success: true, status: 'completed', already_done: true });
     }
+
+    // Subscription check — commission = 0 if driver has an active ride pack
+    const { commission } = await useSubscriptionIfActive(ride.driver_phone, ride_id, 'standard', normalCommission);
 
     if (payment_method === 'cash') {
       await db.query(`UPDATE rides SET payment_method = 'cash', payment_status = 'cash_pending' WHERE id = $1`, [ride_id]);
@@ -865,25 +870,30 @@ router.post('/cash-confirm', async (req, res) => {
       return res.json({ success: true, message: 'Payment already confirmed hai' });
     const fare = Math.max(0, parseFloat(rideRes.rows[0].fare) - parseFloat(rideRes.rows[0].discount || 0));
     const commRate = parseFloat(rideRes.rows[0].commission_rate || 15) / 100;
-    const commission = Math.round(fare * commRate * 100) / 100;
+    const normalCommission = Math.round(fare * commRate * 100) / 100;
+    // Subscription check
+    const { commission } = await useSubscriptionIfActive(phone, ride_id, 'standard', normalCommission);
 
     await db.query(`UPDATE rides SET payment_status = 'completed', payment_method = $1, commission_amount = $2 WHERE id = $3`, [method, commission, ride_id]);
-    await db.query(`UPDATE driver_commissions SET status = 'cash_owed', payment_method = $1 WHERE ride_id = $2`, [method, ride_id]);
-    // Ensure wallet row exists before updating pending_commission
-    const driverUser = await db.query('SELECT id FROM users WHERE phone=$1', [phone]);
-    if (driverUser.rows[0]) {
-      await db.query(
-        `INSERT INTO driver_wallet (driver_id) VALUES ($1) ON CONFLICT (driver_id) DO NOTHING`,
-        [driverUser.rows[0].id]
+    await db.query(`UPDATE driver_commissions SET status = 'cash_owed', commission = $1, payment_method = $2 WHERE ride_id = $3`, [commission, method, ride_id]);
+
+    if (commission > 0) {
+      // Ensure wallet row exists before updating pending_commission
+      const driverUser = await db.query('SELECT id FROM users WHERE phone=$1', [phone]);
+      if (driverUser.rows[0]) {
+        await db.query(
+          `INSERT INTO driver_wallet (driver_id) VALUES ($1) ON CONFLICT (driver_id) DO NOTHING`,
+          [driverUser.rows[0].id]
+        );
+      }
+      const walletRes = await db.query(
+        `UPDATE driver_wallet SET pending_commission = COALESCE(pending_commission, 0) + $1
+         WHERE driver_id = (SELECT id FROM users WHERE phone = $2) RETURNING pending_commission`,
+        [commission, phone]
       );
+      const totalPending = parseFloat(walletRes.rows[0]?.pending_commission || 0);
+      sendFCM(phone, '💰 Commission Due', `₹${commission.toFixed(0)} commission baqi hai. Total pending: ₹${totalPending.toFixed(0)}. App mein pay karo.`, { type: 'commission_due', pending_commission: String(totalPending) }, { role: 'driver' }).catch(() => {});
     }
-    const walletRes = await db.query(
-      `UPDATE driver_wallet SET pending_commission = COALESCE(pending_commission, 0) + $1
-       WHERE driver_id = (SELECT id FROM users WHERE phone = $2) RETURNING pending_commission`,
-      [commission, phone]
-    );
-    const totalPending = parseFloat(walletRes.rows[0]?.pending_commission || 0);
-    sendFCM(phone, '💰 Commission Due', `₹${commission.toFixed(0)} commission baqi hai. Total pending: ₹${totalPending.toFixed(0)}. App mein pay karo.`, { type: 'commission_due', pending_commission: String(totalPending) }, { role: 'driver' }).catch(() => {});
     // Cashback for customer (cash/upi rides still earn ride-count cashbacks, not wallet bonus)
     let cashbacks = [];
     try {
