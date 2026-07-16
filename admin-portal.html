@@ -495,7 +495,10 @@ input,select,textarea{outline:none}
     </div>
     <div id="payout-pending-sec">
       <div class="card">
-        <div class="card-title">⏳ Pending Payout Requests <button class="refresh-btn" onclick="loadPayouts('pending')">Reload</button></div>
+        <div class="card-title">⏳ Pending Payout Requests
+          <button class="refresh-btn" style="margin-left:0" onclick="loadPayouts('pending')">Reload</button>
+          <button class="refresh-btn" style="background:#1a1a2e;margin-left:6px" onclick="exportPayoutsCsv()">⬇️ CSV</button>
+        </div>
         <div style="overflow-x:auto"><table><thead><tr><th>Date</th><th>Driver</th><th>Phone</th><th>Amount</th><th>Method / Details</th><th>Wallet Bal</th><th>Comm Due</th><th>Action</th></tr></thead>
         <tbody id="payout-pending-body"><tr><td colspan=8 class=loading>Loading...</td></tr></tbody></table></div>
       </div>
@@ -512,7 +515,10 @@ input,select,textarea{outline:none}
     </div>
     <div id="payout-history-sec" style="display:none">
       <div class="card">
-        <div class="card-title">📋 Payout History <button class="refresh-btn" onclick="loadPayoutHistory()">Reload</button></div>
+        <div class="card-title">📋 Payout History
+          <button class="refresh-btn" style="margin-left:0" onclick="loadPayoutHistory()">Reload</button>
+          <button class="refresh-btn" style="background:#1a1a2e;margin-left:6px" onclick="exportPayoutHistoryCsv()">⬇️ CSV</button>
+        </div>
         <div style="overflow-x:auto"><table><thead><tr><th>Date</th><th>Driver</th><th>Amount</th><th>Method</th><th>Status</th><th>Razorpay ID / UTR</th><th>Note</th><th>Settled At</th></tr></thead>
         <tbody id="payout-history-body"><tr><td colspan=8 class=loading>Loading...</td></tr></tbody></table></div>
       </div>
@@ -2744,6 +2750,15 @@ function exportRidesCsv(){
 function exportFinancialsCsv(){
   downloadCsv('sppero_financials_'+new Date().toISOString().slice(0,10)+'.csv',
     ['Driver','Phone','Vehicle','Wallet','Total Earned','Withdrawn','Comm Due','Bank Account','IFSC','UPI ID','Rides'],tblRows('financials-body'));
+}
+function exportPayoutsCsv(){
+  var rows=tblRows('payout-pending-body').map(function(r){return r.slice(0,7);});
+  downloadCsv('sppero_payout_requests_'+new Date().toISOString().slice(0,10)+'.csv',
+    ['Date','Driver','Phone','Amount','Method / Details','Wallet Bal','Comm Due'],rows);
+}
+function exportPayoutHistoryCsv(){
+  downloadCsv('sppero_payout_history_'+new Date().toISOString().slice(0,10)+'.csv',
+    ['Date','Driver','Amount','Method','Status','Razorpay ID / UTR','Note','Settled At'],tblRows('payout-history-body'));
 }
 
 // ── Revenue Chart ────────────────────────────────────────
