@@ -597,6 +597,15 @@ app.get('/admin', (_req, res) =>
   res.sendFile(__dirname + '/admin-portal.html')
 );
 
+// Global JSON error handler — overrides Express default HTML error page
+// Must be AFTER all routes so it only catches unhandled next(err) calls
+app.use((err, req, res, _next) => {
+  console.error('[SERVER ERROR]', req.method, req.url, err.message);
+  if (!res.headersSent) {
+    res.status(err.status || 500).json({ error: err.message || 'Internal server error' });
+  }
+});
+
 // ── Socket.io events ─────────────────────────────
 function _haversineKm(lat1, lng1, lat2, lng2) {
   const R = 6371, dLat = (lat2-lat1)*Math.PI/180, dLng = (lng2-lng1)*Math.PI/180;
