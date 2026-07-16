@@ -2428,7 +2428,7 @@ async function saveCommVehicle(vt) {
       loadStdFares();
       alert('✅ ' + (COMM_LABELS[vt] || vt) + ' — Standard: ' + (rate||'unchanged') + '% · Hourly: ' + (hrate||'unchanged') + '%');
     } else { alert('❌ ' + (d.error || 'Failed')); }
-  } catch(e) { alert('❌ Network error'); }
+  } catch(e) { alert('❌ ' + (e && e.message ? e.message : 'Network error')); }
 }
 
 async function saveCommBulk(type) {
@@ -2454,7 +2454,7 @@ async function saveCommBulk(type) {
     } else {
       if(st) { st.style.color='#EF4444'; st.textContent='❌ ' + (d.error || 'Failed'); }
     }
-  } catch(e) { if(st) { st.style.color='#EF4444'; st.textContent='❌ Network error'; } }
+  } catch(e) { if(st) { st.style.color='#EF4444'; st.textContent='❌ ' + (e && e.message ? e.message : 'Network error'); } }
 }
 
 // ── SUPPORT TICKETS ──────────────────────────────────────────────────

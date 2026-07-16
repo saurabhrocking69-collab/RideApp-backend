@@ -498,25 +498,31 @@ router.get('/commission-rates', async (req, res) => {
 // POST /api/admin/commission-rates — update one or all vehicle types
 // rate = standard ride commission, hourly_rate = hourly ride commission (both optional individually)
 router.post('/commission-rates', async (req, res) => {
-  const { vehicle_type, rate, hourly_rate } = req.body;
-  const cr  = rate        != null ? parseFloat(rate)        : null;
-  const hcr = hourly_rate != null ? parseFloat(hourly_rate) : null;
-  if (cr  != null && (isNaN(cr)  || cr  < 0 || cr  > 50)) return res.status(400).json({ error: 'Standard rate 0-50 ke beech hona chahiye' });
-  if (hcr != null && (isNaN(hcr) || hcr < 0 || hcr > 50)) return res.status(400).json({ error: 'Hourly rate 0-50 ke beech hona chahiye' });
-  if (cr == null && hcr == null) return res.status(400).json({ error: 'rate ya hourly_rate required hai' });
   try {
-    const sets = [];
-    const vals = [];
-    if (cr  != null) { sets.push(`commission_rate=$${sets.length + 1}`);        vals.push(cr); }
-    if (hcr != null) { sets.push(`hourly_commission_rate=$${sets.length + 1}`); vals.push(hcr); }
-    sets.push('updated_at=NOW()');
+    const { vehicle_type, rate, hourly_rate } = req.body || {};
+    const cr  = rate        !== undefined ? parseFloat(rate)        : NaN;
+    const hcr = hourly_rate !== undefined ? parseFloat(hourly_rate) : NaN;
+    const hasCr  = !isNaN(cr)  && cr  >= 0 && cr  <= 50;
+    const hasHcr = !isNaN(hcr) && hcr >= 0 && hcr <= 50;
+    if (!hasCr && !hasHcr) return res.status(400).json({ error: 'Rate 0-50 ke beech hona chahiye' });
     if (vehicle_type) {
-      vals.push(vehicle_type);
-      await db.query(`UPDATE fare_settings SET ${sets.join(',')} WHERE vehicle_type=$${vals.length}`, vals);
+      if (hasCr && hasHcr) {
+        await db.query('UPDATE fare_settings SET commission_rate=$1, hourly_commission_rate=$2 WHERE vehicle_type=$3', [cr, hcr, vehicle_type]);
+      } else if (hasCr) {
+        await db.query('UPDATE fare_settings SET commission_rate=$1 WHERE vehicle_type=$2', [cr, vehicle_type]);
+      } else {
+        await db.query('UPDATE fare_settings SET hourly_commission_rate=$1 WHERE vehicle_type=$2', [hcr, vehicle_type]);
+      }
     } else {
-      await db.query(`UPDATE fare_settings SET ${sets.join(',')}`, vals);
+      if (hasCr && hasHcr) {
+        await db.query('UPDATE fare_settings SET commission_rate=$1, hourly_commission_rate=$2', [cr, hcr]);
+      } else if (hasCr) {
+        await db.query('UPDATE fare_settings SET commission_rate=$1', [cr]);
+      } else {
+        await db.query('UPDATE fare_settings SET hourly_commission_rate=$1', [hcr]);
+      }
     }
-    const r = await db.query(`SELECT vehicle_type, commission_rate, hourly_commission_rate FROM fare_settings ORDER BY vehicle_type`);
+    const r = await db.query('SELECT vehicle_type, commission_rate, hourly_commission_rate FROM fare_settings ORDER BY vehicle_type');
     res.json({ success: true, rates: r.rows });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
