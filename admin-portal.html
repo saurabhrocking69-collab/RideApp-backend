@@ -2272,13 +2272,14 @@ async function loadSupport() {
 async function loadSupStats() {
   try {
     const d = await aJson('/api/admin/support/stats');
+    if (d.error) { console.error('Support stats error:', d.error); return; }
     document.getElementById('sup-val-open').textContent = d.open ?? '—';
     document.getElementById('sup-val-prog').textContent = d.in_progress ?? '—';
     document.getElementById('sup-val-res').textContent  = d.resolved_today ?? '—';
     document.getElementById('sup-val-sla').textContent  = d.sla_breached ?? '—';
     const slaCard = document.getElementById('sup-stat-sla');
     if (slaCard) slaCard.style.borderLeft = (d.sla_breached||0) > 0 ? '4px solid #EF4444' : '';
-  } catch(e) {}
+  } catch(e) { console.error('loadSupStats failed:', e); }
 }
 
 async function loadSupList() {
@@ -2293,6 +2294,10 @@ async function loadSupList() {
   qs.set('limit', '50');
   try {
     const d = await aJson('/api/admin/support/tickets?' + qs.toString());
+    if (d.error) {
+      el.innerHTML = '<div class="loading" style="color:#EF4444">❌ ' + d.error + '</div>';
+      return;
+    }
     if (!d.tickets || !d.tickets.length) {
       el.innerHTML = '<div class="loading">No tickets found</div>';
       return;
