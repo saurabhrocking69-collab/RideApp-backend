@@ -876,7 +876,8 @@ setTimeout(async () => {
   await db.query(`ALTER TABLE fare_settings ADD COLUMN IF NOT EXISTS min_fare       NUMERIC NOT NULL DEFAULT 0`).catch(() => {});
   await db.query(`ALTER TABLE fare_settings ADD COLUMN IF NOT EXISTS per_km_rate_t2 NUMERIC`).catch(() => {});
   await db.query(`ALTER TABLE fare_settings ADD COLUMN IF NOT EXISTS per_km_rate_t3 NUMERIC`).catch(() => {});
-  await db.query(`ALTER TABLE fare_settings ADD COLUMN IF NOT EXISTS commission_rate NUMERIC NOT NULL DEFAULT 15`).catch(() => {});
+  await db.query(`ALTER TABLE fare_settings ADD COLUMN IF NOT EXISTS commission_rate         NUMERIC NOT NULL DEFAULT 15`).catch(() => {});
+  await db.query(`ALTER TABLE fare_settings ADD COLUMN IF NOT EXISTS hourly_commission_rate  NUMERIC NOT NULL DEFAULT 12`).catch(() => {});
   // Seed proposed defaults for new columns (WHERE time_rate=0 ensures first-run only; admin edits are preserved)
   await db.query(`
     UPDATE fare_settings SET

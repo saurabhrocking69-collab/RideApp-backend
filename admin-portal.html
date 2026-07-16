@@ -474,12 +474,20 @@ input,select,textarea{outline:none}
       <!-- COMMISSION RATES -->
       <div class="card">
         <div class="card-title">💰 Platform Commission Rates <button class="refresh-btn" onclick="loadCommRates()">⟳ Reload</button></div>
-        <p style="font-size:12px;color:#6B7280;margin-bottom:14px">Ride fare pe platform ka cut — driver ke payment confirm hone par apply hota hai. Standard rides aur cash dono pe.</p>
-        <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;padding:12px;background:#f9fafb;border-radius:10px;margin-bottom:14px">
-          <span style="font-size:13px;font-weight:700;color:#374151">Sabhi vehicles ke liye ek rate set karo:</span>
-          <input id="comm-bulk-rate" type="number" min="0" max="50" step="0.5" placeholder="e.g. 15" style="width:80px;padding:7px 10px;border:1px solid #e0e0e0;border-radius:6px;font-size:13px">
-          <button onclick="saveCommBulk()" class="refresh-btn" style="background:#1a1a2e;color:#fff">✅ Apply to All</button>
-          <span id="comm-bulk-status" style="font-size:12px"></span>
+        <p style="font-size:12px;color:#6B7280;margin-bottom:14px">Har vehicle ka alag commission set karo. Standard rides aur Hourly rides ke liye alag rate hota hai.</p>
+        <div style="display:flex;gap:16px;flex-wrap:wrap;margin-bottom:14px">
+          <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:12px;background:#f9fafb;border-radius:10px;flex:1;min-width:240px">
+            <span style="font-size:12px;font-weight:700;color:#374151">🛺 Standard — Sabhi:</span>
+            <input id="comm-bulk-rate" type="number" min="0" max="50" step="0.5" placeholder="e.g. 15" style="width:72px;padding:6px 8px;border:1px solid #e0e0e0;border-radius:6px;font-size:13px">
+            <button onclick="saveCommBulk('standard')" class="refresh-btn" style="background:#1a1a2e;color:#fff;font-size:11px">✅ Apply</button>
+            <span id="comm-bulk-status" style="font-size:12px"></span>
+          </div>
+          <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:12px;background:#f0f9ff;border-radius:10px;flex:1;min-width:240px">
+            <span style="font-size:12px;font-weight:700;color:#0369a1">⏱️ Hourly — Sabhi:</span>
+            <input id="comm-bulk-hourly" type="number" min="0" max="50" step="0.5" placeholder="e.g. 12" style="width:72px;padding:6px 8px;border:1px solid #bae6fd;border-radius:6px;font-size:13px">
+            <button onclick="saveCommBulk('hourly')" class="refresh-btn" style="background:#0369a1;color:#fff;font-size:11px">✅ Apply</button>
+            <span id="comm-bulk-hourly-status" style="font-size:12px"></span>
+          </div>
         </div>
         <div id="comm-rates-table"><div class="loading">Loading...</div></div>
       </div>
@@ -2318,17 +2326,23 @@ function renderCommRates() {
   var html = '<div style="overflow-x:auto"><table style="width:100%;font-size:13px;border-collapse:collapse">' +
     '<thead><tr style="background:#f9fafb">' +
     '<th style="text-align:left;padding:8px 10px;font-weight:600">Vehicle</th>' +
-    '<th style="padding:8px 10px;font-weight:600">Current Rate</th>' +
-    '<th style="padding:8px 10px;font-weight:600">New Rate</th>' +
+    '<th style="padding:8px 10px;font-weight:600">🛺 Standard</th>' +
+    '<th style="padding:8px 10px;font-weight:600">New Standard</th>' +
+    '<th style="padding:8px 10px;font-weight:600">⏱️ Hourly</th>' +
+    '<th style="padding:8px 10px;font-weight:600">New Hourly</th>' +
     '<th style="padding:8px 10px"></th>' +
     '</tr></thead><tbody>';
   commRatesCache.forEach(function(r) {
-    var cr = parseFloat(r.commission_rate || 15);
-    var color = cr >= 15 ? '#3B82F6' : cr >= 12 ? '#059669' : '#F59E0B';
+    var cr  = parseFloat(r.commission_rate || 15);
+    var hcr = parseFloat(r.hourly_commission_rate || 12);
+    var col  = cr  >= 15 ? '#3B82F6' : cr  >= 12 ? '#059669' : '#F59E0B';
+    var hcol = hcr >= 15 ? '#3B82F6' : hcr >= 12 ? '#059669' : '#F59E0B';
     html += '<tr style="border-top:1px solid #f3f4f6">' +
       '<td style="padding:8px 10px">' + (COMM_LABELS[r.vehicle_type] || r.vehicle_type) + '</td>' +
-      '<td style="text-align:center;padding:8px 10px;font-weight:700;font-size:15px;color:' + color + '">' + cr.toFixed(0) + '%</td>' +
-      '<td style="padding:6px 10px"><input id="comm-' + r.vehicle_type + '" type="number" min="0" max="50" step="0.5" value="' + cr.toFixed(0) + '" style="width:72px;padding:6px 8px;border:1px solid #e0e0e0;border-radius:6px;font-size:13px;text-align:center"></td>' +
+      '<td style="text-align:center;padding:8px 10px;font-weight:700;font-size:15px;color:' + col  + '">' + cr.toFixed(0)  + '%</td>' +
+      '<td style="padding:6px 10px"><input id="comm-'  + r.vehicle_type + '" type="number" min="0" max="50" step="0.5" value="' + cr.toFixed(0)  + '" style="width:68px;padding:6px 8px;border:1px solid #e0e0e0;border-radius:6px;font-size:13px;text-align:center"></td>' +
+      '<td style="text-align:center;padding:8px 10px;font-weight:700;font-size:15px;color:' + hcol + '">' + hcr.toFixed(0) + '%</td>' +
+      '<td style="padding:6px 10px"><input id="hcomm-' + r.vehicle_type + '" type="number" min="0" max="50" step="0.5" value="' + hcr.toFixed(0) + '" style="width:68px;padding:6px 8px;border:1px solid #bae6fd;border-radius:6px;font-size:13px;text-align:center"></td>' +
       '<td style="padding:6px 10px"><button class="refresh-btn" onclick="saveCommVehicle(\'' + r.vehicle_type + '\')" style="font-size:11px">💾 Save</button></td>' +
       '</tr>';
   });
@@ -2337,37 +2351,44 @@ function renderCommRates() {
 }
 
 async function saveCommVehicle(vt) {
-  var input = document.getElementById('comm-' + vt);
-  var rate = input && input.value;
-  if (!rate) return;
+  var rate  = (document.getElementById('comm-'  + vt) || {}).value;
+  var hrate = (document.getElementById('hcomm-' + vt) || {}).value;
+  if (!rate && !hrate) return;
+  var body = { vehicle_type: vt };
+  if (rate)  body.rate         = rate;
+  if (hrate) body.hourly_rate  = hrate;
   try {
     var d = await aJson('/api/admin/commission-rates', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ vehicle_type: vt, rate: rate })
+      body: JSON.stringify(body)
     });
     if (d.success) {
       commRatesCache = d.rates || commRatesCache;
       renderCommRates();
       loadStdFares();
-      alert('✅ ' + (COMM_LABELS[vt] || vt) + ' commission → ' + rate + '%');
+      alert('✅ ' + (COMM_LABELS[vt] || vt) + ' — Standard: ' + (rate||'unchanged') + '% · Hourly: ' + (hrate||'unchanged') + '%');
     } else { alert('❌ ' + (d.error || 'Failed')); }
   } catch(e) { alert('❌ Network error'); }
 }
 
-async function saveCommBulk() {
-  var rate = (document.getElementById('comm-bulk-rate') || {}).value;
-  var st = document.getElementById('comm-bulk-status');
+async function saveCommBulk(type) {
+  var isHourly = type === 'hourly';
+  var inputId = isHourly ? 'comm-bulk-hourly' : 'comm-bulk-rate';
+  var stId    = isHourly ? 'comm-bulk-hourly-status' : 'comm-bulk-status';
+  var rate = (document.getElementById(inputId) || {}).value;
+  var st = document.getElementById(stId);
   if (!rate) { if(st) { st.style.color='#EF4444'; st.textContent='❌ Rate enter karo'; } return; }
   if(st) st.textContent = 'Saving...';
+  var body = isHourly ? { hourly_rate: rate } : { rate: rate };
   try {
     var d = await aJson('/api/admin/commission-rates', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ rate: rate })
+      body: JSON.stringify(body)
     });
     if (d.success) {
-      if(st) { st.style.color='#059669'; st.textContent='✅ Sabhi vehicles → ' + rate + '%'; }
+      if(st) { st.style.color='#059669'; st.textContent='✅ Sabhi → ' + rate + '%'; }
       commRatesCache = d.rates || commRatesCache;
       renderCommRates();
       loadStdFares();

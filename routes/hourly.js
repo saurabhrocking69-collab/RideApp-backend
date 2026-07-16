@@ -16,7 +16,9 @@ async function doCompleteHourly(booking_id, actual_km) {
     const extraCharge = extraKm * (HOURLY_FARES[b.vehicle_type]?.extra || 8);
     const extensionFare = parseFloat(b.extend_total_fare || 0);
     const totalFare = parseFloat(b.base_fare) + extraCharge + extensionFare;
-    const commission = Math.round(totalFare * 0.12 * 100) / 100;
+    const fsRate = await client.query('SELECT hourly_commission_rate FROM fare_settings WHERE vehicle_type=$1 LIMIT 1', [b.vehicle_type]);
+    const commPct = parseFloat(fsRate.rows[0]?.hourly_commission_rate ?? 12) / 100;
+    const commission = Math.round(totalFare * commPct * 100) / 100;
     const driverEarning = Math.round((totalFare - commission) * 100) / 100;
     const actualHours = b.started_at ? (Date.now() - new Date(b.started_at).getTime()) / 3600000 : b.package_hours;
     const driverUser = await client.query('SELECT id FROM users WHERE phone=$1', [b.driver_phone]);
@@ -302,7 +304,9 @@ router.post('/early-end-confirm', async (req, res) => {
     const proportion = isCustomerEnd ? 1.0 : Math.max(0.70, actualHours / b.package_hours);
     const driverAmount = Math.round(parseFloat(b.base_fare) * proportion);
     const refund = Math.round(parseFloat(b.base_fare) - driverAmount);
-    const commission = Math.round(driverAmount * 0.12);
+    const fsRate2 = await client.query('SELECT hourly_commission_rate FROM fare_settings WHERE vehicle_type=$1 LIMIT 1', [b.vehicle_type]);
+    const commPct2 = parseFloat(fsRate2.rows[0]?.hourly_commission_rate ?? 12) / 100;
+    const commission = Math.round(driverAmount * commPct2);
     const driverEarning = driverAmount - commission;
     const driverUser = await client.query('SELECT id FROM users WHERE phone=$1', [b.driver_phone]);
     if (driverUser.rows[0]) await client.query('UPDATE driver_wallet SET balance=balance+$1, total_earned=total_earned+$1 WHERE driver_id=$2', [driverEarning, driverUser.rows[0].id]);
@@ -333,7 +337,9 @@ router.post('/customer-early-complete', async (req, res) => {
     const b = r.rows[0];
     const actualHours = b.started_at ? (Date.now() - new Date(b.started_at).getTime()) / 3600000 : 0;
     const driverAmount = parseFloat(b.base_fare);
-    const commission = Math.round(driverAmount * 0.12);
+    const fsRate3 = await client.query('SELECT hourly_commission_rate FROM fare_settings WHERE vehicle_type=$1 LIMIT 1', [b.vehicle_type]);
+    const commPct3 = parseFloat(fsRate3.rows[0]?.hourly_commission_rate ?? 12) / 100;
+    const commission = Math.round(driverAmount * commPct3);
     const driverEarning = driverAmount - commission;
     const driverUser = await client.query('SELECT id FROM users WHERE phone=$1', [b.driver_phone]);
     if (driverUser.rows[0]) {
