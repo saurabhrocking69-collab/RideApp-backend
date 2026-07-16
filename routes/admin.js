@@ -1165,4 +1165,34 @@ router.post('/cancel-settings', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+// GET /api/admin/revenue-daily?days=7
+router.get('/revenue-daily', async (req, res) => {
+  try {
+    const days = Math.min(parseInt(req.query.days) || 7, 90);
+    const r = await db.query(`
+      WITH daily_rides AS (
+        SELECT DATE(created_at) AS date, id AS ride_id, fare
+        FROM rides
+        WHERE status = 'completed'
+          AND created_at >= NOW() - INTERVAL '1 day' * $1
+      ),
+      latest_comm AS (
+        SELECT DISTINCT ON (ride_id) ride_id, commission
+        FROM driver_commissions
+        ORDER BY ride_id, created_at DESC
+      )
+      SELECT
+        dr.date,
+        COUNT(*) AS rides,
+        COALESCE(SUM(dr.fare), 0) AS gross_revenue,
+        COALESCE(SUM(lc.commission), 0) AS commission
+      FROM daily_rides dr
+      LEFT JOIN latest_comm lc ON lc.ride_id = dr.ride_id
+      GROUP BY dr.date
+      ORDER BY dr.date
+    `, [days]);
+    res.json({ days: r.rows });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
 module.exports = router;

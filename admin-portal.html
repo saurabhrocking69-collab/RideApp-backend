@@ -140,7 +140,7 @@ input,select,textarea{outline:none}
   <div class="logo">Ride<span>App</span> Admin</div>
   <div style="display:flex;gap:10px;align-items:center">
     <span class="badge" id="last-refresh">Loading...</span>
-    <button class="refresh-btn" onclick="loadAll()">⟳ Refresh</button>
+    <button class="refresh-btn" onclick="refreshActive()">⟳ Refresh</button>
     <button onclick="logout()" style="background:none;border:1px solid #444;color:#aaa;border-radius:8px;padding:5px 12px;cursor:pointer;font-size:12px">Logout</button>
   </div>
 </div>
@@ -167,8 +167,15 @@ input,select,textarea{outline:none}
 
   <!-- TRANSACTIONS -->
   <div id="transactions" class="section active">
+    <div class="card" style="margin-bottom:16px">
+      <div class="card-title">📊 Revenue — Last 7 Days <button class="refresh-btn" onclick="loadRevenueChart()">⟳ Reload</button></div>
+      <div id="rev-chart-wrap" style="min-height:100px"><div class="loading">Loading chart...</div></div>
+    </div>
     <div class="card">
-      <div class="card-title">📋 All Transactions <button class="refresh-btn" onclick="loadTransactions()">Reload</button></div>
+      <div class="card-title">📋 All Transactions
+        <button class="refresh-btn" style="margin-left:0" onclick="loadTransactions()">Reload</button>
+        <button class="refresh-btn" style="background:#1a1a2e;margin-left:6px" onclick="exportTxnCsv()">⬇️ CSV</button>
+      </div>
       <div style="overflow-x:auto"><table><thead><tr><th>Date</th><th>User</th><th>Phone</th><th>Type</th><th>Amount</th><th>Description</th></tr></thead>
       <tbody id="txn-body"><tr><td colspan=6 class=loading>Loading...</td></tr></tbody></table></div>
     </div>
@@ -177,7 +184,10 @@ input,select,textarea{outline:none}
   <!-- RIDES -->
   <div id="rides" class="section">
     <div class="card">
-      <div class="card-title">🛺 Recent Rides <button class="refresh-btn" onclick="loadRides()">Reload</button></div>
+      <div class="card-title">🛺 Recent Rides
+        <button class="refresh-btn" style="margin-left:0" onclick="loadRides()">Reload</button>
+        <button class="refresh-btn" style="background:#1a1a2e;margin-left:6px" onclick="exportRidesCsv()">⬇️ CSV</button>
+      </div>
       <div style="overflow-x:auto"><table><thead><tr><th>Date</th><th>Passenger</th><th>Driver</th><th>Pickup</th><th>Drop</th><th>Fare</th><th>Type</th><th>Status</th><th>Rating</th></tr></thead>
       <tbody id="rides-body"><tr><td colspan=9 class=loading>Loading...</td></tr></tbody></table></div>
     </div>
@@ -187,6 +197,7 @@ input,select,textarea{outline:none}
   <div id="customers" class="section">
     <div class="card">
       <div class="card-title">👥 All Customers <button class="refresh-btn" onclick="loadCustomers()">Reload</button></div>
+      <input id="cust-search" placeholder="🔍 Search name or phone..." class="input-sm" style="margin-bottom:10px;max-width:300px" oninput="filterCust(this.value)">
       <div style="overflow-x:auto"><table><thead><tr><th>Name</th><th>Phone</th><th>Rides</th><th>Total Spent</th><th>Wallet</th><th>Trust</th><th>Joined</th><th>Actions</th></tr></thead>
       <tbody id="cust-body"><tr><td colspan=8 class=loading>Loading...</td></tr></tbody></table></div>
     </div>
@@ -196,6 +207,7 @@ input,select,textarea{outline:none}
   <div id="drivers" class="section">
     <div class="card">
       <div class="card-title">🚗 All Drivers <button class="refresh-btn" onclick="loadDrivers()">Reload</button></div>
+      <input id="drv-search" placeholder="🔍 Search name, phone, or vehicle..." class="input-sm" style="margin-bottom:10px;max-width:300px" oninput="filterDrvs(this.value)">
       <div style="overflow-x:auto"><table><thead><tr><th>Name</th><th>Phone</th><th>Vehicle</th><th>Status</th><th>Balance</th><th>Total Earned</th><th>Rating</th><th>Actions</th></tr></thead>
       <tbody id="drv-body"><tr><td colspan=8 class=loading>Loading...</td></tr></tbody></table></div>
     </div>
@@ -490,7 +502,10 @@ input,select,textarea{outline:none}
     </div>
     <div id="payout-financials-sec" style="display:none">
       <div class="card">
-        <div class="card-title">💰 All Driver Financials <button class="refresh-btn" onclick="loadDriverFinancials()">Reload</button></div>
+        <div class="card-title">💰 All Driver Financials
+          <button class="refresh-btn" style="margin-left:0" onclick="loadDriverFinancials()">Reload</button>
+          <button class="refresh-btn" style="background:#1a1a2e;margin-left:6px" onclick="exportFinancialsCsv()">⬇️ CSV</button>
+        </div>
         <div style="overflow-x:auto"><table><thead><tr><th>Driver</th><th>Phone</th><th>Vehicle</th><th>Wallet</th><th>Total Earned</th><th>Withdrawn</th><th>Comm Due</th><th>Bank Account</th><th>IFSC</th><th>UPI ID</th><th>Rides</th></tr></thead>
         <tbody id="financials-body"><tr><td colspan=11 class=loading>Loading...</td></tr></tbody></table></div>
       </div>
@@ -765,7 +780,9 @@ function fmt(d){return d?new Date(d).toLocaleString('en-IN',{day:'2-digit',month
 function rupee(n){return '₹'+parseFloat(n||0).toFixed(0)}
 function trunc(s,n=25){return s&&s.length>n?s.slice(0,n)+'…':s||'-'}
 
+var _activeSection = 'transactions';
 function showSection(id,btn){
+  _activeSection = id;
   document.querySelectorAll('.section').forEach(s=>s.classList.remove('active'));
   document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));
   document.getElementById(id).classList.add('active');
@@ -778,6 +795,9 @@ function showSection(id,btn){
   if(id==='settings'){loadFares();loadStdFares();loadCancelSettings();loadCommRates();}
   if(id==='marketing'){loadCampaigns();loadPromos();loadReferrals();}
   if(id==='payouts'){loadPayouts('pending');}
+  if(id==='complaints'){loadComplaints();}
+  if(id==='incidents'){loadIncidents();}
+  if(id==='rewards'){loadRewardSettings();}
   if(id==='location'){loadLocationIntel();}
   if(id==='support'){loadSupport();}
 }
@@ -1020,13 +1040,13 @@ async function loadDrivers(){
       <td class="amount-green">${rupee(dr.total_earned)}</td>
       <td>${dr.rating?parseFloat(dr.rating).toFixed(1)+'⭐':'-'}</td>
       <td>
-        <button class="action-btn btn-blue" onclick="openDriverMgmtModal('${dr.phone}',${JSON.stringify(dr.name||'')})">Manage</button>
+        <button class="action-btn btn-blue" onclick="openDriverMgmtModal('${dr.phone}',${JSON.stringify(dr.name||'')},${!!dr.is_suspended},${!!dr.is_blocked})">Manage</button>
       </td>
     </tr>`).join('')||'<tr><td colspan=8 class=loading>Koi driver nahi</td></tr>';
   }catch(e){if(e.message!=='Unauthorized')document.getElementById('drv-body').innerHTML='<tr><td colspan=8 class=loading>❌ Load failed</td></tr>';}
 }
 
-function openDriverMgmtModal(phone,name){
+function openDriverMgmtModal(phone,name,isSuspended,isBlocked){
   const m=document.getElementById('drv-modal');
   document.getElementById('drv-modal-content').innerHTML=`
     <h3 style="margin-bottom:14px;font-size:15px">🚗 Driver: ${name} (${phone})</h3>
@@ -1044,7 +1064,7 @@ function openDriverMgmtModal(phone,name){
       </div>
       <div style="display:flex;gap:6px">
         <button class="action-btn btn-orange" style="flex:1;padding:8px" onclick="suspendDriver('${phone}')">⏸ Suspend</button>
-        <button class="action-btn btn-green" style="flex:1;padding:8px" onclick="unsuspendDriver('${phone}')">▶️ Unsuspend</button>
+        ${isSuspended?`<button class="action-btn btn-green" style="flex:1;padding:8px" onclick="unsuspendDriver('${phone}')">▶️ Unsuspend</button>`:''}
       </div>
       <div id="dmgmt-suspend-status" style="font-size:11px;margin-top:4px"></div>
     </div>
@@ -1053,7 +1073,7 @@ function openDriverMgmtModal(phone,name){
       <input id="dmgmt-block-reason" placeholder="Block reason" class="input-sm" style="margin-bottom:6px">
       <div style="display:flex;gap:6px">
         <button class="action-btn btn-red" style="flex:1;padding:8px" onclick="blockDriver('${phone}')">🚫 Block</button>
-        <button class="action-btn btn-green" style="flex:1;padding:8px" onclick="unblockDriver('${phone}')">✅ Unblock</button>
+        ${isBlocked?`<button class="action-btn btn-green" style="flex:1;padding:8px" onclick="unblockDriver('${phone}')">✅ Unblock</button>`:''}
       </div>
       <div id="dmgmt-block-status" style="font-size:11px;margin-top:4px"></div>
     </div>
@@ -2080,6 +2100,7 @@ async function compensateDriver(incidentId, driverName, fareAmt){
     const admin=prompt('Admin name (confirmation ke liye):') || 'Admin';
     const d=await aJson('/api/admin/incidents/'+incidentId+'/compensate-driver',{
       method:'POST',
+      headers:{'Content-Type':'application/json'},
       body:JSON.stringify({admin_name:admin})
     });
     if(d.success){
@@ -2233,6 +2254,22 @@ async function loadAll(){
   document.getElementById('last-refresh').textContent=new Date().toLocaleTimeString('en-IN');
   await loadDashboard();
   await loadTransactions();
+  loadRevenueChart();
+}
+
+function refreshActive(){
+  loadAll();
+  const loaders = {
+    transactions:loadTransactions, rides:loadRides, customers:loadCustomers,
+    drivers:loadDrivers, verify:loadVerifications, topups:loadTopups,
+    marketing:()=>{loadCampaigns();loadPromos();loadReferrals();},
+    settings:()=>{loadFares();loadStdFares();loadCancelSettings();loadCommRates();},
+    payouts:()=>loadPayouts('pending'), complaints:loadComplaints,
+    incidents:loadIncidents, rewards:loadRewardSettings,
+    location:loadLocationIntel, support:loadSupport
+  };
+  const fn = loaders[_activeSection];
+  if(fn) fn();
 }
 
 // On page load — if key saved, try to use it; else show login
@@ -2248,6 +2285,8 @@ async function loadAll(){
     hideLogin();
     loadAll();
   }
+})();
+
 // ── COMMISSION RATES ─────────────────────────────────────────────────
 var commRatesCache = [];
 const COMM_LABELS = {
@@ -2664,7 +2703,90 @@ async function doSupRefund(id, phone) {
   } catch(e) { alert('Refund request failed'); }
 }
 
-})();
+// ── Search filters ───────────────────────────────────────
+function filterCust(q){
+  q=q.toLowerCase().trim();
+  document.querySelectorAll('#cust-body tr').forEach(function(tr){
+    tr.style.display=(!q||tr.textContent.toLowerCase().includes(q))?'':'none';
+  });
+}
+function filterDrvs(q){
+  q=q.toLowerCase().trim();
+  document.querySelectorAll('#drv-body tr').forEach(function(tr){
+    tr.style.display=(!q||tr.textContent.toLowerCase().includes(q))?'':'none';
+  });
+}
+
+// ── CSV Export ───────────────────────────────────────────
+function downloadCsv(filename,headers,rows){
+  var lines=[headers.join(',')].concat(rows.map(function(r){
+    return r.map(function(c){return'"'+String(c||'').replace(/\n/g,' ').replace(/"/g,'""')+'"';}).join(',');
+  }));
+  var blob=new Blob([lines.join('\n')],{type:'text/csv'});
+  var a=document.createElement('a');
+  a.href=URL.createObjectURL(blob);
+  a.download=filename;
+  a.click();
+}
+function tblRows(tbodyId){
+  return Array.from(document.querySelectorAll('#'+tbodyId+' tr')).map(function(tr){
+    return Array.from(tr.querySelectorAll('td')).map(function(td){return td.innerText.trim();});
+  }).filter(function(r){return r.length>0;});
+}
+function exportTxnCsv(){
+  downloadCsv('sppero_transactions_'+new Date().toISOString().slice(0,10)+'.csv',
+    ['Date','User','Phone','Type','Amount','Description'],tblRows('txn-body'));
+}
+function exportRidesCsv(){
+  downloadCsv('sppero_rides_'+new Date().toISOString().slice(0,10)+'.csv',
+    ['Date','Passenger','Driver','Pickup','Drop','Fare','Type','Status','Rating'],tblRows('rides-body'));
+}
+function exportFinancialsCsv(){
+  downloadCsv('sppero_financials_'+new Date().toISOString().slice(0,10)+'.csv',
+    ['Driver','Phone','Vehicle','Wallet','Total Earned','Withdrawn','Comm Due','Bank Account','IFSC','UPI ID','Rides'],tblRows('financials-body'));
+}
+
+// ── Revenue Chart ────────────────────────────────────────
+async function loadRevenueChart(){
+  var wrap=document.getElementById('rev-chart-wrap');
+  if(!wrap)return;
+  try{
+    var d=await aJson('/api/admin/revenue-daily?days=7');
+    var days=d.days||[];
+    if(!days.length){wrap.innerHTML='<div class="loading">No ride data yet</div>';return;}
+    var maxRev=Math.max.apply(null,days.map(function(x){return parseFloat(x.gross_revenue||0);}));
+    var totalRev=days.reduce(function(s,x){return s+parseFloat(x.gross_revenue||0);},0);
+    var totalComm=days.reduce(function(s,x){return s+parseFloat(x.commission||0);},0);
+    var totalRides=days.reduce(function(s,x){return s+parseInt(x.rides||0);},0);
+    var html='<div style="display:flex;gap:16px;flex-wrap:wrap;margin-bottom:14px">'
+      +'<div style="background:#e8f5e9;border-radius:10px;padding:10px 16px;text-align:center"><div style="font-size:20px;font-weight:800;color:#2e7d32">₹'+Math.round(totalRev).toLocaleString('en-IN')+'</div><div style="font-size:10px;color:#555">7-day Gross</div></div>'
+      +'<div style="background:#e3f2fd;border-radius:10px;padding:10px 16px;text-align:center"><div style="font-size:20px;font-weight:800;color:#1565c0">₹'+Math.round(totalComm).toLocaleString('en-IN')+'</div><div style="font-size:10px;color:#555">7-day Commission</div></div>'
+      +'<div style="background:#f3e5f5;border-radius:10px;padding:10px 16px;text-align:center"><div style="font-size:20px;font-weight:800;color:#7b1fa2">'+totalRides+'</div><div style="font-size:10px;color:#555">7-day Rides</div></div>'
+      +'</div>';
+    html+='<div style="display:flex;align-items:flex-end;gap:8px;height:90px;padding:0 4px">';
+    days.forEach(function(x){
+      var rev=parseFloat(x.gross_revenue||0);
+      var comm=parseFloat(x.commission||0);
+      var barH=maxRev>0?Math.max(4,Math.round((rev/maxRev)*80)):4;
+      var commH=maxRev>0?Math.max(2,Math.round((comm/maxRev)*80)):2;
+      var label=new Date(x.date).toLocaleDateString('en-IN',{day:'2-digit',month:'short'});
+      html+='<div style="flex:1;display:flex;flex-direction:column;align-items:center;gap:2px">'
+        +'<div style="font-size:9px;color:#888;margin-bottom:2px">₹'+Math.round(rev/1000)+'k</div>'
+        +'<div style="width:100%;display:flex;flex-direction:column;justify-content:flex-end;align-items:center;gap:2px;height:72px">'
+        +'<div style="width:70%;height:'+commH+'px;background:#a5d6a7;border-radius:3px 3px 0 0"></div>'
+        +'<div style="width:70%;height:'+(barH-commH)+'px;background:#4CAF50;border-radius:'+(commH>0?'0':'3px 3px')+'0 0"></div>'
+        +'</div>'
+        +'<div style="font-size:9px;color:#666;margin-top:3px">'+label+'</div>'
+        +'</div>';
+    });
+    html+='</div><div style="display:flex;gap:12px;margin-top:8px;font-size:10px;color:#666">'
+      +'<span><span style="display:inline-block;width:10px;height:10px;background:#4CAF50;border-radius:2px;margin-right:4px"></span>Gross Revenue</span>'
+      +'<span><span style="display:inline-block;width:10px;height:10px;background:#a5d6a7;border-radius:2px;margin-right:4px"></span>Commission</span>'
+      +'</div>';
+    wrap.innerHTML=html;
+  }catch(e){wrap.innerHTML='<div class="loading" style="color:#aaa;font-size:12px">Revenue chart unavailable</div>';}
+}
+
 </script>
 </body>
 </html>
