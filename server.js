@@ -44,14 +44,17 @@ const adminSupportRouter = require('./routes/adminSupport');
 const healthCheck      = require('./services/healthCheck');
 
 // ── Allowed browser origins (mobile apps don't send Origin, so this only gates web clients) ──
+// When ALLOWED_ORIGINS is not set, all origins are allowed (admin key still required for admin routes).
 const ALLOWED_ORIGINS = process.env.ALLOWED_ORIGINS
   ? process.env.ALLOWED_ORIGINS.split(',').map(o => o.trim())
-  : [];
+  : null;
 
 const corsOptions = {
   origin: (origin, cb) => {
     // No origin = native mobile app / server-to-server / curl — allow
     if (!origin) return cb(null, true);
+    // No allowlist configured → open (admin key guards sensitive endpoints)
+    if (!ALLOWED_ORIGINS) return cb(null, true);
     if (ALLOWED_ORIGINS.includes(origin)) return cb(null, true);
     cb(new Error(`CORS: origin not allowed — ${origin}`));
   },
