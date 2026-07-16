@@ -591,6 +591,7 @@ app.use('/api/hourly',   hourlyRouter);
 app.use('/api/admin/support', adminAuth, adminSupportRouter);
 app.use('/api/admin',         adminAuth, adminRouter);
 app.use('/api/subscriptions', require('./routes/subscriptions'));
+app.use('/api/buddy-fund',    require('./routes/buddyFund'));
 app.use('/api/support',       supportRouter);
 app.use('/api/favourites',    favouritesRouter);
 app.use('/api/bonus',         bonusRouter);
@@ -1183,6 +1184,18 @@ setTimeout(async () => {
     `).catch(() => {});
   }
   console.log('✅ Subscription system tables ready');
+
+  // ── Buddy Fund ───────────────────────────────────────────────────────────
+  await db.query(`CREATE TABLE IF NOT EXISTS buddy_fund_contributions (
+    id SERIAL PRIMARY KEY,
+    contributor_phone TEXT,
+    amount NUMERIC NOT NULL,
+    razorpay_order_id TEXT,
+    razorpay_payment_id TEXT,
+    status TEXT DEFAULT 'pending',
+    created_at TIMESTAMPTZ DEFAULT NOW()
+  )`).catch(() => {});
+  console.log('✅ Buddy Fund table ready');
 
   // ── Cancel stuck matched/arrived rides at startup ────────────────────────
   // These hold drivers hostage: worker excludes any driver with an active matched/arrived/started ride.
