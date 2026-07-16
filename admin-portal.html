@@ -2725,10 +2725,16 @@ function filterDrvs(q){
 
 // ── CSV Export ───────────────────────────────────────────
 function downloadCsv(filename,headers,rows){
-  var lines=[headers.join(',')].concat(rows.map(function(r){
-    return r.map(function(c){return'"'+String(c||'').replace(/\n/g,' ').replace(/"/g,'""')+'"';}).join(',');
-  }));
-  var blob=new Blob([lines.join('\n')],{type:'text/csv'});
+  function cell(v){
+    var s=String(v||'').replace(/\r?\n/g,' ').trim();
+    if(/^\d{8,}$/.test(s)) return '="'+s+'"';
+    return '"'+s.replace(/"/g,'""')+'"';
+  }
+  var lines=[headers.map(cell).join(',')].concat(
+    rows.map(function(r){return r.map(cell).join(',');})
+  );
+  var bom='﻿';
+  var blob=new Blob([bom+lines.join('\r\n')],{type:'text/csv;charset=utf-8'});
   var a=document.createElement('a');
   a.href=URL.createObjectURL(blob);
   a.download=filename;
