@@ -280,7 +280,7 @@ router.get('/dashboard', async (req, res) => {
       db.query("SELECT COUNT(*) AS total FROM users u WHERE NOT EXISTS (SELECT 1 FROM drivers d WHERE d.id = u.id)"),
       db.query("SELECT COUNT(*) AS total, COUNT(CASE WHEN is_online THEN 1 END) AS online FROM drivers"),
       db.query("SELECT COUNT(*) AS total, COUNT(CASE WHEN status='completed' THEN 1 END) AS completed, COALESCE(SUM(CASE WHEN status='completed' THEN fare END),0) AS gross_revenue FROM rides"),
-      db.query("SELECT COALESCE(SUM(commission_amount),0) AS platform_commission FROM rides WHERE status='completed'"),
+      db.query("SELECT COALESCE(SUM(commission_amount),0) AS platform_commission, COALESCE(SUM(platform_fee),0) AS platform_fee_total FROM rides WHERE status='completed'"),
       db.query("SELECT (SELECT COALESCE(SUM(balance),0) FROM customer_wallet) AS customer_wallets, (SELECT COALESCE(SUM(balance),0) FROM driver_wallet) AS driver_wallets"),
       db.query("SELECT COUNT(*) AS total, COUNT(CASE WHEN status='completed' THEN 1 END) AS completed, COALESCE(SUM(CASE WHEN status='completed' THEN total_fare END),0) AS hourly_revenue FROM hourly_bookings").catch(() => ({ rows: [{ total: 0, completed: 0, hourly_revenue: 0 }] })),
       db.query("SELECT COALESCE(SUM(amount),0) AS total FROM razorpay_topups WHERE status IN ('confirmed','unverified')").catch(() => ({ rows: [{ total: 0 }] })),
@@ -291,6 +291,7 @@ router.get('/dashboard', async (req, res) => {
       rides: { total: parseInt(rides.rows[0].total), completed: parseInt(rides.rows[0].completed), gross_revenue: parseFloat(rides.rows[0].gross_revenue) },
       hourly: { total: parseInt(hourly.rows[0].total), completed: parseInt(hourly.rows[0].completed), revenue: parseFloat(hourly.rows[0].hourly_revenue) },
       platform_commission: parseFloat(revenue.rows[0].platform_commission),
+      platform_fee_total: parseFloat(revenue.rows[0].platform_fee_total),
       wallets: { customer_total: parseFloat(wallets.rows[0]?.customer_wallets || 0), driver_total: parseFloat(wallets.rows[0]?.driver_wallets || 0) },
       topup_total: parseFloat(topups.rows[0].total),
     });
@@ -1294,11 +1295,16 @@ router.get('/revenue-daily', async (req, res) => {
 // GET /api/admin/net-earnings — platform P&L: gross income vs liabilities
 router.get('/net-earnings', async (req, res) => {
   try {
-    const [ridesR, hourlyR, subsR, bonusR, scratchR, referralR, cashbackR] = await Promise.all([
+    const [ridesR, ridesPfR, hourlyR, subsR, bonusR, scratchR, referralR, cashbackR] = await Promise.all([
       db.query(`SELECT
         COALESCE(SUM(commission_amount),0) AS all_time,
         COALESCE(SUM(CASE WHEN date_trunc('month',created_at)=date_trunc('month',NOW()) THEN commission_amount ELSE 0 END),0) AS this_month,
         COALESCE(SUM(CASE WHEN created_at>=CURRENT_DATE THEN commission_amount ELSE 0 END),0) AS today
+        FROM rides WHERE status='completed'`),
+      db.query(`SELECT
+        COALESCE(SUM(platform_fee),0) AS all_time,
+        COALESCE(SUM(CASE WHEN date_trunc('month',created_at)=date_trunc('month',NOW()) THEN platform_fee ELSE 0 END),0) AS this_month,
+        COALESCE(SUM(CASE WHEN created_at>=CURRENT_DATE THEN platform_fee ELSE 0 END),0) AS today
         FROM rides WHERE status='completed'`),
       db.query(`SELECT
         COALESCE(SUM(platform_fee),0) AS all_time,
@@ -1336,14 +1342,15 @@ router.get('/net-earnings', async (req, res) => {
       const d = r.rows[0] || {};
       return { today: parseFloat(d.today||0), this_month: parseFloat(d.this_month||0), all_time: parseFloat(d.all_time||0) };
     }
-    const rc = row(ridesR), hc = row(hourlyR), sc = row(subsR);
+    const rc = row(ridesR), pf = row(ridesPfR), hc = row(hourlyR), sc = row(subsR);
     const bn = row(bonusR), sk = row(scratchR), rf = row(referralR), cb = row(cashbackR);
 
     const income = {
       rides_commission: rc,
+      platform_fees: pf,
       hourly_commission: hc,
       subscriptions: sc,
-      total: { today: rc.today+hc.today+sc.today, this_month: rc.this_month+hc.this_month+sc.this_month, all_time: rc.all_time+hc.all_time+sc.all_time },
+      total: { today: rc.today+pf.today+hc.today+sc.today, this_month: rc.this_month+pf.this_month+hc.this_month+sc.this_month, all_time: rc.all_time+pf.all_time+hc.all_time+sc.all_time },
     };
     const liabilities = {
       driver_bonuses: bn,

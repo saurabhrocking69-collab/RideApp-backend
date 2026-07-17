@@ -1101,6 +1101,7 @@ async function loadDashboard(){
       <div class="stat-card blue"><div class="stat-icon">🛺</div><div class="stat-value">${d.rides?.completed||0}</div><div class="stat-label">Completed Rides</div></div>
       <div class="stat-card green"><div class="stat-icon">💰</div><div class="stat-value">${rupee(d.rides?.gross_revenue)}</div><div class="stat-label">Gross Revenue</div></div>
       <div class="stat-card red"><div class="stat-icon">🏦</div><div class="stat-value">${rupee(d.platform_commission)}</div><div class="stat-label">Platform Commission</div></div>
+      <div class="stat-card blue"><div class="stat-icon">🎫</div><div class="stat-value">${rupee(d.platform_fee_total)}</div><div class="stat-label">Platform Fees (flat)</div></div>
       <div class="stat-card"><div class="stat-icon">⏱️</div><div class="stat-value">${d.hourly?.completed||0}</div><div class="stat-label">Hourly · ${rupee(d.hourly?.revenue)}</div></div>
       <div class="stat-card blue"><div class="stat-icon">💳</div><div class="stat-value">${rupee(d.topup_total)}</div><div class="stat-label">Total Topups</div></div>
       <div class="stat-card"><div class="stat-icon">👛</div><div class="stat-value">${rupee(d.wallets?.customer_total)}</div><div class="stat-label">Customer Wallets</div></div>
@@ -1155,7 +1156,8 @@ function renderNetEarnings(){
       '<div style="display:grid;grid-template-columns:1fr 1fr;gap:20px">'+
         '<div>'+
           '<div style="font-size:11px;font-weight:700;color:#888;text-transform:uppercase;letter-spacing:.5px;margin-bottom:8px">Income</div>'+
-          incRow('Ride Commission', inc.rides_commission)+
+          incRow('Ride Commission (%)', inc.rides_commission)+
+          incRow('Platform Fees (flat)', inc.platform_fees)+
           incRow('Hourly Commission', inc.hourly_commission)+
           incRow('Subscription Revenue', inc.subscriptions)+
           incRow('Total Income', inc.total, true)+
