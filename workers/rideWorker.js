@@ -64,6 +64,10 @@ async function broadcastToRadius(rideId, pickupLat, pickupLng, rideType, radiusM
          AND NOT EXISTS (
            SELECT 1 FROM rides r2
            WHERE r2.driver_id = d.id AND r2.status IN ('matched','arrived','started')
+         )
+         AND NOT EXISTS (
+           SELECT 1 FROM hourly_bookings hb
+           WHERE hb.driver_phone = u.phone AND hb.status IN ('matched','arrived','active')
          )`,
       [rideType]
     ),
@@ -129,8 +133,8 @@ async function broadcastToRadius(rideId, pickupLat, pickupLng, rideType, radiusM
       ? `📅 Scheduled Ride — ${scheduledTimeStr}`
       : `${rideEmoji} Nayi Ride Request!`;
     const fcmBody = isScheduledRide
-      ? `${rideEmoji} ${(rideType || '').toUpperCase()} — ${scheduledTimeStr} ke liye. Accept karo, aapke paas time hai!`
-      : `${rideType.toUpperCase()} ride — ${windowSec}s mein accept karo!`;
+      ? `${rideEmoji} ${(rideType || '').toUpperCase()} — for ${scheduledTimeStr}. Accept now, you have time!`
+      : `${rideType.toUpperCase()} ride — accept within ${windowSec}s!`;
     sendFCM(
       dr.phone,
       fcmTitle,
@@ -284,7 +288,7 @@ async function _offerPreAssignment(rideId, rideType, pickupLat, pickupLng, candi
   sendFCM(
     candidate.phone,
     `${rideEmoji} Next Ride Ready!`,
-    `${ride.pickup} · Drop ke baad seedha jao — ${PRE_ASSIGN_OFFER_SEC / 60} min mein respond karo`,
+    `${ride.pickup} · Go straight after drop — respond within ${PRE_ASSIGN_OFFER_SEC / 60} min`,
     { type: 'pre_ride_queued', ride_id: String(rideId) },
     { channelId: 'ride_requests', role: 'driver' }
   ).catch(() => {});
@@ -380,7 +384,7 @@ async function activateQueuedRide(driverPhone) {
   // Tell customer their driver is now matched
   emitToRoom('ride_' + pr.id, 'rideUpdate', {
     rideId: pr.id, status: 'matched', driver: driverPayload,
-    message: 'Driver ab aapke taraf aa raha hai!',
+    message: 'Driver is on the way to you!',
   });
 
   // Tell driver their queued ride is now active
@@ -419,10 +423,10 @@ async function _escalate(rideId, rideType, afterSurge, pickupLat, pickupLng, ski
     const customerPhone = pRes.rows[0]?.phone;
     const isScheduled   = schedRes.rows.length > 0;
     if (customerPhone) {
-      const noDriverTitle = '😔 Driver Nahi Mila';
+      const noDriverTitle = '😔 No Driver Found';
       const noDriverBody  = isScheduled
-        ? 'Aapki scheduled ride ke liye koi driver available nahi hai. Please dobara book karein.'
-        : (alts.length ? 'Doosra vehicle try karo ya thodi der baad retry karo.' : 'Is area mein abhi koi driver nahi. 5 min baad try karo.');
+        ? 'No driver available for your scheduled ride. Please book again.'
+        : (alts.length ? 'Try a different vehicle or retry in a few minutes.' : 'No driver available in this area right now. Try again in 5 min.');
       // FCM push notification (once)
       sendFCM(
         customerPhone, noDriverTitle, noDriverBody,
@@ -436,7 +440,7 @@ async function _escalate(rideId, rideType, afterSurge, pickupLat, pickupLng, ski
     }
     emitToRoom('ride_' + rideId, 'rideUpdate', {
       rideId, status: 'no_driver_final', alternatives: alts, retry_after_sec: 300,
-      message: 'Abhi koi driver nahi mila.',
+      message: 'No driver found right now.',
     });
     await db.query(
       `UPDATE rides SET status='cancelled' WHERE id=$1 AND status='requested' AND driver_id IS NULL`,
@@ -465,7 +469,7 @@ async function _escalate(rideId, rideType, afterSurge, pickupLat, pickupLng, ski
     emitToRoom('ride_' + rideId, 'rideUpdate', {
       rideId, status: 'surge_offer',
       suggested_surge_amt: surgeInfo.amt, surge_label: surgeInfo.label,
-      message: `Koi driver nahi mila. ₹${surgeInfo.amt} extra dekar driver attract karein?`,
+      message: `No driver found. Add ₹${surgeInfo.amt} to attract a driver?`,
       timeout_sec: SURGE_GRACE_SEC,
     });
     rideQueue.add('ride-assignment',
@@ -500,6 +504,7 @@ async function getAvailableAlternatives(rideType) {
     `SELECT d.vehicle_type, COUNT(*) AS cnt FROM drivers d JOIN users u ON d.id = u.id
      WHERE d.vehicle_type = ANY($1) AND d.is_online = true AND d.verification_status = 'approved'
        AND NOT EXISTS (SELECT 1 FROM rides r2 WHERE r2.driver_id = d.id AND r2.status IN ('matched','arrived','started'))
+       AND NOT EXISTS (SELECT 1 FROM hourly_bookings hb WHERE hb.driver_phone = u.phone AND hb.status IN ('matched','arrived','active'))
      GROUP BY d.vehicle_type`,
     [alts]
   );

@@ -34,7 +34,7 @@ router.post('/send', async (req, res) => {
         if (customerPhone) {
           sendFCM(
             customerPhone,
-            '💬 Driver ne Message Kiya!',
+            '💬 New Message from Driver!',
             message.length > 60 ? message.slice(0, 57) + '...' : message,
             { type: 'new_chat_message', ride_id: String(ride_id) },
             { role: 'customer' }

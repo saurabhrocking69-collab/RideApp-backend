@@ -93,12 +93,12 @@ router.post('/verify-driver', async (req, res) => {
     const dr = await db.query('SELECT u.phone FROM drivers d JOIN users u ON d.id=u.id WHERE d.id::text = $1::text', [String(driver_id)]);
     if (dr.rows[0]) {
       const dPhone = dr.rows[0].phone;
-      if (status === 'approved') sendFCM(dPhone, '🎉 Sppero Buddy Captain — Approved!', 'Aapke documents verify ho gaye! Ab app mein login karke rides lo.', {}, { role: 'driver' });
-      else if (status === 'rejected') sendFCM(dPhone, '❌ Documents Reject Ho Gaye', message || 'Aapke documents mein problem hai.', {}, { role: 'driver' });
-      else if (status === 'resubmit') sendFCM(dPhone, '📋 Documents Resubmit Karein', message || 'Admin ne kuch documents dobara maange hain.', {}, { role: 'driver' });
-      else if (status === 'suspended') sendFCM(dPhone, '⚠️ Account Suspend Ho Gaya', message || 'Aapka account suspend kar diya gaya hai.', {}, { role: 'driver' });
+      if (status === 'approved') sendFCM(dPhone, '🎉 Sppero Buddy Captain — Approved!', 'Your documents are verified! Log in to start taking rides.', {}, { role: 'driver' });
+      else if (status === 'rejected') sendFCM(dPhone, '❌ Documents Rejected', message || 'There is an issue with your documents. Please re-upload.', {}, { role: 'driver' });
+      else if (status === 'resubmit') sendFCM(dPhone, '📋 Documents Required Again', message || 'Admin has requested some documents again.', {}, { role: 'driver' });
+      else if (status === 'suspended') sendFCM(dPhone, '⚠️ Account Suspended', message || 'Your account has been suspended.', {}, { role: 'driver' });
     }
-    res.json({ success: true, message: `Driver ${status} ho gaya` });
+    res.json({ success: true, message: `Driver ${status}` });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
@@ -107,7 +107,7 @@ router.post('/notify', async (req, res) => {
   const { target, title, message } = req.body;
   try {
     await db.query('INSERT INTO notifications (target, title, message) VALUES ($1,$2,$3)', [target || 'all', title, message]);
-    res.json({ success: true, message: 'Notification bheja gaya' });
+    res.json({ success: true, message: 'Notification sent' });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
@@ -219,7 +219,7 @@ router.post('/users/suspend', async (req, res) => {
   try {
     const suspendedUntil = hours ? new Date(Date.now() + hours * 60 * 60 * 1000) : null;
     await db.query(`UPDATE users SET is_suspended = true, suspended_until = $1, suspend_reason = $2 WHERE phone = $3`, [suspendedUntil, reason || 'Admin action', phone]);
-    res.json({ success: true, message: hours ? `${hours} ghante ke liye suspend kiya` : 'Suspend kiya' });
+    res.json({ success: true, message: hours ? `Suspended for ${hours} hours` : 'Suspended' });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
@@ -228,7 +228,7 @@ router.post('/users/unsuspend', async (req, res) => {
   const { phone } = req.body;
   try {
     await db.query(`UPDATE users SET is_suspended = false, suspended_until = NULL, suspend_reason = NULL WHERE phone = $1`, [phone]);
-    res.json({ success: true, message: 'Unsuspend kiya' });
+    res.json({ success: true, message: 'Unsuspended' });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
@@ -237,7 +237,7 @@ router.post('/users/block', async (req, res) => {
   const { phone, reason } = req.body;
   try {
     await db.query(`UPDATE users SET is_blocked = true, block_reason = $1 WHERE phone = $2`, [reason || 'Admin action', phone]);
-    res.json({ success: true, message: 'Block kiya' });
+    res.json({ success: true, message: 'Blocked' });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
@@ -246,7 +246,7 @@ router.post('/users/unblock', async (req, res) => {
   const { phone } = req.body;
   try {
     await db.query(`UPDATE users SET is_blocked = false, block_reason = NULL WHERE phone = $1`, [phone]);
-    res.json({ success: true, message: 'Unblock kiya' });
+    res.json({ success: true, message: 'Unblocked' });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
@@ -256,7 +256,7 @@ router.post('/users/message', async (req, res) => {
   try {
     await db.query(`UPDATE users SET admin_message = $1 WHERE phone = $2`, [message, phone]);
     try { await db.query(`INSERT INTO notifications (user_phone, title, body, created_at) VALUES ($1, 'Admin Message', $2, NOW())`, [phone, message]); } catch (_e) {}
-    res.json({ success: true, message: 'Message bheja gaya' });
+    res.json({ success: true, message: 'Message sent' });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
@@ -342,7 +342,7 @@ router.post('/resolve-dispute', async (req, res) => {
   const { booking_id, favour } = req.body;
   try {
     const r = await db.query('SELECT * FROM hourly_bookings WHERE id=$1 AND dispute_raised=true', [booking_id]);
-    if (!r.rows[0]) return res.json({ success: false, message: 'Disputed booking nahi mila' });
+    if (!r.rows[0]) return res.json({ success: false, message: 'Disputed booking not found' });
     const b = r.rows[0];
     if (favour === 'driver') {
       const { HOURLY_FARES: HF, getSurge: GS } = require('../services/pricing');
@@ -360,7 +360,7 @@ router.post('/resolve-dispute', async (req, res) => {
         if (driverUser.rows[0]) await client.query('UPDATE driver_wallet SET balance=balance+$1, total_earned=total_earned+$1 WHERE driver_id=$2', [driverEarning, driverUser.rows[0].id]);
         await client.query(`UPDATE hourly_bookings SET status='completed', ended_at=NOW(), driver_earning=$1, platform_fee=$2, total_fare=$3, payment_status='released', dispute_raised=false WHERE id=$4`, [driverEarning, commission, totalFare, booking_id]);
         await client.query('COMMIT');
-        sendFCM(b.driver_phone, '✅ Dispute Resolved in Your Favour', `₹${driverEarning.toFixed(0)} wallet mein add ho gaya!`, {}, { role: 'driver' });
+        sendFCM(b.driver_phone, '✅ Dispute Resolved in Your Favour', `₹${driverEarning.toFixed(0)} added to your wallet!`, {}, { role: 'driver' });
         return res.json({ success: true, resolved: 'driver', driver_earning: driverEarning });
       } catch (e) { await client.query('ROLLBACK'); throw e; } finally { client.release(); }
     } else {
@@ -370,8 +370,8 @@ router.post('/resolve-dispute', async (req, res) => {
         await db.query("INSERT INTO transactions (user_id,type,amount,description) VALUES ($1,'credit',$2,'Hourly dispute resolved - full refund')", [cu.rows[0].id, b.base_fare]);
       }
       await db.query("UPDATE hourly_bookings SET status='cancelled', payment_status='refunded', dispute_raised=false WHERE id=$1", [booking_id]);
-      sendFCM(b.customer_phone, '✅ Dispute Resolved', `₹${b.base_fare} aapke wallet mein wapas!`, {}, { role: 'customer' });
-      sendFCM(b.driver_phone, '❌ Dispute Against You', 'Customer ko refund mil gaya', {}, { role: 'driver' });
+      sendFCM(b.customer_phone, '✅ Dispute Resolved', `₹${b.base_fare} refunded to your wallet!`, {}, { role: 'customer' });
+      sendFCM(b.driver_phone, '❌ Dispute Against You', 'Customer has been refunded', {}, { role: 'driver' });
       return res.json({ success: true, resolved: 'customer', refunded: b.base_fare });
     }
   } catch (err) { res.status(500).json({ error: err.message }); }
@@ -388,7 +388,7 @@ router.get('/campaigns', async (req, res) => {
 // POST /api/admin/campaigns
 router.post('/campaigns', async (req, res) => {
   const { title, body, target, type, promo_code, cta_label, expires_at } = req.body;
-  if (!title) return res.status(400).json({ error: 'Title zaroori hai' });
+  if (!title) return res.status(400).json({ error: 'Title required' });
   try {
     const r = await db.query(
       `INSERT INTO marketing_campaigns (title,body,target,type,promo_code,cta_label,expires_at) VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *`,
@@ -417,7 +417,7 @@ router.delete('/campaigns/:id', async (req, res) => {
 // POST /api/admin/notify-all
 router.post('/notify-all', async (req, res) => {
   const { title, body, target, imageUrl } = req.body;
-  if (!title || !body) return res.status(400).json({ error: 'Title aur body zaroori hai' });
+  if (!title || !body) return res.status(400).json({ error: 'Title and body required' });
   try {
     // Ensure notifications table has the columns we need
     await db.query(`ALTER TABLE notifications ADD COLUMN IF NOT EXISTS target TEXT`).catch(() => {});
@@ -454,7 +454,7 @@ router.post('/notify-all', async (req, res) => {
     ).catch(() => {});
 
     // Respond immediately (don't block on FCM sends)
-    res.json({ success: true, total_targets: count, message: `${count} users ko bheja ja raha hai...` });
+    res.json({ success: true, total_targets: count, message: `Sending to ${count} users...` });
 
     // Send FCM push in background
     let sent = 0, failed = 0;
@@ -505,7 +505,7 @@ router.post('/commission-rates', async (req, res) => {
     const hcr = hourly_rate !== undefined ? parseFloat(hourly_rate) : NaN;
     const hasCr  = !isNaN(cr)  && cr  >= 0 && cr  <= 50;
     const hasHcr = !isNaN(hcr) && hcr >= 0 && hcr <= 50;
-    if (!hasCr && !hasHcr) return res.status(400).json({ error: 'Rate 0-50 ke beech hona chahiye' });
+    if (!hasCr && !hasHcr) return res.status(400).json({ error: 'Rate must be between 0 and 50' });
     if (vehicle_type) {
       if (hasCr && hasHcr) {
         await db.query('UPDATE fare_settings SET commission_rate=$1, hourly_commission_rate=$2 WHERE vehicle_type=$3', [cr, hcr, vehicle_type]);
@@ -692,7 +692,7 @@ router.post('/payout-approve', async (req, res) => {
     const p = await db.query(
       `SELECT * FROM driver_payouts WHERE id=$1 AND status IN ('pending','failed')`, [payout_id]
     );
-    if (!p.rows[0]) return res.status(400).json({ error: 'Payout nahi mila ya pehle se process ho chuka' });
+    if (!p.rows[0]) return res.status(400).json({ error: 'Payout not found or already processed' });
     const payout = p.rows[0];
 
     const drvRes = await db.query(
@@ -700,7 +700,7 @@ router.post('/payout-approve', async (req, res) => {
        FROM driver_wallet w JOIN users u ON w.driver_id=u.id WHERE u.phone=$1`,
       [payout.driver_phone]
     );
-    if (!drvRes.rows[0]) return res.status(404).json({ error: 'Driver wallet nahi mili' });
+    if (!drvRes.rows[0]) return res.status(404).json({ error: 'Driver wallet not found' });
     const { driver_id, balance, pending_commission, name: driverName } = drvRes.rows[0];
 
     const amt         = parseFloat(payout.amount);
@@ -708,7 +708,7 @@ router.post('/payout-approve', async (req, res) => {
     const actualPayout = amt - commDeduct;
 
     if (parseFloat(balance) < amt)
-      return res.status(400).json({ error: `Wallet balance (₹${parseFloat(balance).toFixed(0)}) payout amount (₹${amt.toFixed(0)}) se kam hai` });
+      return res.status(400).json({ error: `Wallet balance (₹${parseFloat(balance).toFixed(0)}) is less than payout amount (₹${amt.toFixed(0)})` });
 
     // 1 — Deduct wallet immediately (reversed by webhook on failure)
     await db.query(
@@ -743,7 +743,7 @@ router.post('/payout-approve', async (req, res) => {
         sendFCM(
           payout.driver_phone,
           '⏳ Payout Processing!',
-          `₹${actualPayout.toFixed(0)} ka transfer shuru — ${payout.method === 'upi' ? 'UPI' : 'bank'} mein jald credit ho jaayega.`,
+          `₹${actualPayout.toFixed(0)} transfer initiated — will be credited to your ${payout.method === 'upi' ? 'UPI' : 'bank account'} shortly.`,
           { type: 'payout_processing', payout_id: String(payout_id) },
           { role: 'driver' }
         ).catch(() => {});
@@ -781,7 +781,7 @@ router.post('/payout-approve', async (req, res) => {
     );
     sendFCM(
       payout.driver_phone, '✅ Payout Approved!',
-      `₹${actualPayout.toFixed(0)} aapke ${payout.method === 'upi' ? 'UPI' : 'bank account'} mein transfer kar diya gaya!`,
+      `₹${actualPayout.toFixed(0)} transferred to your ${payout.method === 'upi' ? 'UPI' : 'bank account'}!`,
       { type: 'payout_approved' },
       { role: 'driver' }
     ).catch(() => {});
@@ -796,11 +796,11 @@ router.post('/payout-reject', async (req, res) => {
     const r = await db.query(
       `UPDATE driver_payouts SET status='rejected', admin_note=$1, settled_at=NOW()
        WHERE id=$2 AND status='pending' RETURNING driver_phone, amount`,
-      [note || 'Admin ne reject kiya', payout_id]
+      [note || 'Rejected by admin', payout_id]
     );
-    if (!r.rows[0]) return res.status(400).json({ error: 'Payout nahi mila ya pehle se process ho chuka' });
+    if (!r.rows[0]) return res.status(400).json({ error: 'Payout not found or already processed' });
     sendFCM(r.rows[0].driver_phone, '❌ Payout Rejected',
-      note || 'Payout reject ho gaya — support se contact karo',
+      note || 'Payout rejected — please contact support',
       { type: 'payout_rejected' },
       { role: 'driver' }
     ).catch(() => {});
@@ -1045,19 +1045,19 @@ router.post('/incidents/:id/compensate-driver', async (req, res) => {
        WHERE i.id = $1`,
       [req.params.id]
     );
-    if (!incRes.rows[0]) return res.status(404).json({ error: 'Incident nahi mila' });
+    if (!incRes.rows[0]) return res.status(404).json({ error: 'Incident not found' });
     const inc = incRes.rows[0];
 
     if (inc.incident_type !== 'payment_skipped')
-      return res.status(400).json({ error: 'Sirf payment_skipped incidents ke liye compensation hai' });
+      return res.status(400).json({ error: 'Compensation is only available for payment_skipped incidents' });
     if (inc.resolved)
-      return res.status(409).json({ error: 'Yeh incident already resolved hai' });
+      return res.status(409).json({ error: 'This incident is already resolved' });
 
     // For manual incidents without a ride record, fare may be in metadata
     const meta = inc.metadata || {};
     const fare = parseFloat(inc.fare || meta.fare || 0);
-    if (fare <= 0) return res.status(400).json({ error: 'Fare amount nahi mila — ride record check karo ya incident mein fare set karo' });
-    if (!inc.driver_id) return res.status(400).json({ error: 'Driver ID nahi mila' });
+    if (fare <= 0) return res.status(400).json({ error: 'Fare amount not found — check ride record or set fare in incident' });
+    if (!inc.driver_id) return res.status(400).json({ error: 'Driver ID not found' });
 
     const commRate = parseFloat(inc.commission_rate || 15) / 100;
     const commission = Math.round(fare * commRate * 100) / 100;
@@ -1082,7 +1082,7 @@ router.post('/incidents/:id/compensate-driver', async (req, res) => {
       sendFCM(
         inc.driver_phone,
         '💰 Compensation Credited!',
-        `Payment dispute resolved. ₹${compensation} Sppero wallet mein add ho gaye! (Ride ₹${fare} - 15% fee)`,
+        `Payment dispute resolved. ₹${compensation} added to your Sppero wallet! (Ride ₹${fare} — 15% fee)`,
         { type: 'compensation_credited', amount: String(compensation) },
         { role: 'driver' }
       ).catch(() => {});
@@ -1135,14 +1135,14 @@ router.post('/wallet-credit', async (req, res) => {
   if (!phone || !amt || amt <= 0) return res.status(400).json({ error: 'phone and amount required' });
   try {
     const user = await db.query('SELECT id, name FROM users WHERE phone=$1', [phone]);
-    if (!user.rows[0]) return res.status(404).json({ error: 'User not found — phone check karo' });
+    if (!user.rows[0]) return res.status(404).json({ error: 'User not found — check phone number' });
     const uid = user.rows[0].id;
     const userName = user.rows[0].name || phone;
     let newBalance;
 
     if (role === 'driver') {
       const drCheck = await db.query('SELECT id FROM drivers WHERE id=$1', [uid]);
-      if (!drCheck.rows[0]) return res.status(400).json({ error: 'Yeh number driver nahi hai' });
+      if (!drCheck.rows[0]) return res.status(400).json({ error: 'This number is not registered as a driver' });
       await db.query(
         `INSERT INTO driver_wallet (driver_id, balance, total_earned) VALUES ($1, $2, $2)
          ON CONFLICT (driver_id) DO UPDATE SET balance=driver_wallet.balance+$2, total_earned=driver_wallet.total_earned+$2, updated_at=NOW()`,
@@ -1150,7 +1150,7 @@ router.post('/wallet-credit', async (req, res) => {
       );
       const bal = await db.query('SELECT balance FROM driver_wallet WHERE driver_id=$1', [uid]);
       newBalance = parseFloat(bal.rows[0]?.balance || 0);
-      sendFCM(phone, '💰 Wallet Credit!', `Admin ne ₹${amt} wallet mein add kiye!${note ? ' (' + note + ')' : ''}`, { type: 'admin_wallet_credit' }, { role: 'driver' }).catch(() => {});
+      sendFCM(phone, '💰 Wallet Credit!', `Admin added ₹${amt} to your wallet!${note ? ' (' + note + ')' : ''}`, { type: 'admin_wallet_credit' }, { role: 'driver' }).catch(() => {});
     } else {
       await db.query(
         `INSERT INTO customer_wallet (user_id, balance) VALUES ($1, $2) ON CONFLICT (user_id) DO UPDATE SET balance=customer_wallet.balance+$2, updated_at=NOW()`,

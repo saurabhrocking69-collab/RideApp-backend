@@ -75,11 +75,11 @@ router.post('/create-order', async (req, res) => {
   try {
     const { phone, plan_id } = req.body || {};
     if (!phone || !plan_id) return res.status(400).json({ error: 'phone aur plan_id required hai' });
-    if (!razorpay) return res.status(500).json({ error: 'Payment gateway configured nahi hai' });
+    if (!razorpay) return res.status(500).json({ error: 'Payment gateway not configured' });
 
     // Validate plan
     const planRes = await db.query(`SELECT * FROM subscription_plans WHERE id=$1 AND is_active=true`, [plan_id]);
-    if (!planRes.rows[0]) return res.status(404).json({ error: 'Plan nahi mila ya inactive hai' });
+    if (!planRes.rows[0]) return res.status(404).json({ error: 'Plan not found or inactive' });
     const plan = planRes.rows[0];
 
     // Check driver vehicle category matches plan category
@@ -87,7 +87,7 @@ router.post('/create-order', async (req, res) => {
       `SELECT d.vehicle_type FROM drivers d JOIN users u ON d.id = u.id WHERE u.phone=$1 LIMIT 1`,
       [phone]
     );
-    if (!drRes.rows[0]) return res.status(404).json({ error: 'Driver nahi mila' });
+    if (!drRes.rows[0]) return res.status(404).json({ error: 'Driver not found' });
     const driverCat = vehicleCategoryFor(drRes.rows[0].vehicle_type);
     if (driverCat !== plan.vehicle_category) {
       return res.status(400).json({ error: `Yeh plan ${plan.vehicle_category} drivers ke liye hai` });
@@ -136,7 +136,7 @@ router.post('/verify', async (req, res) => {
       `SELECT * FROM driver_subscriptions WHERE driver_phone=$1 AND razorpay_order_id=$2 AND status='pending' LIMIT 1`,
       [phone, razorpay_order_id]
     );
-    if (!subRes.rows[0]) return res.status(404).json({ error: 'Pending subscription nahi mila' });
+    if (!subRes.rows[0]) return res.status(404).json({ error: 'Pending subscription not found' });
     const sub = subRes.rows[0];
 
     // Check if driver already has an active subscription — if yes, queue this one
@@ -151,7 +151,7 @@ router.post('/verify', async (req, res) => {
         `UPDATE driver_subscriptions SET status='queued', razorpay_payment_id=$1 WHERE id=$2`,
         [razorpay_payment_id, sub.id]
       );
-      res.json({ success: true, status: 'queued', message: 'Plan khareed liya! Current plan khatam hone ke baad start hoga.' });
+      res.json({ success: true, status: 'queued', message: 'Plan purchased! Will start after your current plan ends.' });
     } else {
       // Activate immediately — use plan's validity_days
       const planRes = await db.query(`SELECT validity_days FROM subscription_plans WHERE id=$1`, [sub.plan_id]);
@@ -162,7 +162,7 @@ router.post('/verify', async (req, res) => {
         `UPDATE driver_subscriptions SET status='active', starts_at=$1, expires_at=$2, razorpay_payment_id=$3 WHERE id=$4`,
         [now, expiresAt, razorpay_payment_id, sub.id]
       );
-      res.json({ success: true, status: 'active', message: 'Subscription activate ho gayi! Ab 0% commission milega.', expires_at: expiresAt });
+      res.json({ success: true, status: 'active', message: 'Subscription activated! You will now earn at 0% commission.', expires_at: expiresAt });
     }
   } catch (err) {
     console.error('[SUBSCRIPTION] verify error:', err.message);

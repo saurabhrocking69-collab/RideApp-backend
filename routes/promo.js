@@ -7,18 +7,18 @@ router.post('/validate', async (req, res) => {
   const { code, fare, phone } = req.body;
   try {
     const promo = await db.query(`SELECT * FROM promo_codes WHERE UPPER(code) = UPPER($1) AND active = true`, [code]);
-    if (promo.rows.length === 0) return res.json({ valid: false, message: 'Galat promo code' });
+    if (promo.rows.length === 0) return res.json({ valid: false, message: 'Invalid promo code' });
     const p = promo.rows[0];
     if (p.expires_at && new Date(p.expires_at) < new Date())
-      return res.json({ valid: false, message: 'Promo code expire ho gaya' });
+      return res.json({ valid: false, message: 'Promo code has expired' });
     if (p.used_count >= p.usage_limit)
-      return res.json({ valid: false, message: 'Promo code limit khatam' });
+      return res.json({ valid: false, message: 'Promo code usage limit reached' });
     if (parseFloat(fare) < parseFloat(p.min_fare))
-      return res.json({ valid: false, message: `Minimum ₹${p.min_fare} ki ride chahiye` });
+      return res.json({ valid: false, message: `Minimum ₹${p.min_fare} ride required` });
     const user = await db.query('SELECT id FROM users WHERE phone = $1', [phone]);
     if (user.rows.length > 0) {
       const used = await db.query('SELECT id FROM promo_usage WHERE user_id = $1 AND promo_code = $2', [user.rows[0].id, code.toUpperCase()]);
-      if (used.rows.length > 0) return res.json({ valid: false, message: 'Aap yeh code pehle use kar chuke' });
+      if (used.rows.length > 0) return res.json({ valid: false, message: 'You have already used this code' });
     }
     let discount = p.discount_type === 'percent'
       ? Math.round(parseFloat(fare) * parseFloat(p.discount_value) / 100)

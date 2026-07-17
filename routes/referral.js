@@ -30,12 +30,12 @@ router.post('/apply', async (req, res) => {
   const { phone, referral_code } = req.body;
   try {
     const newUser = await db.query('SELECT id FROM users WHERE phone = $1', [phone]);
-    if (newUser.rows.length === 0) return res.json({ success: false, message: 'User nahi mila' });
+    if (newUser.rows.length === 0) return res.json({ success: false, message: 'User not found' });
     const referrer = await db.query('SELECT id FROM users WHERE referral_code = $1', [referral_code.toUpperCase()]);
-    if (referrer.rows.length === 0) return res.json({ success: false, message: 'Galat referral code' });
-    if (referrer.rows[0].id === newUser.rows[0].id) return res.json({ success: false, message: 'Apna hi code use nahi kar sakte' });
+    if (referrer.rows.length === 0) return res.json({ success: false, message: 'Invalid referral code' });
+    if (referrer.rows[0].id === newUser.rows[0].id) return res.json({ success: false, message: 'You cannot use your own referral code' });
     const exists = await db.query('SELECT id FROM referrals WHERE referred_id = $1', [newUser.rows[0].id]);
-    if (exists.rows.length > 0) return res.json({ success: false, message: 'Aap pehle referral use kar chuke' });
+    if (exists.rows.length > 0) return res.json({ success: false, message: 'You have already used a referral code' });
     const settingRow = await db.query(`SELECT value FROM reward_settings WHERE key='referral_reward'`);
     const reward = settingRow.rows[0] ? parseFloat(settingRow.rows[0].value) : 50;
     // Status = 'pending' — reward credited only after referred user completes first ride
@@ -43,7 +43,7 @@ router.post('/apply', async (req, res) => {
       `INSERT INTO referrals (referrer_id, referred_id, referral_code, reward_amount, status) VALUES ($1,$2,$3,$4,'pending')`,
       [referrer.rows[0].id, newUser.rows[0].id, referral_code.toUpperCase(), reward]
     );
-    res.json({ success: true, message: `Referral code apply ho gaya! ₹${reward} reward aapki 3 rides complete hone ke baad milega.` });
+    res.json({ success: true, message: `Referral code applied! ₹${reward} reward will be credited after your first 3 rides.` });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
@@ -91,8 +91,8 @@ async function maybeGrantReferralReward(userId) {
     // FCM to referrer
     sendFCM(
       refRow.referrer_phone,
-      '🎉 Referral Reward Mila!',
-      `Aapke dost ne 3 rides complete ki! ₹${reward} aapke wallet mein add ho gaya.`,
+      '🎉 Referral Reward Earned!',
+      `Your friend completed 3 rides! ₹${reward} added to your wallet.`,
       { type: 'referral_reward', amount: String(reward) },
       { role: 'customer' }
     ).catch(() => {});
@@ -102,8 +102,8 @@ async function maybeGrantReferralReward(userId) {
     if (referredUser.rows[0]) {
       sendFCM(
         referredUser.rows[0].phone,
-        '🎉 Referral Reward Mila!',
-        `3 rides complete! ₹${reward} referral bonus aapke wallet mein add ho gaya.`,
+        '🎉 Referral Reward Earned!',
+        `3 rides complete! ₹${reward} referral bonus added to your wallet.`,
         { type: 'referral_reward', amount: String(reward) },
         { role: 'customer' }
       ).catch(() => {});

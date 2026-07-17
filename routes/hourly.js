@@ -46,8 +46,8 @@ async function doCompleteHourly(booking_id, actual_km) {
       [actual_km || 0, extraKm, extraCharge, totalFare, actualHours, driverEarning, commission, booking_id]
     );
     await client.query('COMMIT');
-    sendFCM(b.customer_phone, '⏱️ Hourly Trip Complete!', `Trip khatam! Total: ₹${totalFare.toFixed(0)}`, {}, { role: 'customer' });
-    sendFCM(b.driver_phone, '✅ Trip Complete', `₹${driverEarning.toFixed(0)} aapki kamai!`, {}, { role: 'driver' });
+    sendFCM(b.customer_phone, '⏱️ Hourly Trip Complete!', `Trip complete! Total: ₹${totalFare.toFixed(0)}`, {}, { role: 'customer' });
+    sendFCM(b.driver_phone, '✅ Trip Complete', `₹${driverEarning.toFixed(0)} earned!`, {}, { role: 'driver' });
     client.release();
     return { total_fare: totalFare, driver_earning: driverEarning, extra_km: extraKm, extra_km_charge: extraCharge };
   } catch (err) {
@@ -68,12 +68,12 @@ router.post('/book', async (req, res) => {
     const baseFare = Math.round(pkg.fare * getSurge());
     await client.query('BEGIN');
     const user = await client.query('SELECT id FROM users WHERE phone = $1', [phone]);
-    if (!user.rows[0]) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'User nahi mila' }); }
+    if (!user.rows[0]) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'User not found' }); }
     const userId = user.rows[0].id;
     await client.query('INSERT INTO customer_wallet (user_id) VALUES ($1) ON CONFLICT (user_id) DO NOTHING', [userId]);
     const wallet = await client.query('SELECT balance FROM customer_wallet WHERE user_id = $1', [userId]);
     const balance = wallet.rows[0] ? parseFloat(wallet.rows[0].balance) : 0;
-    if (balance < baseFare) { await client.query('ROLLBACK'); return res.json({ success: false, error: `Wallet mein ₹${baseFare} chahiye, aapke paas ₹${balance.toFixed(0)} hai` }); }
+    if (balance < baseFare) { await client.query('ROLLBACK'); return res.json({ success: false, error: `Wallet needs ₹${baseFare}, your balance is ₹${balance.toFixed(0)}` }); }
     await client.query('UPDATE customer_wallet SET balance = balance - $1 WHERE user_id = $2', [baseFare, userId]);
     await client.query("INSERT INTO transactions (user_id, type, amount, description) VALUES ($1,'debit',$2,'Hourly booking - escrow hold')", [userId, baseFare]);
     const otp = Math.floor(1000 + Math.random() * 9000).toString();
@@ -93,7 +93,11 @@ router.post('/book', async (req, res) => {
         const io = getIO();
         const onlineDrivers = await db.query(
           `SELECT u.phone FROM drivers d JOIN users u ON d.id=u.id
-           WHERE d.vehicle_type=$1 AND d.is_online=true AND d.verification_status='approved' LIMIT 60`,
+           WHERE d.vehicle_type=$1 AND d.is_online=true AND d.verification_status='approved'
+             AND NOT EXISTS (
+               SELECT 1 FROM hourly_bookings hb
+               WHERE hb.driver_phone = u.phone AND hb.status IN ('matched','arrived','active')
+             ) LIMIT 60`,
           [vehicle_type]
         );
         const hoursLabel = package_hours >= 8 ? 'Full Day (8h)' : `${package_hours}h`;
@@ -106,7 +110,7 @@ router.post('/book', async (req, res) => {
         }
       } catch (e) { console.error('[hourly broadcast]', e.message); }
     });
-  } catch (err) { await client.query('ROLLBACK'); console.error('[hourly]', err.message); res.status(500).json({ error: 'Kuch problem aayi — dobara try karo' }); }
+  } catch (err) { await client.query('ROLLBACK'); console.error('[hourly]', err.message); res.status(500).json({ error: 'Something went wrong — please try again' }); }
   finally { client.release(); }
 });
 
@@ -115,7 +119,7 @@ router.get('/status/:id', async (req, res) => {
   const { maskPhone } = require('../services/phone');
   try {
     const r = await db.query('SELECT * FROM hourly_bookings WHERE id = $1', [req.params.id]);
-    if (!r.rows[0]) return res.status(404).json({ error: 'Nahi mili' });
+    if (!r.rows[0]) return res.status(404).json({ error: 'Booking not found' });
     const b = { ...r.rows[0] };
     let driver = null;
     if (b.driver_phone) {
@@ -141,7 +145,7 @@ router.get('/status/:id', async (req, res) => {
       };
     }
     res.json({ booking: b, driver, approaching_limit });
-  } catch (err) { console.error('[hourly]', err.message); res.status(500).json({ error: 'Kuch problem aayi — dobara try karo' }); }
+  } catch (err) { console.error('[hourly]', err.message); res.status(500).json({ error: 'Something went wrong — please try again' }); }
 });
 
 // GET /api/hourly/driver-pending
@@ -158,7 +162,7 @@ router.get('/driver-pending', async (req, res) => {
       [dr.rows[0].vehicle_type, phone]
     );
     res.json({ booking: r.rows[0] || null });
-  } catch (err) { console.error('[hourly]', err.message); res.status(500).json({ error: 'Kuch problem aayi — dobara try karo' }); }
+  } catch (err) { console.error('[hourly]', err.message); res.status(500).json({ error: 'Something went wrong — please try again' }); }
 });
 
 // POST /api/hourly/accept
@@ -168,10 +172,10 @@ router.post('/accept', async (req, res) => {
     const result = await db.query(`UPDATE hourly_bookings SET driver_phone=$1, status='matched' WHERE id=$2 AND status='pending' AND driver_phone IS NULL RETURNING *`, [driver_phone, booking_id]);
     if (result.rows.length === 0) return res.json({ success: false, message: 'Already taken' });
     const booking = result.rows[0];
-    sendFCM(booking.customer_phone, '⏱️ Driver Mil Gaya!', 'Hourly booking ke liye driver aa raha hai!', { type: 'hourly_matched', booking_id: String(booking_id) }, { role: 'customer' });
+    sendFCM(booking.customer_phone, '⏱️ Driver Found!', 'Your driver is on the way for the hourly booking!', { type: 'hourly_matched', booking_id: String(booking_id) }, { role: 'customer' });
     emitToRoom('hourly_' + booking_id, 'hourlyMatched', { status: 'matched', driver_phone, booking_id });
     res.json({ success: true });
-  } catch (err) { console.error('[hourly]', err.message); res.status(500).json({ error: 'Kuch problem aayi — dobara try karo' }); }
+  } catch (err) { console.error('[hourly]', err.message); res.status(500).json({ error: 'Something went wrong — please try again' }); }
 });
 
 // POST /api/hourly/driver-cancel  — driver backs out after accepting (before OTP)
@@ -179,7 +183,7 @@ router.post('/driver-cancel', async (req, res) => {
   const { booking_id, driver_phone } = req.body;
   try {
     const r = await db.query(`SELECT * FROM hourly_bookings WHERE id=$1 AND driver_phone=$2 AND status='matched'`, [booking_id, driver_phone]);
-    if (!r.rows[0]) return res.status(404).json({ error: 'Booking nahi mili ya already start ho gayi' });
+    if (!r.rows[0]) return res.status(404).json({ error: 'Booking not found or already started' });
     const booking = r.rows[0];
     // Reset to pending AND record this driver so they are not re-offered the same booking
     await db.query(
@@ -188,10 +192,10 @@ router.post('/driver-cancel', async (req, res) => {
        WHERE id=$1`,
       [booking_id, driver_phone]
     );
-    sendFCM(booking.customer_phone, '⚠️ Driver Cancel Ho Gaya', 'Driver unavailable ho gaya — naya driver dhundh rahe hain', {}, { role: 'customer' });
+    sendFCM(booking.customer_phone, '⚠️ Driver Cancelled', 'Driver became unavailable — looking for a new driver', {}, { role: 'customer' });
     emitToRoom('hourly_' + booking_id, 'hourlyDriverCancelled', { booking_id });
     res.json({ success: true });
-  } catch (err) { console.error('[hourly]', err.message); res.status(500).json({ error: 'Kuch problem aayi — dobara try karo' }); }
+  } catch (err) { console.error('[hourly]', err.message); res.status(500).json({ error: 'Something went wrong — please try again' }); }
 });
 
 // POST /api/hourly/arrived — driver marks arrival at pickup point
@@ -202,19 +206,19 @@ router.post('/arrived', async (req, res) => {
       `SELECT * FROM hourly_bookings WHERE id=$1 AND driver_phone=$2 AND status='matched'`,
       [booking_id, driver_phone]
     );
-    if (!r.rows[0]) return res.status(404).json({ success: false, message: 'Booking nahi mili ya already shuru ho gayi' });
+    if (!r.rows[0]) return res.status(404).json({ success: false, message: 'Booking not found or already started' });
     const b = r.rows[0];
     await db.query(`UPDATE hourly_bookings SET status='arrived' WHERE id=$1`, [booking_id]);
     sendFCM(
       b.customer_phone,
-      '📍 Sppero Buddy Pahunch Gaya!',
-      'Aapka Sppero Buddy pickup point pe pahunch gaya — OTP batao aur trip shuru karo!',
+      '📍 Sppero Buddy Arrived!',
+      'Your Sppero Buddy has arrived at the pickup point — share the OTP to start the trip!',
       { type: 'driver_arrived', booking_id: String(booking_id) },
       { role: 'customer' }
     );
     emitToRoom('hourly_' + booking_id, 'hourlyDriverArrived', { booking_id });
     res.json({ success: true });
-  } catch (err) { console.error('[hourly]', err.message); res.status(500).json({ error: 'Kuch problem aayi — dobara try karo' }); }
+  } catch (err) { console.error('[hourly]', err.message); res.status(500).json({ error: 'Something went wrong — please try again' }); }
 });
 
 // POST /api/hourly/start
@@ -222,14 +226,14 @@ router.post('/start', async (req, res) => {
   const { booking_id, otp, driver_phone } = req.body;
   try {
     const r = await db.query('SELECT otp, driver_phone FROM hourly_bookings WHERE id=$1', [booking_id]);
-    if (!r.rows[0] || r.rows[0].otp !== otp) return res.status(400).json({ success: false, message: 'Galat OTP!' });
+    if (!r.rows[0] || r.rows[0].otp !== otp) return res.status(400).json({ success: false, message: 'Incorrect OTP!' });
     if (driver_phone && r.rows[0].driver_phone && r.rows[0].driver_phone !== driver_phone)
-      return res.status(403).json({ success: false, message: 'Aap is booking ke driver nahi hain' });
+      return res.status(403).json({ success: false, message: 'You are not the driver for this booking' });
     const started_at = new Date().toISOString();
     await db.query(`UPDATE hourly_bookings SET status='active', started_at=NOW() WHERE id=$1`, [booking_id]);
     emitToRoom('hourly_' + booking_id, 'hourlyTripStarted', { booking_id, started_at });
     res.json({ success: true });
-  } catch (err) { console.error('[hourly]', err.message); res.status(500).json({ error: 'Kuch problem aayi — dobara try karo' }); }
+  } catch (err) { console.error('[hourly]', err.message); res.status(500).json({ error: 'Something went wrong — please try again' }); }
 });
 
 // GET /api/hourly/driver-active
@@ -238,7 +242,7 @@ router.get('/driver-active', async (req, res) => {
   try {
     const r = await db.query(`SELECT * FROM hourly_bookings WHERE driver_phone=$1 AND status IN ('matched','arrived','active') ORDER BY created_at DESC LIMIT 1`, [phone]);
     res.json({ booking: r.rows[0] || null });
-  } catch (err) { console.error('[hourly]', err.message); res.status(500).json({ error: 'Kuch problem aayi — dobara try karo' }); }
+  } catch (err) { console.error('[hourly]', err.message); res.status(500).json({ error: 'Something went wrong — please try again' }); }
 });
 
 // GET /api/hourly/active
@@ -263,7 +267,7 @@ router.get('/active', async (req, res) => {
       driver = dr.rows[0] || null;
     }
     res.json({ booking: b, driver });
-  } catch (err) { console.error('[hourly]', err.message); res.status(500).json({ error: 'Kuch problem aayi — dobara try karo' }); }
+  } catch (err) { console.error('[hourly]', err.message); res.status(500).json({ error: 'Something went wrong — please try again' }); }
 });
 
 // POST /api/hourly/complete
@@ -271,24 +275,24 @@ router.post('/complete', async (req, res) => {
   const { booking_id, actual_km } = req.body;
   try {
     const r = await db.query("SELECT * FROM hourly_bookings WHERE id=$1 AND status='active'", [booking_id]);
-    if (!r.rows[0]) return res.status(404).json({ error: 'Active booking nahi mila' });
+    if (!r.rows[0]) return res.status(404).json({ error: 'Active booking not found' });
     const b = r.rows[0];
     const elapsedMin = b.started_at ? (Date.now() - new Date(b.started_at).getTime()) / 60000 : 0;
     const totalMin = parseFloat(b.package_hours) * 60;
     if (elapsedMin < 20) {
       const waitMin = Math.ceil(20 - elapsedMin);
-      return res.json({ success: false, too_early: true, wait_mins: waitMin, message: `Trip abhi ${Math.floor(elapsedMin)} min pehle shuru hui — ${waitMin} min aur wait karo` });
+      return res.json({ success: false, too_early: true, wait_mins: waitMin, message: `Trip started ${Math.floor(elapsedMin)} min ago — please wait ${waitMin} more min` });
     }
     if (elapsedMin < totalMin) {
       const remMin = Math.ceil(totalMin - elapsedMin);
       const remH = Math.floor(remMin / 60);
       const remM = remMin % 60;
-      const remStr = remH > 0 ? `${remH} ghante ${remM > 0 ? remM + ' minute' : ''}` : `${remMin} minute`;
-      return res.json({ success: false, time_locked: true, remaining_min: remMin, message: `Package time baaki hai — ${remStr} aur chalao.` });
+      const remStr = remH > 0 ? `${remH}h ${remM > 0 ? remM + 'm' : ''}` : `${remMin}m`;
+      return res.json({ success: false, time_locked: true, remaining_min: remMin, message: `Package time remaining — drive for ${remStr} more.` });
     }
     const result = await doCompleteHourly(booking_id, actual_km || 0);
     res.json({ success: true, ...result });
-  } catch (err) { console.error('[hourly]', err.message); res.status(500).json({ error: 'Kuch problem aayi — dobara try karo' }); }
+  } catch (err) { console.error('[hourly]', err.message); res.status(500).json({ error: 'Something went wrong — please try again' }); }
 });
 
 // POST /api/hourly/early-end-request
@@ -296,21 +300,21 @@ router.post('/early-end-request', async (req, res) => {
   const { booking_id, requested_by } = req.body;
   try {
     const r = await db.query('SELECT * FROM hourly_bookings WHERE id=$1', [booking_id]);
-    if (!r.rows[0]) return res.status(404).json({ error: 'Nahi mila' });
+    if (!r.rows[0]) return res.status(404).json({ error: 'Not found' });
     const b = r.rows[0];
-    if ((b.early_end_reject_count || 0) >= 2) return res.json({ success: false, locked: true, message: '2 baar reject ho chuka — Support se contact karo' });
+    if ((b.early_end_reject_count || 0) >= 2) return res.json({ success: false, locked: true, message: 'Rejected twice — please contact support' });
     if (b.early_end_last_rejected_at) {
       const msSince = Date.now() - new Date(b.early_end_last_rejected_at).getTime();
       if (msSince < 15 * 60 * 1000) {
         const waitMin = Math.ceil((15 * 60 * 1000 - msSince) / 60000);
-        return res.json({ success: false, cooldown: true, wait_mins: waitMin, message: `${waitMin} min baad dobara request kar sakte ho` });
+        return res.json({ success: false, cooldown: true, wait_mins: waitMin, message: `Please try again after ${waitMin} min` });
       }
     }
     await db.query('UPDATE hourly_bookings SET early_end_requested_by=$1 WHERE id=$2', [requested_by, booking_id]);
-    if (requested_by === 'driver') sendFCM(b.customer_phone, '⚠️ Driver Trip End Karna Chahta Hai', 'App mein confirm ya reject karo.', {}, { role: 'customer' });
-    else sendFCM(b.driver_phone, '⚠️ Customer Trip End Karna Chahta Hai', 'App mein confirm ya reject karo.', {}, { role: 'driver' });
+    if (requested_by === 'driver') sendFCM(b.customer_phone, '⚠️ Driver Wants to End the Trip', 'Please confirm or reject in the app.', {}, { role: 'customer' });
+    else sendFCM(b.driver_phone, '⚠️ Customer Wants to End the Trip', 'Please confirm or reject in the app.', {}, { role: 'driver' });
     res.json({ success: true });
-  } catch (err) { console.error('[hourly]', err.message); res.status(500).json({ error: 'Kuch problem aayi — dobara try karo' }); }
+  } catch (err) { console.error('[hourly]', err.message); res.status(500).json({ error: 'Something went wrong — please try again' }); }
 });
 
 // POST /api/hourly/early-end-confirm
@@ -320,7 +324,7 @@ router.post('/early-end-confirm', async (req, res) => {
   try {
     await client.query('BEGIN');
     const r = await client.query('SELECT * FROM hourly_bookings WHERE id=$1', [booking_id]);
-    if (!r.rows[0]) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'Nahi mila' }); }
+    if (!r.rows[0]) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'Not found' }); }
     const b = r.rows[0];
     const actualHours = b.started_at ? (Date.now() - new Date(b.started_at).getTime()) / 3600000 : 0;
     const isCustomerEnd = b.early_end_requested_by === 'customer';
@@ -343,10 +347,10 @@ router.post('/early-end-confirm', async (req, res) => {
     }
     await client.query(`UPDATE hourly_bookings SET status='completed', ended_at=NOW(), actual_hours=$1, driver_earning=$2, platform_fee=$3, refund_amount=$4, payment_status='released', early_end_confirmed=true WHERE id=$5`, [actualHours, driverEarning, commission, refund, booking_id]);
     await client.query('COMMIT');
-    sendFCM(b.customer_phone, '✅ Trip Complete', isCustomerEnd ? 'Trip complete! Driver ko full payment gayi.' : `₹${refund} wallet mein wapas aa gaye!`, {}, { role: 'customer' });
-    sendFCM(b.driver_phone, '✅ Trip Complete!', `₹${driverEarning} aapki kamai — wallet mein add ho gaya!`, {}, { role: 'driver' });
+    sendFCM(b.customer_phone, '✅ Trip Complete', isCustomerEnd ? 'Trip complete! Full payment sent to driver.' : `₹${refund} refunded to your wallet!`, {}, { role: 'customer' });
+    sendFCM(b.driver_phone, '✅ Trip Complete!', `₹${driverEarning} earned — added to your wallet!`, {}, { role: 'driver' });
     res.json({ success: true, driver_earning: driverEarning, refund, actual_hours: actualHours.toFixed(1) });
-  } catch (err) { await client.query('ROLLBACK'); console.error('[hourly]', err.message); res.status(500).json({ error: 'Kuch problem aayi — dobara try karo' }); }
+  } catch (err) { await client.query('ROLLBACK'); console.error('[hourly]', err.message); res.status(500).json({ error: 'Something went wrong — please try again' }); }
   finally { client.release(); }
 });
 
@@ -357,7 +361,7 @@ router.post('/customer-early-complete', async (req, res) => {
   try {
     await client.query('BEGIN');
     const r = await client.query("SELECT * FROM hourly_bookings WHERE id=$1 AND status='active'", [booking_id]);
-    if (!r.rows[0]) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'Active booking nahi mila' }); }
+    if (!r.rows[0]) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'Active booking not found' }); }
     const b = r.rows[0];
     const actualHours = b.started_at ? (Date.now() - new Date(b.started_at).getTime()) / 3600000 : 0;
     const driverAmount = parseFloat(b.base_fare);
@@ -375,9 +379,9 @@ router.post('/customer-early-complete', async (req, res) => {
     await client.query('COMMIT');
     const io = getIO();
     if (io) io.to('hourly_' + booking_id).emit('hourlyTripCompleted', { driver_earning: driverEarning });
-    sendFCM(b.driver_phone, '✅ Customer ne Trip Complete Kiya!', `Full payment ₹${driverEarning.toFixed(0)} aapki kamai — wallet mein add ho gaya!`, {}, { role: 'driver' });
+    sendFCM(b.driver_phone, '✅ Customer Completed the Trip!', `Full payment ₹${driverEarning.toFixed(0)} earned — added to your wallet!`, {}, { role: 'driver' });
     res.json({ success: true, driver_earning: driverEarning, actual_hours: actualHours.toFixed(1) });
-  } catch (err) { await client.query('ROLLBACK'); console.error('[hourly]', err.message); res.status(500).json({ error: 'Kuch problem aayi — dobara try karo' }); }
+  } catch (err) { await client.query('ROLLBACK'); console.error('[hourly]', err.message); res.status(500).json({ error: 'Something went wrong — please try again' }); }
   finally { client.release(); }
 });
 
@@ -388,7 +392,7 @@ router.post('/early-end-reject', async (req, res) => {
     const r = await db.query('UPDATE hourly_bookings SET early_end_requested_by=NULL, early_end_reject_count=COALESCE(early_end_reject_count,0)+1, early_end_last_rejected_at=NOW() WHERE id=$1 RETURNING early_end_reject_count', [booking_id]);
     const count = r.rows[0]?.early_end_reject_count || 1;
     res.json({ success: true, reject_count: count, locked: count >= 2 });
-  } catch (err) { console.error('[hourly]', err.message); res.status(500).json({ error: 'Kuch problem aayi — dobara try karo' }); }
+  } catch (err) { console.error('[hourly]', err.message); res.status(500).json({ error: 'Something went wrong — please try again' }); }
 });
 
 // POST /api/hourly/cancel
@@ -401,7 +405,7 @@ router.post('/cancel', async (req, res) => {
       `SELECT * FROM hourly_bookings WHERE id=$1 AND status IN ('pending','matched','arrived')`,
       [booking_id]
     );
-    if (!r.rows[0]) { await client.query('ROLLBACK'); return res.json({ success: false, message: 'Cancel nahi ho sakta — ride already started or completed hai' }); }
+    if (!r.rows[0]) { await client.query('ROLLBACK'); return res.json({ success: false, message: 'Cannot cancel — ride is already started or completed' }); }
     const b = r.rows[0];
     const cu = await client.query('SELECT id FROM users WHERE phone=$1', [b.customer_phone]);
     if (cu.rows[0]) {
@@ -412,11 +416,11 @@ router.post('/cancel', async (req, res) => {
     await client.query('COMMIT');
     // Notify driver if they were already assigned
     if (b.driver_phone) {
-      sendFCM(b.driver_phone, '❌ Booking Cancel Ho Gayi', 'Customer ne hourly booking cancel kar di', { type: 'hourly_cancelled', booking_id: String(booking_id) }, { role: 'driver' }).catch(() => {});
+      sendFCM(b.driver_phone, '❌ Booking Cancelled', 'Customer cancelled the hourly booking', { type: 'hourly_cancelled', booking_id: String(booking_id) }, { role: 'driver' }).catch(() => {});
       emitToRoom('hourly_' + booking_id, 'hourlyCancelled', { booking_id });
     }
     res.json({ success: true, refunded: b.base_fare });
-  } catch (err) { await client.query('ROLLBACK'); console.error('[hourly]', err.message); res.status(500).json({ error: 'Kuch problem aayi — dobara try karo' }); }
+  } catch (err) { await client.query('ROLLBACK'); console.error('[hourly]', err.message); res.status(500).json({ error: 'Something went wrong — please try again' }); }
   finally { client.release(); }
 });
 
@@ -425,10 +429,10 @@ router.post('/customer-confirm-complete', async (req, res) => {
   const { booking_id } = req.body;
   try {
     const r = await db.query("SELECT * FROM hourly_bookings WHERE id=$1 AND pending_customer_confirm=true AND status='active'", [booking_id]);
-    if (!r.rows[0]) return res.json({ success: false, message: 'Confirmation pending nahi hai' });
+    if (!r.rows[0]) return res.json({ success: false, message: 'No confirmation pending' });
     const result = await doCompleteHourly(booking_id, r.rows[0].actual_km || 0);
     res.json({ success: true, ...result });
-  } catch (err) { console.error('[hourly]', err.message); res.status(500).json({ error: 'Kuch problem aayi — dobara try karo' }); }
+  } catch (err) { console.error('[hourly]', err.message); res.status(500).json({ error: 'Something went wrong — please try again' }); }
 });
 
 // POST /api/hourly/customer-dispute-complete
@@ -436,36 +440,36 @@ router.post('/customer-dispute-complete', async (req, res) => {
   const { booking_id } = req.body;
   try {
     const r = await db.query("UPDATE hourly_bookings SET pending_customer_confirm=false, dispute_raised=true WHERE id=$1 AND pending_customer_confirm=true RETURNING driver_phone", [booking_id]);
-    if (!r.rows[0]) return res.json({ success: false, message: 'Koi pending confirmation nahi' });
-    sendFCM(r.rows[0].driver_phone, '⚠️ Customer ne Dispute Raise Kiya', 'Admin review karega — paise escrow mein hain', {}, { role: 'driver' });
-    res.json({ success: true, message: 'Dispute raise ho gaya — admin 24h mein resolve karega' });
-  } catch (err) { console.error('[hourly]', err.message); res.status(500).json({ error: 'Kuch problem aayi — dobara try karo' }); }
+    if (!r.rows[0]) return res.json({ success: false, message: 'No pending confirmation' });
+    sendFCM(r.rows[0].driver_phone, '⚠️ Customer Raised a Dispute', 'Admin will review — payment is in escrow', {}, { role: 'driver' });
+    res.json({ success: true, message: 'Dispute raised — admin will resolve within 24h' });
+  } catch (err) { console.error('[hourly]', err.message); res.status(500).json({ error: 'Something went wrong — please try again' }); }
 });
 
 // POST /api/hourly/request-extend
 router.post('/request-extend', async (req, res) => {
   const { booking_id, extra_hours, customer_phone } = req.body;
-  if (!extra_hours || extra_hours < 1) return res.json({ success: false, message: 'Min 1 hour extend karo' });
+  if (!extra_hours || extra_hours < 1) return res.json({ success: false, message: 'Minimum 1 hour extension required' });
   try {
     const r = await db.query("SELECT * FROM hourly_bookings WHERE id=$1 AND status='active'", [booking_id]);
-    if (!r.rows[0]) return res.json({ success: false, message: 'Active booking nahi mila' });
+    if (!r.rows[0]) return res.json({ success: false, message: 'Active booking not found' });
     const b = r.rows[0];
-    if (b.extend_requested_hours) return res.json({ success: false, message: 'Extension request pehle se pending hai' });
+    if (b.extend_requested_hours) return res.json({ success: false, message: 'Extension request already pending' });
     const pkg = HOURLY_FARES[b.vehicle_type];
     const extraFare = pkg?.[extra_hours]?.fare
       ? Math.round(pkg[extra_hours].fare * getSurge())
       : Math.round((parseFloat(b.base_fare) / parseFloat(b.package_hours)) * extra_hours * getSurge());
     const cu = await db.query('SELECT id FROM users WHERE phone=$1', [customer_phone]);
-    if (!cu.rows[0]) return res.json({ success: false, message: 'User nahi mila' });
+    if (!cu.rows[0]) return res.json({ success: false, message: 'User not found' });
     const wallet = await db.query('SELECT balance FROM customer_wallet WHERE user_id=$1', [cu.rows[0].id]);
     const balance = parseFloat(wallet.rows[0]?.balance || 0);
-    if (balance < extraFare) return res.json({ success: false, message: `Wallet mein ₹${extraFare} chahiye, aapke paas ₹${balance.toFixed(0)} hai` });
+    if (balance < extraFare) return res.json({ success: false, message: `Wallet needs ₹${extraFare}, your balance is ₹${balance.toFixed(0)}` });
     await db.query('UPDATE customer_wallet SET balance=balance-$1 WHERE user_id=$2', [extraFare, cu.rows[0].id]);
     await db.query("INSERT INTO transactions (user_id,type,amount,description) VALUES ($1,'debit',$2,'Hourly extend request - escrow')", [cu.rows[0].id, extraFare]);
     await db.query('UPDATE hourly_bookings SET extend_requested_hours=$1, extend_escrow=$2 WHERE id=$3', [extra_hours, extraFare, booking_id]);
-    sendFCM(b.driver_phone, `📅 Customer +${extra_hours}h Extend Chahta Hai`, `₹${extraFare} escrow mein — accept ya reject karo app mein`, {}, { role: 'driver' });
-    res.json({ success: true, extra_fare: extraFare, message: `₹${extraFare} hold ho gaye — driver ka intezaar karo` });
-  } catch (err) { console.error('[hourly]', err.message); res.status(500).json({ error: 'Kuch problem aayi — dobara try karo' }); }
+    sendFCM(b.driver_phone, `📅 Customer Wants +${extra_hours}h Extension`, `₹${extraFare} in escrow — accept or reject in the app`, {}, { role: 'driver' });
+    res.json({ success: true, extra_fare: extraFare, message: `₹${extraFare} held — waiting for driver to accept` });
+  } catch (err) { console.error('[hourly]', err.message); res.status(500).json({ error: 'Something went wrong — please try again' }); }
 });
 
 // POST /api/hourly/accept-extend
@@ -473,7 +477,7 @@ router.post('/accept-extend', async (req, res) => {
   const { booking_id } = req.body;
   try {
     const r = await db.query('SELECT * FROM hourly_bookings WHERE id=$1 AND extend_requested_hours IS NOT NULL', [booking_id]);
-    if (!r.rows[0]) return res.json({ success: false, message: 'Koi extend request nahi' });
+    if (!r.rows[0]) return res.json({ success: false, message: 'No extension request found' });
     const b = r.rows[0];
     const extraHours = parseFloat(b.extend_requested_hours);
     const newHours = parseFloat(b.package_hours) + extraHours;
@@ -486,11 +490,11 @@ router.post('/accept-extend', async (req, res) => {
        extend_total_minutes=COALESCE(extend_total_minutes,0)+$4, extend_total_fare=COALESCE(extend_total_fare,0)+$5 WHERE id=$6`,
       [newHours, newKm, newFare, extMinutes, parseFloat(b.extend_escrow), booking_id]
     );
-    sendFCM(b.customer_phone, '✅ Extension Accept Ho Gaya!', `Trip ab ${newHours >= 24 ? (newHours/24)+'d' : newHours+'h'} ke liye extend ho gaya — ${newKm} km included`, { type: 'hourly_extension_result', booking_id: String(booking_id), accepted: 'true' }, { role: 'customer' });
+    sendFCM(b.customer_phone, '✅ Extension Accepted!', `Trip extended to ${newHours >= 24 ? (newHours/24)+'d' : newHours+'h'} — ${newKm} km included`, { type: 'hourly_extension_result', booking_id: String(booking_id), accepted: 'true' }, { role: 'customer' });
     const io = getIO();
     if (io) io.to('hourly_' + booking_id).emit('hourlyExtensionResult', { accepted: true, new_hours: newHours, new_km: newKm, new_fare: newFare });
     res.json({ success: true, new_hours: newHours, new_km: newKm, new_fare: newFare });
-  } catch (err) { console.error('[hourly]', err.message); res.status(500).json({ error: 'Kuch problem aayi — dobara try karo' }); }
+  } catch (err) { console.error('[hourly]', err.message); res.status(500).json({ error: 'Something went wrong — please try again' }); }
 });
 
 // POST /api/hourly/reject-extend
@@ -498,7 +502,7 @@ router.post('/reject-extend', async (req, res) => {
   const { booking_id } = req.body;
   try {
     const r = await db.query('SELECT * FROM hourly_bookings WHERE id=$1 AND extend_requested_hours IS NOT NULL', [booking_id]);
-    if (!r.rows[0]) return res.json({ success: false, message: 'Koi extend request nahi' });
+    if (!r.rows[0]) return res.json({ success: false, message: 'No extension request found' });
     const b = r.rows[0];
     if (parseFloat(b.extend_escrow || 0) > 0) {
       const cu = await db.query('SELECT id FROM users WHERE phone=$1', [b.customer_phone]);
@@ -508,11 +512,11 @@ router.post('/reject-extend', async (req, res) => {
       }
     }
     await db.query('UPDATE hourly_bookings SET extend_requested_hours=NULL, extend_escrow=0 WHERE id=$1', [booking_id]);
-    sendFCM(b.customer_phone, '❌ Extension Reject Ho Gaya', `₹${parseFloat(b.extend_escrow || 0).toFixed(0)} wapas aapke wallet mein`, { type: 'hourly_extension_result', booking_id: String(booking_id), accepted: 'false' }, { role: 'customer' });
+    sendFCM(b.customer_phone, '❌ Extension Rejected', `₹${parseFloat(b.extend_escrow || 0).toFixed(0)} refunded to your wallet`, { type: 'hourly_extension_result', booking_id: String(booking_id), accepted: 'false' }, { role: 'customer' });
     const io = getIO();
     if (io) io.to('hourly_' + booking_id).emit('hourlyExtensionResult', { accepted: false, refund: parseFloat(b.extend_escrow || 0) });
     res.json({ success: true });
-  } catch (err) { console.error('[hourly]', err.message); res.status(500).json({ error: 'Kuch problem aayi — dobara try karo' }); }
+  } catch (err) { console.error('[hourly]', err.message); res.status(500).json({ error: 'Something went wrong — please try again' }); }
 });
 
 // POST /api/hourly/update-km
@@ -530,20 +534,20 @@ router.post('/update-km', async (req, res) => {
     const alerts = [];
     if (kmPct >= 0.80 && !b.km_alert_sent) {
       await db.query('UPDATE hourly_bookings SET km_alert_sent=TRUE WHERE id=$1', [booking_id]);
-      sendFCM(b.customer_phone, '📍 Package KM Khatam Hua', `${actual_km} km travel ho gaye — package mein ${b.km_included} km tha. Ab ₹${HOURLY_FARES[b.vehicle_type]?.extra || 8}/km extra charge hoga.`, {}, { role: 'customer' });
-      sendFCM(b.driver_phone, '📍 Customer Package KM Exceed Hua', `${actual_km}/${b.km_included} km. Ab extra charges customer se honge.`, {}, { role: 'driver' });
+      sendFCM(b.customer_phone, '📍 Package KM Limit Reached', `${actual_km} km travelled — package included ${b.km_included} km. Extra charges of ₹${HOURLY_FARES[b.vehicle_type]?.extra || 8}/km will now apply.`, {}, { role: 'customer' });
+      sendFCM(b.driver_phone, '📍 Customer Exceeded Package KM', `${actual_km}/${b.km_included} km. Extra charges will apply to the customer.`, {}, { role: 'driver' });
       alerts.push('km_alert');
     }
     if (timePct >= 0.80 && !b.time_alert_sent) {
       await db.query('UPDATE hourly_bookings SET time_alert_sent=TRUE WHERE id=$1', [booking_id]);
       const minLeft = Math.max(0, Math.round(totalMin - elapsedMin));
-      sendFCM(b.customer_phone, '⏰ Time Khatam Hone Wala Hai!', `Sirf ~${minLeft} minute bacha hai. Extension chahiye? App mein extend karo.`, {}, { role: 'customer' });
+      sendFCM(b.customer_phone, '⏰ Time Almost Up!', `Only ~${minLeft} min left. Need more time? Extend from the app.`, {}, { role: 'customer' });
       sendFCM(b.driver_phone, '⏰ Trip Time 80% Complete', `${Math.round(elapsedMin)}/${Math.round(totalMin)} min elapsed.`, {}, { role: 'driver' });
       alerts.push('time_alert');
     }
     const extraKmCharge = Math.max(0, actual_km - parseFloat(b.km_included)) * (HOURLY_FARES[b.vehicle_type]?.extra || 8);
     res.json({ success: true, alerts, km_pct: Math.round(kmPct * 100), time_pct: Math.round(timePct * 100), extra_km_charge: extraKmCharge });
-  } catch (err) { console.error('[hourly]', err.message); res.status(500).json({ error: 'Kuch problem aayi — dobara try karo' }); }
+  } catch (err) { console.error('[hourly]', err.message); res.status(500).json({ error: 'Something went wrong — please try again' }); }
 });
 
 // GET /api/hourly/extend-cost
@@ -551,7 +555,7 @@ router.get('/extend-cost', async (req, res) => {
   const { booking_id, extra_hours, extra_minutes } = req.query;
   try {
     const r = await db.query('SELECT * FROM hourly_bookings WHERE id=$1', [booking_id]);
-    if (!r.rows[0]) return res.status(404).json({ error: 'Booking nahi mila' });
+    if (!r.rows[0]) return res.status(404).json({ error: 'Booking not found' });
     const b = r.rows[0];
     const pkg = HOURLY_FARES[b.vehicle_type];
     const extraHours = parseFloat(extra_hours || 0);
@@ -568,7 +572,7 @@ router.get('/extend-cost', async (req, res) => {
       ? pkg[extraHours].km
       : Math.round((parseFloat(b.km_included) / parseFloat(b.package_hours)) * totalExtraDecimalHours);
     res.json({ extra_fare: extraFare, extra_km: extraKm, extra_hours: extraHours, extra_minutes: extraMin, per_km_rate: pkg?.extra || 8 });
-  } catch (err) { console.error('[hourly]', err.message); res.status(500).json({ error: 'Kuch problem aayi — dobara try karo' }); }
+  } catch (err) { console.error('[hourly]', err.message); res.status(500).json({ error: 'Something went wrong — please try again' }); }
 });
 
 // POST /api/hourly/request-extend-v2
@@ -577,13 +581,13 @@ router.post('/request-extend-v2', async (req, res) => {
   const extraHours = parseFloat(extra_hours || 0);
   const extraMin = parseInt(extra_minutes || 0);
   const totalExtraDecimalHours = extraHours + extraMin / 60;
-  if (totalExtraDecimalHours <= 0) return res.json({ success: false, message: 'Kam se kam 15 minute extend karo' });
-  if (extraMin > 0 && extraMin < 15) return res.json({ success: false, message: 'Minutes mein minimum 15 minute extension' });
+  if (totalExtraDecimalHours <= 0) return res.json({ success: false, message: 'Minimum 15 minutes extension required' });
+  if (extraMin > 0 && extraMin < 15) return res.json({ success: false, message: 'Minutes must be at least 15 for an extension' });
   try {
     const r = await db.query("SELECT * FROM hourly_bookings WHERE id=$1 AND status='active'", [booking_id]);
-    if (!r.rows[0]) return res.json({ success: false, message: 'Active booking nahi mila' });
+    if (!r.rows[0]) return res.json({ success: false, message: 'Active booking not found' });
     const b = r.rows[0];
-    if (b.extend_requested_hours) return res.json({ success: false, message: 'Extension request pehle se pending hai' });
+    if (b.extend_requested_hours) return res.json({ success: false, message: 'Extension request already pending' });
     const pkg = HOURLY_FARES[b.vehicle_type];
     let extraFare = 0;
     if (extraHours >= 1 && pkg?.[extraHours]) {
@@ -593,19 +597,19 @@ router.post('/request-extend-v2', async (req, res) => {
       extraFare = Math.round(perHourRate * totalExtraDecimalHours * getSurge());
     }
     const cu = await db.query('SELECT id FROM users WHERE phone=$1', [customer_phone]);
-    if (!cu.rows[0]) return res.json({ success: false, message: 'User nahi mila' });
+    if (!cu.rows[0]) return res.json({ success: false, message: 'User not found' });
     const wallet = await db.query('SELECT balance FROM customer_wallet WHERE user_id=$1', [cu.rows[0].id]);
     const balance = parseFloat(wallet.rows[0]?.balance || 0);
-    if (balance < extraFare) return res.json({ success: false, message: `Wallet mein ₹${extraFare} chahiye, aapke paas ₹${balance.toFixed(0)} hai` });
+    if (balance < extraFare) return res.json({ success: false, message: `Wallet needs ₹${extraFare}, your balance is ₹${balance.toFixed(0)}` });
     await db.query('UPDATE customer_wallet SET balance=balance-$1 WHERE user_id=$2', [extraFare, cu.rows[0].id]);
     await db.query("INSERT INTO transactions (user_id,type,amount,description) VALUES ($1,'debit',$2,'Hourly extend request v2 - escrow')", [cu.rows[0].id, extraFare]);
     await db.query('UPDATE hourly_bookings SET extend_requested_hours=$1, extend_escrow=$2 WHERE id=$3', [totalExtraDecimalHours, extraFare, booking_id]);
     const label = extraHours >= 1 ? `${extraHours}h${extraMin > 0 ? ` ${extraMin}m` : ''}` : `${extraMin} min`;
-    sendFCM(b.driver_phone, `📅 Customer +${label} Extend Chahta Hai`, `₹${extraFare} escrow mein — accept ya reject karo app mein`, { type: 'hourly_extend', booking_id: String(booking_id) }, { role: 'driver' });
+    sendFCM(b.driver_phone, `📅 Customer Wants +${label} Extension`, `₹${extraFare} in escrow — accept or reject in the app`, { type: 'hourly_extend', booking_id: String(booking_id) }, { role: 'driver' });
     const io = getIO();
     if (io) io.to('hourly_' + booking_id).emit('hourlyExtendRequest', { booking_id, extra_hours: totalExtraDecimalHours, extra_fare: extraFare, label });
-    res.json({ success: true, extra_fare: extraFare, label, message: `₹${extraFare} hold ho gaye — driver ka intezaar karo` });
-  } catch (err) { console.error('[hourly]', err.message); res.status(500).json({ error: 'Kuch problem aayi — dobara try karo' }); }
+    res.json({ success: true, extra_fare: extraFare, label, message: `₹${extraFare} held — waiting for driver to accept` });
+  } catch (err) { console.error('[hourly]', err.message); res.status(500).json({ error: 'Something went wrong — please try again' }); }
 });
 
 // POST /api/hourly/chat/send
@@ -638,7 +642,7 @@ router.post('/chat/send', async (req, res) => {
     await db.query('INSERT INTO chat_messages (ride_id, sender, message) VALUES ($1,$2,$3)', [`h_${booking_id}`, sender, message]);
     emitToRoom('hourly_' + booking_id, 'hourlyChatMessage', { sender, message, created_at });
     res.json({ success: true });
-  } catch (err) { console.error('[hourly]', err.message); res.status(500).json({ error: 'Kuch problem aayi — dobara try karo' }); }
+  } catch (err) { console.error('[hourly]', err.message); res.status(500).json({ error: 'Something went wrong — please try again' }); }
 });
 
 // GET /api/hourly/chat/:id
@@ -646,7 +650,7 @@ router.get('/chat/:id', async (req, res) => {
   try {
     const r = await db.query('SELECT sender, message, created_at FROM chat_messages WHERE ride_id=$1 ORDER BY created_at ASC', [`h_${req.params.id}`]);
     res.json({ messages: r.rows });
-  } catch (err) { console.error('[hourly]', err.message); res.status(500).json({ error: 'Kuch problem aayi — dobara try karo' }); }
+  } catch (err) { console.error('[hourly]', err.message); res.status(500).json({ error: 'Something went wrong — please try again' }); }
 });
 
 module.exports = router;

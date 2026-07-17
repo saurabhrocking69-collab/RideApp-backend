@@ -53,7 +53,7 @@ router.post('/fare-estimate', async (req, res) => {
   try {
     const { calculateFare } = require('../services/pricing');
     const fares = await db.query('SELECT * FROM fare_settings WHERE vehicle_type = $1', [ride_type]);
-    if (!fares.rows[0]) return res.json({ error: 'Ride type nahi mila' });
+    if (!fares.rows[0]) return res.json({ error: 'Ride type not found' });
     const f = fares.rows[0];
     let distKm = distance != null ? parseFloat(distance) : NaN;
     if (isNaN(distKm)) {
@@ -84,7 +84,7 @@ router.post('/sos', async (req, res) => {
       [user.rows[0]?.id || null, ride_id || null, lat || null, lng || null, type || 'emergency']
     );
     console.log('🆘 SOS ALERT:', phone, lat, lng);
-    res.json({ success: true, message: 'Emergency alert bheja gaya', helplines: { police: '100', ambulance: '108', women: '1091' } });
+    res.json({ success: true, message: 'Emergency alert sent', helplines: { police: '100', ambulance: '108', women: '1091' } });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
@@ -144,8 +144,8 @@ router.post('/scratch-card/scratch', async (req, res) => {
   const { card_id, phone } = req.body;
   try {
     const card = await db.query('SELECT * FROM scratch_cards WHERE id = $1', [card_id]);
-    if (card.rows.length === 0) return res.json({ success: false, message: 'Card nahi mila' });
-    if (card.rows[0].is_scratched) return res.json({ success: false, message: 'Pehle hi scratch ho chuka' });
+    if (card.rows.length === 0) return res.json({ success: false, message: 'Card not found' });
+    if (card.rows[0].is_scratched) return res.json({ success: false, message: 'Already scratched' });
     const reward = parseFloat(card.rows[0].reward_amount);
     const userId = card.rows[0].user_id;
     await db.query('UPDATE scratch_cards SET is_scratched = true WHERE id = $1', [card_id]);
@@ -174,11 +174,11 @@ router.get('/loyalty/my-points', async (req, res) => {
 // POST /api/loyalty/redeem
 router.post('/loyalty/redeem', async (req, res) => {
   const { phone, points } = req.body;
-  if (!phone || !points || points < 100) return res.status(400).json({ error: 'Minimum 100 points chahiye' });
-  if (points % 100 !== 0) return res.status(400).json({ error: 'Points 100 ke multiple mein hone chahiye' });
+  if (!phone || !points || points < 100) return res.status(400).json({ error: 'Minimum 100 points required' });
+  if (points % 100 !== 0) return res.status(400).json({ error: 'Points must be a multiple of 100' });
   try {
     const user = await db.query('SELECT id FROM users WHERE phone=$1', [phone]);
-    if (!user.rows[0]) return res.status(404).json({ error: 'User nahi mila' });
+    if (!user.rows[0]) return res.status(404).json({ error: 'User not found' });
     const userId = user.rows[0].id;
     const loyalty = await db.query('SELECT total_points FROM customer_loyalty WHERE user_id=$1', [userId]);
     const available = parseInt(loyalty.rows[0]?.total_points || 0);
@@ -228,9 +228,9 @@ router.get('/rewards/dashboard', async (req, res) => {
     const rideCount = parseInt(todayRides.rows[0].count);
     const rules = [
       { id: 'fare_over_100',  icon: '💎', label: '₹100+ Ride',       desc: 'Koi bhi ride ₹100 se zyada ki hogi',     cashback: 10,  unlocked: false, claimed_today: false },
-      { id: 'second_ride_day',icon: '✌️',  label: '2nd Ride Today',   desc: 'Aaj 2 rides complete karo',               cashback: 10,  unlocked: rideCount >= 2, claimed_today: rideCount >= 2 },
-      { id: 'third_ride_day', icon: '🔥',  label: '3rd Ride Streak',  desc: 'Aaj 3rd ride complete karo',              cashback: 15,  unlocked: rideCount >= 3, claimed_today: rideCount >= 3 },
-      { id: 'wallet_pay',     icon: '👛',  label: 'Wallet Pay Bonus', desc: 'Wallet se pay karo (₹50+ ride pe)',       cashback: 5,   unlocked: false, claimed_today: false },
+      { id: 'second_ride_day',icon: '✌️',  label: '2nd Ride Today',   desc: 'Complete 2 rides today',               cashback: 10,  unlocked: rideCount >= 2, claimed_today: rideCount >= 2 },
+      { id: 'third_ride_day', icon: '🔥',  label: '3rd Ride Streak',  desc: 'Complete your 3rd ride today',              cashback: 15,  unlocked: rideCount >= 3, claimed_today: rideCount >= 3 },
+      { id: 'wallet_pay',     icon: '👛',  label: 'Wallet Pay Bonus', desc: 'Pay with wallet (on rides ₹50+)',       cashback: 5,   unlocked: false, claimed_today: false },
     ];
 
     res.json({
@@ -317,7 +317,7 @@ router.post('/rides/check-range', async (req, res) => {
 // GET /api/customer/rating?phone=X
 router.get('/customer/rating', async (req, res) => {
   const { phone } = req.query;
-  if (!phone) return res.status(400).json({ error: 'phone chahiye' });
+  if (!phone) return res.status(400).json({ error: 'phone required' });
   try {
     const r = await db.query(
       `SELECT u.customer_rating,
@@ -335,7 +335,7 @@ router.get('/customer/rating', async (req, res) => {
 // GET /api/customer/tier?phone=X — loyalty tier based on all-time completed rides
 router.get('/customer/tier', async (req, res) => {
   const { phone } = req.query;
-  if (!phone) return res.status(400).json({ error: 'phone chahiye' });
+  if (!phone) return res.status(400).json({ error: 'phone required' });
   try {
     const r = await db.query(
       `SELECT COUNT(*) AS total

@@ -31,7 +31,7 @@ router.post('/add', async (req, res) => {
     return res.status(400).json({ error: 'Invalid phone or amount' });
   try {
     const user = await db.query('SELECT id FROM users WHERE phone = $1', [phone]);
-    if (user.rows.length === 0) return res.status(404).json({ error: 'User nahi mila' });
+    if (user.rows.length === 0) return res.status(404).json({ error: 'User not found' });
     const userId = user.rows[0].id;
     await db.query('INSERT INTO customer_wallet (user_id) VALUES ($1) ON CONFLICT (user_id) DO NOTHING', [userId]);
     const result = await db.query('UPDATE customer_wallet SET balance = balance + $1, updated_at = NOW() WHERE user_id = $2 RETURNING balance', [amount, userId]);
@@ -46,7 +46,7 @@ router.post('/pay', async (req, res) => {
   const client = await db.connect();
   try {
     const user = await client.query('SELECT id FROM users WHERE phone = $1', [phone]);
-    if (user.rows.length === 0) { client.release(); return res.status(404).json({ error: 'User nahi mila' }); }
+    if (user.rows.length === 0) { client.release(); return res.status(404).json({ error: 'User not found' }); }
     const userId = user.rows[0].id;
     await client.query('BEGIN');
     const wallet = await client.query('SELECT balance FROM customer_wallet WHERE user_id = $1 FOR UPDATE', [userId]);
@@ -54,7 +54,7 @@ router.post('/pay', async (req, res) => {
     if (balance < amount) {
       await client.query('ROLLBACK');
       client.release();
-      return res.json({ success: false, message: 'Wallet mein paisa kam hai', balance });
+      return res.json({ success: false, message: 'Insufficient wallet balance', balance });
     }
     const result = await client.query(
       'UPDATE customer_wallet SET balance = balance - $1, updated_at = NOW() WHERE user_id = $2 RETURNING balance',
@@ -91,11 +91,11 @@ router.get('/transactions', async (req, res) => {
 router.post('/topup/order', async (req, res) => {
   const { phone, amount } = req.body;
   const paise = Math.round(parseFloat(amount || 0) * 100);
-  if (paise < 100) return res.status(400).json({ error: 'Minimum ₹1 chahiye' });
+  if (paise < 100) return res.status(400).json({ error: 'Minimum ₹1 required' });
   if (!razorpay) return res.status(500).json({ error: 'Payment gateway not configured' });
   try {
     const user = await db.query('SELECT id FROM users WHERE phone=$1', [phone]);
-    if (!user.rows[0]) return res.status(404).json({ error: 'User nahi mila' });
+    if (!user.rows[0]) return res.status(404).json({ error: 'User not found' });
     const order = await razorpay.orders.create({ amount: paise, currency: 'INR', receipt: `topup_${phone}_${Date.now()}`, notes: { phone, purpose: 'wallet_topup' } });
     res.json({ success: true, order_id: order.id, amount: order.amount, currency: 'INR', key_id: process.env.RAZORPAY_KEY_ID });
   } catch (err) { res.status(500).json({ error: err.message }); }
@@ -132,17 +132,17 @@ router.post('/topup/verify', async (req, res) => {
       const w2 = user2.rows[0]
         ? await client.query('SELECT balance FROM customer_wallet WHERE user_id=$1', [user2.rows[0].id])
         : null;
-      return res.json({ success: true, balance: parseFloat(w2?.rows[0]?.balance || 0), message: `₹${confirmedAmount} wallet mein add ho gaya!` });
+      return res.json({ success: true, balance: parseFloat(w2?.rows[0]?.balance || 0), message: `₹${confirmedAmount} added to your wallet!` });
     }
     const user = await client.query('SELECT id FROM users WHERE phone=$1', [phone]);
-    if (!user.rows[0]) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'User nahi mila' }); }
+    if (!user.rows[0]) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'User not found' }); }
     const userId = user.rows[0].id;
     await client.query('INSERT INTO customer_wallet (user_id) VALUES ($1) ON CONFLICT (user_id) DO NOTHING', [userId]);
     const w = await client.query('UPDATE customer_wallet SET balance=balance+$1, updated_at=NOW() WHERE user_id=$2 RETURNING balance', [rupees, userId]);
     await client.query("INSERT INTO transactions (user_id,type,amount,description) VALUES ($1,'credit',$2,$3)", [userId, rupees, `Wallet recharge ₹${rupees} (${razorpay_payment_id})`]);
     await client.query("INSERT INTO razorpay_topups (user_phone,amount,payment_id,status) VALUES ($1,$2,$3,'confirmed')", [phone, rupees, razorpay_payment_id]);
     await client.query('COMMIT');
-    res.json({ success: true, balance: parseFloat(w.rows[0].balance), message: `₹${rupees} wallet mein add ho gaya!` });
+    res.json({ success: true, balance: parseFloat(w.rows[0].balance), message: `₹${rupees} added to your wallet!` });
   } catch (err) { await client.query('ROLLBACK'); res.status(500).json({ error: err.message }); }
   finally { client.release(); }
 });

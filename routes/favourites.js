@@ -71,20 +71,20 @@ router.get('/', async (req, res) => {
     if (!cu.rows[0]) return res.json({ buddy: null });
     const buddy = await getBuddy(cu.rows[0].id);
     res.json({ buddy });
-  } catch (err) { console.error('[favourites]', err.message); res.status(500).json({ error: 'Kuch problem aayi — dobara try karo' }); }
+  } catch (err) { console.error('[favourites]', err.message); res.status(500).json({ error: 'Something went wrong — please try again' }); }
 });
 
 // POST /api/favourites  — set / replace favourite buddy
 // body: { customer_phone, driver_phone }
 router.post('/', async (req, res) => {
   const { customer_phone, driver_phone } = req.body;
-  if (!customer_phone || !driver_phone) return res.status(400).json({ error: 'customer_phone aur driver_phone chahiye' });
+  if (!customer_phone || !driver_phone) return res.status(400).json({ error: 'customer_phone and driver_phone required' });
   try {
     const cu = await db.query('SELECT id FROM users WHERE phone=$1', [customer_phone]);
-    if (!cu.rows[0]) return res.status(404).json({ error: 'Customer nahi mila' });
+    if (!cu.rows[0]) return res.status(404).json({ error: 'Customer not found' });
 
     const dr = await db.query('SELECT id FROM users WHERE phone=$1', [driver_phone]);
-    if (!dr.rows[0]) return res.status(404).json({ error: 'Driver nahi mila' });
+    if (!dr.rows[0]) return res.status(404).json({ error: 'Driver not found' });
 
     const customerId = cu.rows[0].id;
     const driverId   = dr.rows[0].id;
@@ -95,7 +95,7 @@ router.post('/', async (req, res) => {
       [customerId, driverId]
     );
     if (parseInt(check.rows[0].count) === 0)
-      return res.status(400).json({ error: 'Sirf us driver ko favourite banaya ja sakta hai jiske saath completed ride ho' });
+      return res.status(400).json({ error: 'You can only add a driver you have completed a ride with as your favourite' });
 
     // Upsert — replaces any existing favourite
     await db.query(`
@@ -106,38 +106,38 @@ router.post('/', async (req, res) => {
 
     const buddy = await getBuddy(customerId);
     res.json({ success: true, buddy });
-  } catch (err) { console.error('[favourites]', err.message); res.status(500).json({ error: 'Kuch problem aayi — dobara try karo' }); }
+  } catch (err) { console.error('[favourites]', err.message); res.status(500).json({ error: 'Something went wrong — please try again' }); }
 });
 
 // DELETE /api/favourites  — remove favourite buddy
 // body: { customer_phone }
 router.delete('/', async (req, res) => {
   const { customer_phone } = req.body;
-  if (!customer_phone) return res.status(400).json({ error: 'customer_phone chahiye' });
+  if (!customer_phone) return res.status(400).json({ error: 'customer_phone required' });
   try {
     const cu = await db.query('SELECT id FROM users WHERE phone=$1', [customer_phone]);
-    if (!cu.rows[0]) return res.status(404).json({ error: 'Customer nahi mila' });
+    if (!cu.rows[0]) return res.status(404).json({ error: 'Customer not found' });
     await db.query('DELETE FROM favourite_drivers WHERE customer_id=$1', [cu.rows[0].id]);
     res.json({ success: true });
-  } catch (err) { console.error('[favourites]', err.message); res.status(500).json({ error: 'Kuch problem aayi — dobara try karo' }); }
+  } catch (err) { console.error('[favourites]', err.message); res.status(500).json({ error: 'Something went wrong — please try again' }); }
 });
 
 // POST /api/favourites/book  — direct booking with favourite buddy
 router.post('/book', async (req, res) => {
   const { customer_phone, pickup, drop_location, pickup_lat, pickup_lng, drop_lat, drop_lng, distance } = req.body;
   if (!customer_phone || !pickup || !drop_location)
-    return res.status(400).json({ error: 'Pickup aur drop location daalein' });
+    return res.status(400).json({ error: 'Pickup and drop location required' });
 
   const client = await db.connect();
   try {
     const cu = await client.query('SELECT * FROM users WHERE phone=$1', [customer_phone]);
-    if (!cu.rows[0]) return res.status(404).json({ error: 'Account nahi mila — dobara login karein' });
+    if (!cu.rows[0]) return res.status(404).json({ error: 'Account not found — please log in again' });
     const customer = cu.rows[0];
     if (customer.booking_restricted)
-      return res.status(403).json({ error: '🚫 Aapka account hold pe hai. help@sppero.in pe contact karein', restricted: true });
+      return res.status(403).json({ error: '🚫 Your account is on hold. Please contact help@sppero.in', restricted: true });
 
     const buddy = await getBuddy(customer.id);
-    if (!buddy) return res.status(400).json({ error: 'Koi favourite buddy set nahi hai' });
+    if (!buddy) return res.status(400).json({ error: 'No favourite buddy set' });
 
     if (!buddy.is_online)
       return res.json({ success: false, reason: 'offline', driver_name: buddy.driver_name });
@@ -203,7 +203,7 @@ router.post('/book', async (req, res) => {
     sendFCM(
       buddy.driver_phone,
       `⭐ ${customer.name || 'Customer'} ki Direct Request!`,
-      `Aapke regular customer ne seedha aapko request bheji hai — 25 sec mein decide karo!`,
+      `Your regular customer sent you a direct request — decide within 25 sec!`,
       { type: 'new_ride', ride_id: String(rideId), is_favourite_request: 'true' },
       { channelId: 'ride_requests' }
     );
@@ -222,7 +222,7 @@ router.post('/book', async (req, res) => {
   } catch (err) {
     await client.query('ROLLBACK').catch(() => {});
     console.error('[BUDDY BOOK] Error:', err.message);
-    res.status(500).json({ error: 'Booking nahi ho payi — please try again' });
+    res.status(500).json({ error: 'Booking failed — please try again' });
   } finally {
     client.release();
   }

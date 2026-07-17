@@ -21,7 +21,7 @@ router.post('/initiate', async (req, res) => {
          WHERE r.id = $1 AND r.status IN ('matched','arrived','started')`,
         [ride_id]
       );
-      if (!r.rows[0]) return res.status(404).json({ success: false, error: 'Active ride nahi mili' });
+      if (!r.rows[0]) return res.status(404).json({ success: false, error: 'Active ride not found' });
       callerPhone = caller_role === 'customer' ? r.rows[0].customer_phone : r.rows[0].driver_phone;
       targetPhone = caller_role === 'customer' ? r.rows[0].driver_phone   : r.rows[0].customer_phone;
     } else if (booking_id) {
@@ -29,14 +29,14 @@ router.post('/initiate', async (req, res) => {
         `SELECT customer_phone, driver_phone FROM hourly_bookings WHERE id=$1 AND status IN ('matched','active')`,
         [booking_id]
       );
-      if (!b.rows[0]) return res.status(404).json({ success: false, error: 'Active booking nahi mili' });
+      if (!b.rows[0]) return res.status(404).json({ success: false, error: 'Active booking not found' });
       callerPhone = caller_role === 'customer' ? b.rows[0].customer_phone : b.rows[0].driver_phone;
       targetPhone = caller_role === 'customer' ? b.rows[0].driver_phone   : b.rows[0].customer_phone;
     } else {
-      return res.status(400).json({ error: 'ride_id ya booking_id chahiye' });
+      return res.status(400).json({ error: 'ride_id or booking_id required' });
     }
 
-    if (!targetPhone) return res.json({ success: false, error: 'Driver abhi assign nahi hua' });
+    if (!targetPhone) return res.json({ success: false, error: 'Driver not yet assigned' });
 
     if (process.env.EXOTEL_SID && process.env.EXOTEL_API_KEY && process.env.EXOTEL_TOKEN && process.env.EXOTEL_CALLER_ID) {
       try {
@@ -49,7 +49,7 @@ router.post('/initiate', async (req, res) => {
             body: new URLSearchParams({ From: callerPhone, To: targetPhone, CallerId: process.env.EXOTEL_CALLER_ID, TimeLimit: '300' }),
           }
         );
-        if (resp.ok) return res.json({ success: true, method: 'exotel', message: 'Call shuru ho rahi hai...' });
+        if (resp.ok) return res.json({ success: true, method: 'exotel', message: 'Call is being connected...' });
       } catch (exoErr) {
         console.error('Exotel call error:', exoErr.message);
       }

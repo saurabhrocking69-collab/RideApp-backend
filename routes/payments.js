@@ -11,10 +11,10 @@ const { sendFCM } = require('../config/firebase');
 // ─────────────────────────────────────────────────────────────────────────────
 router.post('/create-order', async (req, res) => {
   if (!razorpay)
-    return res.status(500).json({ success: false, error: 'Payment gateway configured nahi hai — admin se contact karo' });
+    return res.status(500).json({ success: false, error: 'Payment gateway not configured — please contact admin' });
   const { amount, ride_id } = req.body;
   if (!amount || amount < 1)
-    return res.status(400).json({ success: false, error: 'Valid amount chahiye' });
+    return res.status(400).json({ success: false, error: 'Valid amount required' });
   try {
     const receipt = ('ride_' + String(ride_id)).substring(0, 40);
     const order = await razorpay.orders.create({ amount: Math.round(amount * 100), currency: 'INR', receipt });
@@ -102,7 +102,7 @@ async function webhookHandler(req, res) {
                   [phone, rupees, paymentId]);
                 await client.query('COMMIT');
                 console.log(`✅ Webhook wallet topup: ${phone} +₹${rupees} (${paymentId})`);
-                sendFCM(phone, '✅ Wallet Recharged!', `₹${rupees} aapke wallet mein add ho gaya!`,
+                sendFCM(phone, '✅ Wallet Recharged!', `₹${rupees} added to your wallet!`,
                   { type: 'wallet_topup', amount: String(rupees) }, { role: 'customer' }).catch(() => {});
               } catch (e) {
                 await client.query('ROLLBACK');
@@ -135,7 +135,7 @@ async function webhookHandler(req, res) {
               [utr, rp.id]
             );
             sendFCM(po.driver_phone, '✅ Payout Successful!',
-              `₹${parseFloat(po.amount - (po.commission_deducted || 0)).toFixed(0)} aapke ${po.method === 'upi' ? 'UPI' : 'bank account'} mein credit ho gaya! UTR: ${utr}`,
+              `₹${parseFloat(po.amount - (po.commission_deducted || 0)).toFixed(0)} credited to your ${po.method === 'upi' ? 'UPI' : 'bank account'}! UTR: ${utr}`,
               { type: 'payout_success', utr, payout_id: String(po.id) }, { role: 'driver' }).catch(() => {});
           } else {
             const amt          = parseFloat(po.amount);
@@ -162,7 +162,7 @@ async function webhookHandler(req, res) {
               ).catch(() => {});
             }
             sendFCM(po.driver_phone, '❌ Payout Failed',
-              `Aapka ₹${parseFloat(amt).toFixed(0)} payout fail ho gaya (${failReason}). Amount wallet mein wapas aa gaya.`,
+              `Your ₹${parseFloat(amt).toFixed(0)} payout failed (${failReason}). Amount has been refunded to your wallet.`,
               { type: 'payout_failed', reason: failReason, payout_id: String(po.id) }, { role: 'driver' }).catch(() => {});
           }
         }
@@ -172,7 +172,7 @@ async function webhookHandler(req, res) {
     res.json({ status: 'ok' });
   } catch (err) {
     console.error('❌ Razorpay webhook handler error:', err.message);
-    res.status(500).json({ error: 'Payment process mein error — support se contact karo' });
+    res.status(500).json({ error: 'Payment processing error — please contact support' });
   }
 }
 

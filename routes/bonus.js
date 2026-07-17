@@ -116,7 +116,7 @@ router.post('/claim-daily', async (req, res) => {
     );
     if (parseInt(ridesRes.rows[0].count) < tier.rides) {
       await client.query('ROLLBACK');
-      return res.json({ success: false, error: `${tier.rides} rides chahiye — abhi ${ridesRes.rows[0].count} hain` });
+      return res.json({ success: false, error: `${tier.rides} rides required — currently at ${ridesRes.rows[0].count}` });
     }
 
     const refKey = `daily_${new Date().toISOString().slice(0,10)}_r${rule_id}_t${tier_index}`;
@@ -135,10 +135,10 @@ router.post('/claim-daily', async (req, res) => {
       [phone, rule_id, tier.amount, `${tier.rides} rides bonus — ${ruleRes.rows[0].label}`]
     );
     await client.query('COMMIT');
-    res.json({ success: true, amount: tier.amount, message: `₹${tier.amount} bonus wallet mein add ho gaya! 🎉` });
+    res.json({ success: true, amount: tier.amount, message: `₹${tier.amount} bonus added to your wallet! 🎉` });
   } catch (err) {
     await client.query('ROLLBACK');
-    if (err.code === '23505') return res.json({ success: false, error: 'Is tier ka bonus aaj already claim ho gaya' });
+    if (err.code === '23505') return res.json({ success: false, error: 'This tier bonus has already been claimed today' });
     res.status(500).json({ error: err.message });
   } finally { client.release(); }
 });
@@ -169,7 +169,7 @@ router.post('/claim-streak', async (req, res) => {
     );
     if (weekData.rows.length < target_days) {
       await client.query('ROLLBACK');
-      return res.json({ success: false, error: `${target_days} qualifying days chahiye — abhi ${weekData.rows.length}/${target_days} done` });
+      return res.json({ success: false, error: `${target_days} qualifying days required — currently ${weekData.rows.length}/${target_days} done` });
     }
 
     await client.query(
@@ -186,10 +186,10 @@ router.post('/claim-streak', async (req, res) => {
       [phone, rule.id, amount, `Weekly Warrior — ${target_days} days × ${rides_per_day}+ rides`]
     );
     await client.query('COMMIT');
-    res.json({ success: true, amount, message: `₹${amount} Weekly Warrior bonus mila! 🏆` });
+    res.json({ success: true, amount, message: `₹${amount} Weekly Warrior bonus earned! 🏆` });
   } catch (err) {
     await client.query('ROLLBACK');
-    if (err.code === '23505') return res.json({ success: false, error: 'Is hafte ka streak bonus already claim ho gaya' });
+    if (err.code === '23505') return res.json({ success: false, error: 'This week\'s streak bonus has already been claimed' });
     res.status(500).json({ error: err.message });
   } finally { client.release(); }
 });
@@ -198,7 +198,7 @@ router.post('/claim-streak', async (req, res) => {
 router.post('/redeem', async (req, res) => {
   const { phone, amount } = req.body;
   const redeemAmt = parseFloat(amount);
-  if (isNaN(redeemAmt) || redeemAmt < 50) return res.json({ success: false, error: 'Minimum ₹50 redeem karo' });
+  if (isNaN(redeemAmt) || redeemAmt < 50) return res.json({ success: false, error: 'Minimum ₹50 required to redeem' });
   const client = await db.connect();
   try {
     await client.query('BEGIN');
@@ -227,7 +227,7 @@ router.post('/redeem', async (req, res) => {
       [u.rows[0].id, redeemAmt]
     );
     await client.query('COMMIT');
-    res.json({ success: true, message: `₹${redeemAmt.toFixed(0)} main wallet mein transfer ho gaya! 💰` });
+    res.json({ success: true, message: `₹${redeemAmt.toFixed(0)} transferred to your main wallet! 💰` });
   } catch (err) {
     await client.query('ROLLBACK');
     res.status(500).json({ error: err.message });

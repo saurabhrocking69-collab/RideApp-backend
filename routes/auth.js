@@ -7,17 +7,17 @@ const { redis } = require('../config/redis');
 // POST /api/auth/send-otp
 router.post('/send-otp', async (req, res) => {
   const { phone } = req.body;
-  if (!phone || phone.length !== 10) return res.status(400).json({ error: 'Sahi phone number do' });
+  if (!phone || phone.length !== 10) return res.status(400).json({ error: 'Please enter a valid 10-digit phone number' });
   try {
     const blocked = await redis.get('otp:block:' + phone);
     if (blocked) {
       const ttl = await redis.ttl('otp:block:' + phone);
-      return res.status(429).json({ error: `Bahut zyada attempts! ${Math.ceil(ttl / 60)} min baad try karo` });
+      return res.status(429).json({ error: `Too many attempts! Please try again in ${Math.ceil(ttl / 60)} min` });
     }
     const recentSend = await redis.get('otp:sent:' + phone);
     if (recentSend) {
       const ttl = await redis.ttl('otp:sent:' + phone);
-      return res.status(429).json({ error: `${ttl} second baad resend karo` });
+      return res.status(429).json({ error: `Please wait ${ttl} seconds before resending` });
     }
     const otp = Math.floor(100000 + Math.random() * 900000).toString();
     await redis.setEx('otp:' + phone, 600, otp);
@@ -35,10 +35,10 @@ router.post('/send-otp', async (req, res) => {
     }
 
     const testMode = process.env.ALLOW_TEST_OTP === 'true';
-    res.json({ message: 'OTP bheja gaya', success: true, ...(testMode ? { otp } : {}) });
+    res.json({ message: 'OTP sent', success: true, ...(testMode ? { otp } : {}) });
   } catch (err) {
     console.error('send-otp error:', err.message);
-    res.status(500).json({ error: 'OTP bhejne mein dikkat. Dobara try karo.' });
+    res.status(500).json({ error: 'Failed to send OTP. Please try again.' });
   }
 });
 
@@ -49,20 +49,20 @@ router.post('/verify-otp', async (req, res) => {
     const blocked = await redis.get('otp:block:' + phone);
     if (blocked) {
       const ttl = await redis.ttl('otp:block:' + phone);
-      return res.status(429).json({ error: `Account blocked! ${Math.ceil(ttl / 60)} min baad try karo` });
+      return res.status(429).json({ error: `Account blocked! Please try again in ${Math.ceil(ttl / 60)} min` });
     }
     const isTestOtp = otp === '000000' && process.env.ALLOW_TEST_OTP === 'true';
     const savedOtp = await redis.get('otp:' + phone);
-    if (!savedOtp && !isTestOtp) return res.status(400).json({ error: 'OTP expire ho gaya! Dobara bhejwao' });
+    if (!savedOtp && !isTestOtp) return res.status(400).json({ error: 'OTP has expired! Please request a new one' });
     if (!isTestOtp && savedOtp !== otp) {
       const attempts = await redis.incr('otp:attempts:' + phone);
       await redis.expire('otp:attempts:' + phone, 300);
       if (attempts >= 3) {
         await redis.setEx('otp:block:' + phone, 1800, '1');
         await redis.del('otp:' + phone);
-        return res.status(429).json({ error: '3 baar galat OTP! 30 min ke liye block ho gaya' });
+        return res.status(429).json({ error: '3 incorrect OTPs! Account blocked for 30 min' });
       }
-      return res.status(400).json({ error: `Galat OTP! ${3 - attempts} aur chances bache hain` });
+      return res.status(400).json({ error: `Incorrect OTP! ${3 - attempts} attempt(s) remaining` });
     }
     if (!isTestOtp) {
       await redis.del('otp:' + phone);

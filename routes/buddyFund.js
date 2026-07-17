@@ -26,9 +26,9 @@ router.post('/create-order', async (req, res) => {
     const { phone, amount } = req.body || {};
     const amt = parseFloat(amount);
     if (!amt || amt < 1 || amt > 10000)
-      return res.status(400).json({ error: 'Amount 1 se 10,000 ke beech hona chahiye' });
+      return res.status(400).json({ error: 'Amount must be between 1 and 10,000' });
     if (!razorpay)
-      return res.status(500).json({ error: 'Payment gateway configured nahi hai' });
+      return res.status(500).json({ error: 'Payment gateway not configured' });
 
     const order = await razorpay.orders.create({
       amount:   Math.round(amt * 100),
@@ -72,7 +72,7 @@ router.post('/verify', async (req, res) => {
        RETURNING amount`,
       [razorpay_payment_id, razorpay_order_id]
     );
-    if (!upd.rows[0]) return res.status(404).json({ error: 'Contribution record nahi mila' });
+    if (!upd.rows[0]) return res.status(404).json({ error: 'Contribution record not found' });
 
     const statsR = await db.query(
       `SELECT

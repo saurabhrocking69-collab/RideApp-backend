@@ -88,7 +88,7 @@ async function processCashback(userId, phone, rideId, fare, paymentMethod) {
 
     if (earned.length > 0) {
       const total = earned.reduce((s, e) => s + e.amount, 0);
-      sendFCM(phone, '🎁 Cashback Mila!', `₹${total} cashback aapke wallet mein add ho gaya!`, { type: 'cashback_earned', amount: String(total) }, { role: 'customer' }).catch(() => {});
+      sendFCM(phone, '🎁 Cashback Received!', `₹${total} cashback added to your wallet!`, { type: 'cashback_earned', amount: String(total) }, { role: 'customer' }).catch(() => {});
     }
   } catch (_e) {}
   return earned;
@@ -98,13 +98,13 @@ async function processCashback(userId, phone, rideId, fare, paymentMethod) {
 router.post('/book', async (req, res) => {
   const { passenger_phone, pickup, drop_location, ride_type, pickup_lat, pickup_lng, drop_lat, drop_lng, discount, promo_code } = req.body;
   if (!passenger_phone || String(passenger_phone).length !== 10) return res.status(400).json({ error: 'Valid phone do' });
-  if (!pickup || !drop_location) return res.status(400).json({ error: 'Pickup aur drop location chahiye' });
+  if (!pickup || !drop_location) return res.status(400).json({ error: 'Pickup and drop location required' });
   if (!['auto', 'bike', 'car', 'eriksha', 'luxury', 'green_bike', 'electric_auto'].includes(ride_type)) return res.status(400).json({ error: 'Invalid ride type' });
   try {
     const passenger = await db.query('SELECT * FROM users WHERE phone = $1', [passenger_phone]);
-    if (passenger.rows.length === 0) return res.status(404).json({ error: 'Passenger nahi mila' });
+    if (passenger.rows.length === 0) return res.status(404).json({ error: 'Passenger not found' });
     if (passenger.rows[0].booking_restricted)
-      return res.status(403).json({ error: '🚫 Aapka account temporarily hold pe hai. Kisi pichli ride ka payment issue hai. Support se contact karo: help@sppero.in', restricted: true });
+      return res.status(403).json({ error: '🚫 Your account is temporarily on hold due to a pending payment from a previous ride. Please contact support: help@sppero.in', restricted: true });
 
     const distance = parseFloat(req.body.distance) || 5;
     const durationMin = parseFloat(req.body.duration_min) || (distance / 20) * 60;
@@ -136,10 +136,10 @@ router.post('/book', async (req, res) => {
 
     const disc = discount || 0;
     const netFare = Math.max(0, fare - disc);
-    res.json({ message: 'Driver dhundh rahe hain...', fare: '₹' + fare, net_fare: netFare, discount: disc, distance: distance + ' km', ride_id: ride.rows[0].id, status: 'requested', surge_multiplier: 1.0, platform_fee: platFee, dist_fare: fareCalc.dist_fare, time_fare: fareCalc.time_fare, base_fare: fareCalc.base_fare, is_night: fareCalc.is_night });
+    res.json({ message: 'Searching for a driver...', fare: '₹' + fare, net_fare: netFare, discount: disc, distance: distance + ' km', ride_id: ride.rows[0].id, status: 'requested', surge_multiplier: 1.0, platform_fee: platFee, dist_fare: fareCalc.dist_fare, time_fare: fareCalc.time_fare, base_fare: fareCalc.base_fare, is_night: fareCalc.is_night });
 
     assignRideToNextDriver(ride.rows[0].id, pickup_lat || null, pickup_lng || null, ride_type).catch(() => {});
-  } catch (err) { console.error('[rides]', err.message); res.status(500).json({ error: 'Kuch problem aayi — dobara try karo' }); }
+  } catch (err) { console.error('[rides]', err.message); res.status(500).json({ error: 'Something went wrong — please try again' }); }
 });
 
 // GET /api/rides/surge-check — surge multiplier for a pickup location
@@ -165,7 +165,7 @@ router.post('/:id/driver-location', async (req, res) => {
     // Emit to customer's socket room
     emitToRoom('ride_' + rideId, 'driverMoved', { lat, lng });
     res.json({ ok: true });
-  } catch (err) { console.error('[rides]', err.message); res.status(500).json({ error: 'Kuch problem aayi — dobara try karo' }); }
+  } catch (err) { console.error('[rides]', err.message); res.status(500).json({ error: 'Something went wrong — please try again' }); }
 });
 
 // GET /api/rides/status/:rideId
@@ -185,7 +185,7 @@ router.get('/status/:rideId', async (req, res) => {
        WHERE r.id = $1`,
       [req.params.rideId]
     );
-    if (result.rows.length === 0) return res.status(404).json({ error: 'Ride nahi mili' });
+    if (result.rows.length === 0) return res.status(404).json({ error: 'Ride not found' });
     const ride = { ...result.rows[0] };
     // Prefer Redis status (fresher), fall back to DB
     if (cachedStatus) ride.status = cachedStatus;
@@ -195,16 +195,16 @@ router.get('/status/:rideId', async (req, res) => {
     }
     ride.net_fare = Math.max(0, parseFloat(ride.fare || 0) - parseFloat(ride.discount || 0));
     res.json({ ride });
-  } catch (err) { console.error('[rides]', err.message); res.status(500).json({ error: 'Kuch problem aayi — dobara try karo' }); }
+  } catch (err) { console.error('[rides]', err.message); res.status(500).json({ error: 'Something went wrong — please try again' }); }
 });
 
 // POST /api/rides/accept
 router.post('/accept', async (req, res) => {
   const { ride_id, driver_phone } = req.body;
-  if (!ride_id || !driver_phone) return res.status(400).json({ success: false, message: 'ride_id aur driver_phone chahiye' });
+  if (!ride_id || !driver_phone) return res.status(400).json({ success: false, message: 'ride_id and driver_phone required' });
   try {
     const driver = await db.query('SELECT id FROM users WHERE phone=$1', [driver_phone]);
-    if (!driver.rows[0]) return res.status(404).json({ success: false, message: 'Driver nahi mila' });
+    if (!driver.rows[0]) return res.status(404).json({ success: false, message: 'Driver not found' });
 
     const otp = Math.floor(1000 + Math.random() * 9000).toString();
 
@@ -228,7 +228,7 @@ router.post('/accept', async (req, res) => {
        RETURNING id`,
       [ride_id, driver_phone]
     );
-    if (!claim.rows[0]) return res.json({ success: false, message: 'Ride window expire ho gayi ya kisi aur ne le li — agli dekho!' });
+    if (!claim.rows[0]) return res.json({ success: false, message: 'Ride window expired or claimed by another driver — check the next one!' });
 
     const dInfo = await db.query(
       `SELECT u.name, d.vehicle_no, d.vehicle_brand, d.vehicle_model, d.rating, d.verification_status, d.face_photo, d.upi_id
@@ -267,7 +267,7 @@ router.post('/accept', async (req, res) => {
     // ── Notify all OTHER offered drivers: ride has been taken ─────────────────
     const otherDrivers = offeredPhones.filter(p => p !== driver_phone);
     for (const phone of otherDrivers) {
-      emitToRoom('driver_' + phone, 'rideTaken', { rideId: ride_id, message: 'Ride kisi aur driver ne le li' });
+      emitToRoom('driver_' + phone, 'rideTaken', { rideId: ride_id, message: 'Ride was taken by another driver' });
     }
 
     await db.query(
@@ -284,10 +284,10 @@ router.post('/accept', async (req, res) => {
     res.json({ success: true, message: 'Ride accepted!', otp });
   } catch (err) {
     if (err.message && err.message.includes('Concurrent transition')) {
-      return res.json({ success: false, message: 'Ride kisi aur driver ne le li — agli dekho!' });
+      return res.json({ success: false, message: 'Ride was taken by another driver — check the next one!' });
     }
     console.error('[rides] accept:', err.message);
-    res.status(500).json({ error: 'Kuch problem aayi — dobara try karo' });
+    res.status(500).json({ error: 'Something went wrong — please try again' });
   }
 });
 
@@ -326,7 +326,7 @@ router.post('/reject-offer', async (req, res) => {
     }).catch(() => {});
 
     res.json({ success: true });
-  } catch (err) { console.error('[rides]', err.message); res.status(500).json({ error: 'Kuch problem aayi — dobara try karo' }); }
+  } catch (err) { console.error('[rides]', err.message); res.status(500).json({ error: 'Something went wrong — please try again' }); }
 });
 
 // POST /api/rides/arrived
@@ -337,7 +337,7 @@ router.post('/arrived', async (req, res) => {
     const owner = await db.query(
       `SELECT 1 FROM rides r JOIN users u ON r.driver_id=u.id WHERE r.id=$1 AND u.phone=$2`, [ride_id, driver_phone]
     );
-    if (!owner.rows[0]) return res.status(403).json({ error: 'Yeh ride tumhari nahi hai' });
+    if (!owner.rows[0]) return res.status(403).json({ error: 'This ride does not belong to you' });
 
     // Fetch ETA data before transitioning so we can compute correction
     const etaRow = await db.query(
@@ -372,9 +372,9 @@ router.post('/arrived', async (req, res) => {
     res.json({ success: true, message: 'Pickup pe pahunch gaye!' });
   } catch (err) {
     if (err.message?.includes('Invalid transition') || err.message?.includes('Concurrent transition'))
-      return res.status(409).json({ error: 'Ride is state mein arrived nahi ho sakti' });
+      return res.status(409).json({ error: 'Ride cannot be set to arrived in this state' });
     console.error('[rides] arrived:', err.message);
-    res.status(500).json({ error: 'Kuch problem aayi — dobara try karo' });
+    res.status(500).json({ error: 'Something went wrong — please try again' });
   }
 });
 
@@ -384,20 +384,20 @@ router.post('/start', async (req, res) => {
   if (!driver_phone) return res.status(400).json({ success: false, message: 'driver_phone required' });
   try {
     const check = await db.query(`SELECT r.start_otp, u.phone as dr_phone FROM rides r LEFT JOIN users u ON r.driver_id=u.id WHERE r.id=$1`, [ride_id]);
-    if (!check.rows[0]) return res.status(404).json({ success: false, message: 'Ride nahi mili' });
-    if (check.rows[0]?.start_otp !== otp) return res.status(400).json({ success: false, message: 'Galat OTP!' });
+    if (!check.rows[0]) return res.status(404).json({ success: false, message: 'Ride not found' });
+    if (check.rows[0]?.start_otp !== otp) return res.status(400).json({ success: false, message: 'Incorrect OTP!' });
     if (check.rows[0].dr_phone && check.rows[0].dr_phone !== driver_phone)
-      return res.status(403).json({ success: false, message: 'Yeh ride tumhari nahi hai' });
+      return res.status(403).json({ success: false, message: 'This ride does not belong to you' });
 
     await transitionRide(ride_id, 'started');
     // Record actual trip start time so /complete can calculate real time fare
     db.query(`UPDATE rides SET trip_started_at = NOW() WHERE id = $1`, [ride_id]).catch(() => {});
-    res.json({ success: true, message: 'Trip shuru!' });
+    res.json({ success: true, message: 'Trip started!' });
   } catch (err) {
     if (err.message?.includes('Invalid transition') || err.message?.includes('Concurrent transition'))
-      return res.status(409).json({ success: false, message: 'Trip abhi start nahi ho sakta — pehle arrived confirm karo' });
+      return res.status(409).json({ success: false, message: 'Trip cannot start yet — please confirm arrived first' });
     console.error('[rides] start:', err.message);
-    res.status(500).json({ error: 'Kuch problem aayi — dobara try karo' });
+    res.status(500).json({ error: 'Something went wrong — please try again' });
   }
 });
 
@@ -407,20 +407,20 @@ router.post('/cancel', async (req, res) => {
   try {
     if (driver_phone) {
       const owner = await db.query(`SELECT 1 FROM rides r JOIN users u ON r.driver_id=u.id WHERE r.id=$1 AND u.phone=$2`, [ride_id, driver_phone]);
-      if (!owner.rows[0]) return res.status(403).json({ error: 'Yeh ride tumhari nahi hai' });
+      if (!owner.rows[0]) return res.status(403).json({ error: 'This ride does not belong to you' });
     }
     const cancelRes = await db.query(
       "UPDATE rides SET status = 'cancelled' WHERE id = $1 AND status IN ('requested', 'matched', 'arrived') RETURNING id",
       [ride_id]
     );
-    if (!cancelRes.rows[0]) return res.json({ success: false, message: 'Ride started, completed ya already cancelled hai' });
+    if (!cancelRes.rows[0]) return res.json({ success: false, message: 'Ride is already started, completed, or cancelled' });
     const rideInfo = await db.query('SELECT p.phone AS passenger_phone FROM rides r JOIN users p ON r.passenger_id=p.id WHERE r.id=$1', [ride_id]);
     if (rideInfo.rows[0]) {
       emitRideUpdate(ride_id, { status: 'cancelled' });
-      sendFCM(rideInfo.rows[0].passenger_phone, '🚫 Ride Cancel Ho Gayi', 'Driver ne ride cancel kar di', { type: 'ride_cancelled', ride_id: String(ride_id) }, { role: 'customer' });
+      sendFCM(rideInfo.rows[0].passenger_phone, '🚫 Ride Cancelled', 'Driver cancelled your ride', { type: 'ride_cancelled', ride_id: String(ride_id) }, { role: 'customer' });
     }
-    res.json({ success: true, message: 'Trip cancel ki', reason });
-  } catch (err) { console.error('[rides]', err.message); res.status(500).json({ error: 'Kuch problem aayi — dobara try karo' }); }
+    res.json({ success: true, message: 'Trip cancelled', reason });
+  } catch (err) { console.error('[rides]', err.message); res.status(500).json({ error: 'Something went wrong — please try again' }); }
 });
 
 // Helper: load cancel settings from DB (falls back to defaults if table missing)
@@ -487,7 +487,7 @@ router.get('/cancel-info/:ride_id', async (req, res) => {
       wait_fare_free_min: WAIT_FARE_FREE_MIN,
       wait_fare_billable_min: waitFareBillableMin,
     });
-  } catch (err) { console.error('[rides]', err.message); res.status(500).json({ error: 'Kuch problem aayi — dobara try karo' }); }
+  } catch (err) { console.error('[rides]', err.message); res.status(500).json({ error: 'Something went wrong — please try again' }); }
 });
 
 // POST /api/rides/cancel-smart
@@ -505,12 +505,12 @@ router.post('/cancel-smart', async (req, res) => {
        WHERE r.id = $1`,
       [ride_id]
     );
-    if (rideRes.rows.length === 0) return res.json({ success: false, message: 'Ride nahi mili' });
+    if (rideRes.rows.length === 0) return res.json({ success: false, message: 'Ride not found' });
     const ride = rideRes.rows[0];
     const secondsAfterBook = Math.round(ride.seconds_since_book || 0);
     const secDriverWaited  = ride.arrived_at ? Math.max(0, Math.round(ride.seconds_driver_waited || 0)) : 0;
     let penalty = 0;
-    let message = 'Ride cancel ho gayi';
+    let message = 'Ride cancelled';
 
     // Pre-assigned rides: always free cancel, notify the driver their queued ride is gone
     if (ride.status === 'pre_assigned') {
@@ -518,7 +518,7 @@ router.post('/cancel-smart', async (req, res) => {
       if (ride.pre_accepted_driver_phone) {
         emitToRoom('driver_' + ride.pre_accepted_driver_phone, 'preRideCancelled', { rideId: parseInt(ride_id) });
       }
-      return res.json({ success: true, penalty: 0, message: 'Ride cancel ho gayi (free)' });
+      return res.json({ success: true, penalty: 0, message: 'Ride cancelled (free)' });
     }
 
     if (cancelled_by === 'customer') {
@@ -551,7 +551,7 @@ router.post('/cancel-smart', async (req, res) => {
         [cancelsToday + 1, today, newTrust, newTrust < 50, phone]
       );
       if (ride.driver_phone)
-        sendFCM(ride.driver_phone, '🚫 Ride Cancel Ho Gayi', `Customer ne cancel kar di. Reason: ${reason || 'N/A'}`, { type: 'ride_cancelled' }, { channelId: 'ride_requests', role: 'driver' });
+        sendFCM(ride.driver_phone, '🚫 Ride Cancelled', `Customer ne cancel kar di. Reason: ${reason || 'N/A'}`, { type: 'ride_cancelled' }, { channelId: 'ride_requests', role: 'driver' });
     }
 
     if (cancelled_by === 'driver') {
@@ -570,7 +570,7 @@ router.post('/cancel-smart', async (req, res) => {
       let suspendedUntil = null;
       if (cancelRate > 25 || cancelsToday >= 5) {
         suspendedUntil = new Date(Date.now() + 2 * 60 * 60 * 1000);
-        message = '⚠️ Bahut zyada cancel! 2 ghante suspend.';
+        message = '⚠️ Too many cancellations! Suspended for 2 hours.';
       } else if (cancelRate > 15) {
         message = '⚠️ Warning: Cancel rate zyada hai, kam rides milengi';
       }
@@ -579,14 +579,14 @@ router.post('/cancel-smart', async (req, res) => {
         [totalCancelled, cancelsToday, today, cancelRate.toFixed(2), suspendedUntil, phone]
       );
       if (ride.passenger_phone)
-        sendFCM(ride.passenger_phone, '🚫 Driver ne Cancel Kiya', `Reason: ${reason || 'N/A'}. App se dobara ride book karein.`, { type: 'ride_cancelled' }, { role: 'customer' });
+        sendFCM(ride.passenger_phone, '🚫 Driver ne Cancel Kiya', `Reason: ${reason || 'N/A'}. Please book a new ride from the app.`, { type: 'ride_cancelled' }, { role: 'customer' });
     }
 
     const smartCancelRes = await db.query(
       `UPDATE rides SET status = 'cancelled' WHERE id = $1 AND status IN ('requested', 'pre_assigned', 'matched', 'arrived') RETURNING id`,
       [ride_id]
     );
-    if (!smartCancelRes.rows[0]) return res.json({ success: false, message: 'Ride started, completed ya already cancelled hai' });
+    if (!smartCancelRes.rows[0]) return res.json({ success: false, message: 'Ride is already started, completed, or cancelled' });
     await db.query(
       `INSERT INTO cancellations (ride_id, cancelled_by, reason, seconds_after_book, penalty_applied) VALUES ($1, $2, $3, $4, $5)`,
       [ride_id, cancelled_by, reason || '', secondsAfterBook, penalty]
@@ -595,7 +595,7 @@ router.post('/cancel-smart', async (req, res) => {
     emitRideUpdate(ride_id, { status: 'cancelled', cancelled_by, penalty });
     clearRideCache(ride_id).catch(() => {});
     res.json({ success: true, penalty, message });
-  } catch (err) { console.error('[rides]', err.message); res.status(500).json({ error: 'Kuch problem aayi — dobara try karo' }); }
+  } catch (err) { console.error('[rides]', err.message); res.status(500).json({ error: 'Something went wrong — please try again' }); }
 });
 
 // POST /api/rides/complete
@@ -615,11 +615,11 @@ router.post('/complete', async (req, res) => {
        LEFT JOIN fare_settings fs ON fs.vehicle_type = r.ride_type
        WHERE r.id=$1 AND r.status='started'`, [ride_id]
     );
-    if (!rideRow.rows[0]) return res.status(404).json({ error: 'Ride nahi mili ya started nahi hai' });
+    if (!rideRow.rows[0]) return res.status(404).json({ error: 'Ride not found or not started' });
     const ride = rideRow.rows[0];
 
     if (driver_phone && ride.dphone !== driver_phone)
-      return res.status(403).json({ error: 'Yeh ride tumhari nahi hai' });
+      return res.status(403).json({ error: 'This ride does not belong to you' });
 
     // ── Recalculate actual fare using real trip duration ───────────────────────
     let finalFare = parseFloat(ride.fare);
@@ -679,8 +679,8 @@ router.post('/complete', async (req, res) => {
       early_completion: earlyCompletion,
       dist_from_drop: distFromDrop ? distFromDrop.toFixed(2) : null,
       message: earlyCompletion
-        ? `⚠️ Trip complete kiya — aap drop se ${(distFromDrop||0).toFixed(1)}km door the. Customer ko inform kar diya gaya.`
-        : 'Trip complete! Payment ka intezaar karo.',
+        ? `⚠️ Trip completed — you were ${(distFromDrop||0).toFixed(1)}km away from the drop point. Customer has been notified.`
+        : 'Trip complete! Waiting for customer payment.',
     });
 
     // post-complete async work
@@ -704,8 +704,8 @@ router.post('/complete', async (req, res) => {
 
         // Alert customer about early completion
         sendFCM(ride.passenger_phone,
-          '⚠️ Driver ne sahi jagah nahi chhoda!',
-          `Aapka driver drop se ${(distFromDrop||0).toFixed(1)}km door tha jab usne trip complete ki.`,
+          '⚠️ Driver dropped you at the wrong location!',
+          `Your driver was ${(distFromDrop||0).toFixed(1)}km from the drop point when the trip was completed.`,
           { type: 'early_completion_alert', ride_id: String(ride_id) },
           { role: 'customer' }
         ).catch(() => {});
@@ -713,7 +713,7 @@ router.post('/complete', async (req, res) => {
         // Warn driver
         sendFCM(ride.dphone,
           '⚠️ Early Trip Completion Detected',
-          `Aapne ride #${ride_id} drop location se ${(distFromDrop||0).toFixed(1)}km door complete ki. Yeh platform policy ke against hai.`,
+          `You completed ride #${ride_id} ${(distFromDrop||0).toFixed(1)}km away from the drop location. This is against platform policy.`,
           { type: 'early_completion_warning', ride_id: String(ride_id) },
           { channelId: 'ride_requests', role: 'driver' }
         ).catch(() => {});
@@ -724,7 +724,7 @@ router.post('/complete', async (req, res) => {
         ).catch(() => {});
       }
     } catch (_e) {}
-  } catch (err) { console.error('[rides]', err.message); res.status(500).json({ error: 'Kuch problem aayi — dobara try karo' }); }
+  } catch (err) { console.error('[rides]', err.message); res.status(500).json({ error: 'Something went wrong — please try again' }); }
 });
 
 // POST /api/rides/payment-complete
@@ -737,7 +737,7 @@ router.post('/payment-complete', async (req, res) => {
        LEFT JOIN users u ON u.id = r.driver_id
        WHERE r.id = $1`, [ride_id]
     );
-    if (rideRes.rows.length === 0) return res.json({ success: false, message: 'Ride nahi mili' });
+    if (rideRes.rows.length === 0) return res.json({ success: false, message: 'Ride not found' });
     const ride = rideRes.rows[0];
     const fare = Math.max(0, parseFloat(ride.fare) - parseFloat(ride.discount || 0));
     const commRate = parseFloat(ride.commission_rate || 15) / 100;
@@ -828,9 +828,9 @@ router.post('/payment-complete', async (req, res) => {
 
     if (drPhone) {
       if (autoDeduct > 0) {
-        sendFCM(drPhone, '💰 Earning Credited', `₹${actualCredit.toFixed(0)} wallet mein add hua! (₹${autoDeduct.toFixed(0)} pending commission deduct hua)`, { type: 'earning_credited', amount: String(actualCredit), commission_deducted: String(autoDeduct) }, { role: 'driver' }).catch(() => {});
+        sendFCM(drPhone, '💰 Earning Credited', `₹${actualCredit.toFixed(0)} added to your wallet! (₹${autoDeduct.toFixed(0)} pending commission deducted)`, { type: 'earning_credited', amount: String(actualCredit), commission_deducted: String(autoDeduct) }, { role: 'driver' }).catch(() => {});
       } else {
-        sendFCM(drPhone, '💰 Earning Credited', `₹${driverEarning.toFixed(0)} wallet mein add ho gaya!`, { type: 'earning_credited', amount: String(driverEarning) }, { role: 'driver' }).catch(() => {});
+        sendFCM(drPhone, '💰 Earning Credited', `₹${driverEarning.toFixed(0)} added to your wallet!`, { type: 'earning_credited', amount: String(driverEarning) }, { role: 'driver' }).catch(() => {});
       }
     }
 
@@ -848,7 +848,7 @@ router.post('/payment-complete', async (req, res) => {
     res.json({ success: true, status: 'completed', message: 'Payment complete!', cashbacks });
     // Activate any pre-assigned ride this driver has queued (fire-and-forget)
     if (drPhone) activateQueuedRide(drPhone).catch(() => {});
-  } catch (err) { console.error('[rides]', err.message); res.status(500).json({ error: 'Kuch problem aayi — dobara try karo' }); }
+  } catch (err) { console.error('[rides]', err.message); res.status(500).json({ error: 'Something went wrong — please try again' }); }
 });
 
 // POST /api/rides/cash-confirm
@@ -863,11 +863,11 @@ router.post('/cash-confirm', async (req, res) => {
        WHERE r.id = $1 AND r.status = 'completed'`,
       [ride_id]
     );
-    if (!rideRes.rows[0]) return res.status(404).json({ error: 'Ride nahi mili ya completed nahi hai' });
+    if (!rideRes.rows[0]) return res.status(404).json({ error: 'Ride not found or not yet completed' });
     if (rideRes.rows[0].driver_phone !== phone)
-      return res.status(403).json({ error: 'Yeh ride tumhari nahi hai' });
+      return res.status(403).json({ error: 'This ride does not belong to you' });
     if (rideRes.rows[0].payment_status === 'completed')
-      return res.json({ success: true, message: 'Payment already confirmed hai' });
+      return res.json({ success: true, message: 'Payment already confirmed' });
     const fare = Math.max(0, parseFloat(rideRes.rows[0].fare) - parseFloat(rideRes.rows[0].discount || 0));
     const commRate = parseFloat(rideRes.rows[0].commission_rate || 15) / 100;
     const normalCommission = Math.round(fare * commRate * 100) / 100;
@@ -892,7 +892,7 @@ router.post('/cash-confirm', async (req, res) => {
         [commission, phone]
       );
       const totalPending = parseFloat(walletRes.rows[0]?.pending_commission || 0);
-      sendFCM(phone, '💰 Commission Due', `₹${commission.toFixed(0)} commission baqi hai. Total pending: ₹${totalPending.toFixed(0)}. App mein pay karo.`, { type: 'commission_due', pending_commission: String(totalPending) }, { role: 'driver' }).catch(() => {});
+      sendFCM(phone, '💰 Commission Due', `₹${commission.toFixed(0)} commission due. Total pending: ₹${totalPending.toFixed(0)}. Pay in app.`, { type: 'commission_due', pending_commission: String(totalPending) }, { role: 'driver' }).catch(() => {});
     }
     // Cashback for customer (cash/upi rides still earn ride-count cashbacks, not wallet bonus)
     let cashbacks = [];
@@ -911,7 +911,7 @@ router.post('/cash-confirm', async (req, res) => {
     res.json({ success: true, message: 'Payment confirmed!', pending_commission: totalPending, cashbacks });
     // Activate any pre-assigned ride this driver has queued (fire-and-forget)
     activateQueuedRide(phone).catch(() => {});
-  } catch (err) { console.error('[rides]', err.message); res.status(500).json({ error: 'Kuch problem aayi — dobara try karo' }); }
+  } catch (err) { console.error('[rides]', err.message); res.status(500).json({ error: 'Something went wrong — please try again' }); }
 });
 
 // POST /api/rides/payment-not-received
@@ -919,7 +919,7 @@ router.post('/cash-confirm', async (req, res) => {
 // Auto-creates incident, penalizes customer trust_score.
 router.post('/payment-not-received', async (req, res) => {
   const { ride_id, driver_phone } = req.body;
-  if (!ride_id || !driver_phone) return res.status(400).json({ error: 'ride_id aur driver_phone zaroori hai' });
+  if (!ride_id || !driver_phone) return res.status(400).json({ error: 'ride_id and driver_phone required' });
   try {
     const rideRes = await db.query(
       `SELECT r.*, u.phone AS passenger_phone, u.id AS passenger_id_val,
@@ -930,19 +930,19 @@ router.post('/payment-not-received', async (req, res) => {
        JOIN users d ON r.driver_id = d.id
        WHERE r.id=$1 AND d.phone=$2`, [ride_id, driver_phone]
     );
-    if (!rideRes.rows[0]) return res.status(404).json({ error: 'Ride nahi mili ya tumhari nahi hai' });
+    if (!rideRes.rows[0]) return res.status(404).json({ error: 'Ride not found or does not belong to you' });
     const ride = rideRes.rows[0];
     const netFareDisplay = Math.max(0, parseFloat(ride.fare || 0) - parseFloat(ride.discount || 0));
 
     if (!['completed', 'cash_pending'].includes(ride.status))
-      return res.status(400).json({ error: 'Ride abhi completed nahi hai' });
+      return res.status(400).json({ error: 'Ride not yet completed' });
     if (ride.payment_not_received)
-      return res.status(409).json({ error: 'Yeh already report ho chuki hai' });
+      return res.status(409).json({ error: 'This has already been reported' });
 
     // Only allow within 10 minutes of completion
     const minsSinceComplete = (Date.now() - new Date(ride.completed_at || ride.created_at).getTime()) / 60000;
     if (minsSinceComplete > 10)
-      return res.status(400).json({ error: 'Payment not received sirf 10 minute ke andar report kar sakte ho' });
+      return res.status(400).json({ error: 'Payment not received can only be reported within 10 minutes of completion' });
 
     // Mark ride
     await db.query(
@@ -974,7 +974,7 @@ router.post('/payment-not-received', async (req, res) => {
         [ride.passenger_id_val]
       ).catch(() => {});
       sendFCM(ride.passenger_phone, '🚫 Booking Suspended',
-        'Aapka account review ke liye hold pe hai. Support se contact karo.',
+        'Your account is on hold for review. Please contact support.',
         { type: 'account_restricted' },
         { role: 'customer' }
       ).catch(() => {});
@@ -983,18 +983,18 @@ router.post('/payment-not-received', async (req, res) => {
     // FCM to customer — warning
     sendFCM(ride.passenger_phone,
       '⚠️ Payment Issue Reported',
-      `Driver ne report kiya ki aapne ride #${ride_id} ka ₹${netFareDisplay} cash payment nahi kiya. Please support se contact karo.`,
+      `Driver reported that you did not pay ₹${netFareDisplay} cash for ride #${ride_id}. Please contact support.`,
       { type: 'payment_dispute', ride_id: String(ride_id) },
       { role: 'customer' }
     ).catch(() => {});
 
     res.json({
       success: true,
-      message: 'Payment not received report ho gayi. Admin review karega.',
+      message: 'Payment not received report submitted. Admin will review.',
       customer_trust_score_deducted: 25,
       customer_skips_total: totalSkips,
     });
-  } catch (err) { console.error('[rides]', err.message); res.status(500).json({ error: 'Kuch problem aayi — dobara try karo' }); }
+  } catch (err) { console.error('[rides]', err.message); res.status(500).json({ error: 'Something went wrong — please try again' }); }
 });
 
 // POST /api/rides/rate
@@ -1013,7 +1013,7 @@ router.post('/rate', async (req, res) => {
       await db.query(`UPDATE driver_wallet SET balance = balance + $1, total_earned = total_earned + $1 WHERE driver_id = $2`, [tip, rideData.rows[0].driver_id]);
     }
     res.json({ success: true });
-  } catch (err) { console.error('[rides]', err.message); res.status(500).json({ error: 'Kuch problem aayi — dobara try karo' }); }
+  } catch (err) { console.error('[rides]', err.message); res.status(500).json({ error: 'Something went wrong — please try again' }); }
 });
 
 // GET /api/rides/driver-eta — nearest available driver per vehicle type from pickup point
@@ -1088,7 +1088,7 @@ router.get('/driver-eta', async (req, res) => {
     }
 
     res.json({ eta: nearest });
-  } catch (err) { console.error('[rides]', err.message); res.status(500).json({ error: 'Kuch problem aayi — dobara try karo' }); }
+  } catch (err) { console.error('[rides]', err.message); res.status(500).json({ error: 'Something went wrong — please try again' }); }
 });
 
 // GET /api/rides/nearby-drivers — available driver positions near a point (for map display)
@@ -1118,7 +1118,7 @@ router.get('/nearby-drivers', async (req, res) => {
       .filter(dr => haversineKm(clat, clng, dr.lat, dr.lng) <= 6)
       .slice(0, 25);
     res.json({ drivers });
-  } catch (err) { console.error('[rides]', err.message); res.status(500).json({ error: 'Kuch problem aayi — dobara try karo' }); }
+  } catch (err) { console.error('[rides]', err.message); res.status(500).json({ error: 'Something went wrong — please try again' }); }
 });
 
 // GET /api/rides/history
@@ -1133,7 +1133,7 @@ router.get('/history', async (req, res) => {
       [phone]
     );
     res.json({ rides: result.rows });
-  } catch (err) { console.error('[rides]', err.message); res.status(500).json({ error: 'Kuch problem aayi — dobara try karo' }); }
+  } catch (err) { console.error('[rides]', err.message); res.status(500).json({ error: 'Something went wrong — please try again' }); }
 });
 
 // GET /api/rides/payment-status/:rideId
@@ -1144,7 +1144,7 @@ router.get('/payment-status/:rideId', async (req, res) => {
     const row = result.rows[0];
     row.net_fare = Math.max(0, parseFloat(row.fare || 0) - parseFloat(row.discount || 0));
     res.json(row);
-  } catch (err) { console.error('[rides]', err.message); res.status(500).json({ error: 'Kuch problem aayi — dobara try karo' }); }
+  } catch (err) { console.error('[rides]', err.message); res.status(500).json({ error: 'Something went wrong — please try again' }); }
 });
 
 // GET /api/rides/driver-location/:rideId
@@ -1171,7 +1171,7 @@ router.get('/driver-location/:rideId', async (req, res) => {
       return res.json({ location: loc });
     }
     res.json({ location: null });
-  } catch (err) { console.error('[rides]', err.message); res.status(500).json({ error: 'Kuch problem aayi — dobara try karo' }); }
+  } catch (err) { console.error('[rides]', err.message); res.status(500).json({ error: 'Something went wrong — please try again' }); }
 });
 
 // POST /api/rides/switch-vehicle — customer switches vehicle type while searching
@@ -1184,7 +1184,7 @@ router.post('/switch-vehicle', async (req, res) => {
       `SELECT pickup_lat, pickup_lng, distance FROM rides WHERE id=$1 AND status='requested' AND driver_id IS NULL`,
       [ride_id]
     );
-    if (!r.rows[0]) return res.json({ success: false, message: 'Ride nahi mili ya already assigned hai' });
+    if (!r.rows[0]) return res.json({ success: false, message: 'Ride not found or already assigned' });
     const { pickup_lat, pickup_lng, distance } = r.rows[0];
 
     // Recalculate fare for new vehicle type
@@ -1209,8 +1209,8 @@ router.post('/switch-vehicle', async (req, res) => {
 
     assignRideToNextDriver(ride_id, pickup_lat, pickup_lng, new_vehicle_type).catch(() => {});
 
-    res.json({ success: true, new_vehicle_type, new_fare: '₹' + newFare, message: `${new_vehicle_type} driver dhundh rahe hain...` });
-  } catch (err) { console.error('[rides]', err.message); res.status(500).json({ error: 'Kuch problem aayi — dobara try karo' }); }
+    res.json({ success: true, new_vehicle_type, new_fare: '₹' + newFare, message: `Searching for a ${new_vehicle_type} driver...` });
+  } catch (err) { console.error('[rides]', err.message); res.status(500).json({ error: 'Something went wrong — please try again' }); }
 });
 
 // POST /api/rides/extension-request
@@ -1225,19 +1225,19 @@ router.post('/extension-request', async (req, res) => {
       `SELECT r.*, u_d.phone AS driver_phone, u_d.name AS driver_name
        FROM rides r JOIN users u_d ON r.driver_id::text = u_d.id::text WHERE r.id = $1`, [original_ride_id]
     );
-    if (!rideRes.rows[0]) return res.json({ success: false, error: 'Ride nahi mili' });
+    if (!rideRes.rows[0]) return res.json({ success: false, error: 'Ride not found' });
     const ride = rideRes.rows[0];
-    if (ride.status !== 'completed') return res.json({ success: false, error: 'Ride abhi complete nahi hui' });
+    if (ride.status !== 'completed') return res.json({ success: false, error: 'Ride not yet completed' });
 
     const completedAt = ride.completed_at || ride.created_at;
     const minAgo = (Date.now() - new Date(completedAt).getTime()) / 60000;
-    if (minAgo > 15) return res.json({ success: false, expired: true, error: '15-minute window khatam ho gayi — naya ride book karo' });
+    if (minAgo > 15) return res.json({ success: false, expired: true, error: '15-minute window has expired — please book a new ride' });
 
     const busy = await db.query(
       `SELECT id FROM rides WHERE driver_id = (SELECT id FROM users WHERE phone=$1) AND status IN ('accepted','inride','matched','arrived','started') LIMIT 1`,
       [ride.driver_phone]
     );
-    if (busy.rows[0]) return res.json({ success: false, busy: true, error: 'Driver abhi doosre customer ke saath busy hai' });
+    if (busy.rows[0]) return res.json({ success: false, busy: true, error: 'Driver is currently busy with another customer' });
 
     let estFare = 50;
     if (new_drop_lat && new_drop_lng && ride.drop_lat && ride.drop_lng) {
@@ -1253,7 +1253,7 @@ router.post('/extension-request', async (req, res) => {
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11, NOW() + INTERVAL '15 minutes', NOW() + INTERVAL '60 seconds') RETURNING *`,
       [original_ride_id, customer_phone, ride.driver_phone, ride.drop_location, ride.drop_lat || null, ride.drop_lng || null, new_drop, new_drop_lat, new_drop_lng, ride.ride_type, estFare]
     );
-    sendFCM(ride.driver_phone, '🔄 Ride Extension!', `${ride.drop_location} → ${new_drop} — ₹${estFare} | Accept karo 60 sec mein`, { type: 'ride_extension' }, { channelId: 'ride_requests', role: 'driver' });
+    sendFCM(ride.driver_phone, '🔄 Ride Extension!', `${ride.drop_location} → ${new_drop} — ₹${estFare} | Accept within 60 sec`, { type: 'ride_extension' }, { channelId: 'ride_requests', role: 'driver' });
 
     const extId = extR.rows[0].id;
     setTimeout(async () => {
@@ -1261,21 +1261,21 @@ router.post('/extension-request', async (req, res) => {
     }, 62000);
 
     res.json({ success: true, extension_id: extId, estimated_fare: estFare, driver_name: ride.driver_name, driver_phone: maskPhone(ride.driver_phone) });
-  } catch (err) { console.error('[rides]', err.message); res.status(500).json({ error: 'Kuch problem aayi — dobara try karo' }); }
+  } catch (err) { console.error('[rides]', err.message); res.status(500).json({ error: 'Something went wrong — please try again' }); }
 });
 
 // GET /api/rides/extension-status/:id
 router.get('/extension-status/:id', async (req, res) => {
   try {
     const r = await db.query('SELECT * FROM ride_extensions WHERE id=$1', [req.params.id]);
-    if (!r.rows[0]) return res.status(404).json({ error: 'Nahi mila' });
+    if (!r.rows[0]) return res.status(404).json({ error: 'Extension not found' });
     const ext = r.rows[0];
     if (ext.status === 'pending' && new Date(ext.response_expires_at) < new Date()) {
       await db.query("UPDATE ride_extensions SET status='expired' WHERE id=$1", [ext.id]);
       return res.json({ status: 'expired' });
     }
     res.json({ status: ext.status, new_ride_id: ext.new_ride_id, estimated_fare: ext.estimated_fare, seconds_left: Math.max(0, Math.ceil((new Date(ext.response_expires_at).getTime() - Date.now()) / 1000)) });
-  } catch (err) { console.error('[rides]', err.message); res.status(500).json({ error: 'Kuch problem aayi — dobara try karo' }); }
+  } catch (err) { console.error('[rides]', err.message); res.status(500).json({ error: 'Something went wrong — please try again' }); }
 });
 
 // GET /api/rides/extension-pending
@@ -1291,7 +1291,7 @@ router.get('/extension-pending', async (req, res) => {
     if (!r.rows[0]) return res.json({ extension: null });
     const ext = r.rows[0];
     res.json({ extension: { ...ext, seconds_left: Math.max(0, Math.ceil((new Date(ext.response_expires_at).getTime() - Date.now()) / 1000)) } });
-  } catch (err) { console.error('[rides]', err.message); res.status(500).json({ error: 'Kuch problem aayi — dobara try karo' }); }
+  } catch (err) { console.error('[rides]', err.message); res.status(500).json({ error: 'Something went wrong — please try again' }); }
 });
 
 // POST /api/rides/extension-accept
@@ -1301,7 +1301,7 @@ router.post('/extension-accept', async (req, res) => {
   try {
     await client.query('BEGIN');
     const extR = await client.query("SELECT * FROM ride_extensions WHERE id=$1 AND status='pending' AND response_expires_at > NOW()", [extension_id]);
-    if (!extR.rows[0]) { await client.query('ROLLBACK'); client.release(); return res.json({ success: false, error: 'Request expired ya nahi mili' }); }
+    if (!extR.rows[0]) { await client.query('ROLLBACK'); client.release(); return res.json({ success: false, error: 'Request expired or not found' }); }
     const ext = extR.rows[0];
     const newRide = await client.query(
       `INSERT INTO rides (passenger_id, driver_id, pickup, pickup_lat, pickup_lng, drop_location, drop_lat, drop_lng, ride_type, fare, status, payment_method)
@@ -1317,7 +1317,7 @@ router.post('/extension-accept', async (req, res) => {
   } catch (err) {
     await client.query('ROLLBACK').catch(() => {}); client.release();
     console.error('[rides] extension-accept:', err.message);
-    res.status(500).json({ error: 'Kuch problem aayi — dobara try karo' });
+    res.status(500).json({ error: 'Something went wrong — please try again' });
   }
 });
 
@@ -1326,17 +1326,17 @@ router.post('/extension-reject', async (req, res) => {
   const { extension_id } = req.body;
   try {
     const r = await db.query("UPDATE ride_extensions SET status='rejected' WHERE id=$1 RETURNING customer_phone, new_drop", [extension_id]);
-    if (r.rows[0]) sendFCM(r.rows[0].customer_phone, '❌ Extension Reject', 'Driver ne reject kiya — naya ride book karo', {}, { role: 'customer' });
+    if (r.rows[0]) sendFCM(r.rows[0].customer_phone, '❌ Extension Declined', 'Driver declined the extension — please book a new ride', {}, { role: 'customer' });
     res.json({ success: true });
-  } catch (err) { console.error('[rides]', err.message); res.status(500).json({ error: 'Kuch problem aayi — dobara try karo' }); }
+  } catch (err) { console.error('[rides]', err.message); res.status(500).json({ error: 'Something went wrong — please try again' }); }
 });
 
 // POST /api/rides/rate-customer
 router.post('/rate-customer', async (req, res) => {
   const { ride_id, driver_phone, rating } = req.body;
   const r = parseInt(rating);
-  if (!ride_id || !driver_phone) return res.status(400).json({ error: 'ride_id aur driver_phone chahiye' });
-  if (![1, 2, 3, 4, 5].includes(r)) return res.status(400).json({ error: 'Rating 1-5 ke beech honi chahiye' });
+  if (!ride_id || !driver_phone) return res.status(400).json({ error: 'ride_id and driver_phone required' });
+  if (![1, 2, 3, 4, 5].includes(r)) return res.status(400).json({ error: 'Rating must be between 1 and 5' });
   try {
     const check = await db.query(
       `SELECT r.id, r.passenger_id FROM rides r
@@ -1344,7 +1344,7 @@ router.post('/rate-customer', async (req, res) => {
        WHERE r.id=$1 AND d.phone=$2 AND r.status IN ('completed','cash_confirmed')`,
       [ride_id, driver_phone]
     );
-    if (!check.rows[0]) return res.status(400).json({ error: 'Ride nahi mili ya aapki nahi thi' });
+    if (!check.rows[0]) return res.status(400).json({ error: 'Ride not found or does not belong to you' });
 
     await db.query('UPDATE rides SET customer_rating=$1 WHERE id=$2', [r, ride_id]);
 
@@ -1359,7 +1359,7 @@ router.post('/rate-customer', async (req, res) => {
     ).catch(() => {});
 
     res.json({ success: true });
-  } catch (err) { console.error('[rides]', err.message); res.status(500).json({ error: 'Kuch problem aayi — dobara try karo' }); }
+  } catch (err) { console.error('[rides]', err.message); res.status(500).json({ error: 'Something went wrong — please try again' }); }
 });
 
 // POST /api/rides/surge-fare
@@ -1367,21 +1367,21 @@ router.post('/rate-customer', async (req, res) => {
 router.post('/surge-fare', async (req, res) => {
   const { ride_id, customer_phone, surge_amount } = req.body;
   const amt = parseInt(surge_amount);
-  if (!ride_id || !customer_phone) return res.status(400).json({ error: 'ride_id aur customer_phone chahiye' });
+  if (!ride_id || !customer_phone) return res.status(400).json({ error: 'ride_id and customer_phone required' });
   if (![10, 20, 30, 40, 50, 80, 100, 150].includes(amt)) return res.status(400).json({ error: 'Invalid surge amount (10/20/30/40/50/80/100/150 allowed)' });
   try {
     await db.query('ALTER TABLE rides ADD COLUMN IF NOT EXISTS surge_count INTEGER DEFAULT 0').catch(() => {});
     await db.query('ALTER TABLE rides ADD COLUMN IF NOT EXISTS base_fare INTEGER').catch(() => {});
 
     const cu = await db.query('SELECT id FROM users WHERE phone=$1', [customer_phone]);
-    if (!cu.rows[0]) return res.status(404).json({ error: 'Customer nahi mila' });
+    if (!cu.rows[0]) return res.status(404).json({ error: 'Customer not found' });
 
     const rideRes = await db.query(
       `SELECT id, fare, base_fare, surge_count, pickup_lat, pickup_lng, ride_type
        FROM rides WHERE id=$1 AND passenger_id=$2 AND status='requested' AND driver_id IS NULL`,
       [ride_id, cu.rows[0].id]
     );
-    if (!rideRes.rows[0]) return res.status(400).json({ error: 'Ride available nahi hai surge ke liye' });
+    if (!rideRes.rows[0]) return res.status(400).json({ error: 'Ride not available for surge' });
 
     const r = rideRes.rows[0];
     // Absolute fare: always base_fare + selected_amount (prevents cumulative drift)
@@ -1412,7 +1412,7 @@ router.post('/surge-fare', async (req, res) => {
       new_fare: '₹' + newFare,
       surge_count: newSurgeCount,
     });
-  } catch (err) { console.error('[rides]', err.message); res.status(500).json({ error: 'Kuch problem aayi — dobara try karo' }); }
+  } catch (err) { console.error('[rides]', err.message); res.status(500).json({ error: 'Something went wrong — please try again' }); }
 });
 
 // ── GET /api/rides/track-info/:rideId — public, no auth, for live tracking page ──
@@ -1448,13 +1448,13 @@ router.get('/track-info/:rideId', async (req, res) => {
         vehicle:   [r.vehicle_brand, r.vehicle_model].filter(Boolean).join(' '),
       } : null,
     });
-  } catch (err) { console.error('[rides]', err.message); res.status(500).json({ error: 'Kuch problem aayi — dobara try karo' }); }
+  } catch (err) { console.error('[rides]', err.message); res.status(500).json({ error: 'Something went wrong — please try again' }); }
 });
 
 // POST /api/rides/pre-accept — driver accepts a pre-assignment offer
 router.post('/pre-accept', async (req, res) => {
   const { ride_id, phone } = req.body;
-  if (!ride_id || !phone) return res.status(400).json({ error: 'ride_id aur phone zaroori hai' });
+  if (!ride_id || !phone) return res.status(400).json({ error: 'ride_id and phone required' });
   try {
     const r = await db.query(
       `SELECT r.id, r.pickup, r.fare
@@ -1462,21 +1462,21 @@ router.post('/pre-accept', async (req, res) => {
        WHERE r.id = $1 AND r.status = 'pre_assigned' AND r.pre_accepted_driver_phone = $2`,
       [ride_id, phone]
     );
-    if (!r.rows[0]) return res.status(404).json({ error: 'Pre-assigned ride nahi mili ya yeh tumhara nahi hai' });
+    if (!r.rows[0]) return res.status(404).json({ error: 'Pre-assigned ride not found or does not belong to you' });
 
     // Confirm acceptance — emit to customer so they know driver confirmed
     emitToRoom('ride_' + ride_id, 'rideUpdate', {
       rideId: parseInt(ride_id), status: 'pre_assigned', pre_accepted: true,
-      message: 'Driver ne confirm kiya — woh current ride complete karke aayenge',
+      message: 'Driver confirmed — they will come after completing the current ride',
     });
-    res.json({ success: true, message: 'Ride queue mein add ho gayi!' });
-  } catch (err) { console.error('[rides]', err.message); res.status(500).json({ error: 'Kuch problem aayi — dobara try karo' }); }
+    res.json({ success: true, message: 'Ride added to queue!' });
+  } catch (err) { console.error('[rides]', err.message); res.status(500).json({ error: 'Something went wrong — please try again' }); }
 });
 
 // POST /api/rides/pre-decline — driver declines a pre-assignment offer
 router.post('/pre-decline', async (req, res) => {
   const { ride_id, phone } = req.body;
-  if (!ride_id || !phone) return res.status(400).json({ error: 'ride_id aur phone zaroori hai' });
+  if (!ride_id || !phone) return res.status(400).json({ error: 'ride_id and phone required' });
   try {
     const r = await db.query(
       `UPDATE rides SET status='requested', pre_accepted_driver_phone=NULL, pre_accepted_at=NULL
@@ -1484,13 +1484,13 @@ router.post('/pre-decline', async (req, res) => {
        RETURNING id, pickup_lat, pickup_lng, ride_type`,
       [ride_id, phone]
     );
-    if (!r.rows[0]) return res.status(404).json({ error: 'Pre-assigned ride nahi mili' });
+    if (!r.rows[0]) return res.status(404).json({ error: 'Pre-assigned ride not found' });
     const ride = r.rows[0];
 
     // Tell customer we're searching again
     emitToRoom('ride_' + ride_id, 'rideUpdate', {
       rideId: parseInt(ride_id), status: 'searching',
-      message: 'Driver available nahi hua — dobara dhundh rahe hain...',
+      message: 'Driver unavailable — searching again...',
     });
 
     // Queue recheck: try next pre-assignable driver or fall to surge
@@ -1502,13 +1502,13 @@ router.post('/pre-decline', async (req, res) => {
     }, { delay: 500 }).catch(() => {});
 
     res.json({ success: true });
-  } catch (err) { console.error('[rides]', err.message); res.status(500).json({ error: 'Kuch problem aayi — dobara try karo' }); }
+  } catch (err) { console.error('[rides]', err.message); res.status(500).json({ error: 'Something went wrong — please try again' }); }
 });
 
 // ── GET /api/rides/customer-analytics?phone=X ──────────────────────────────
 router.get('/customer-analytics', async (req, res) => {
   const { phone } = req.query;
-  if (!phone) return res.status(400).json({ error: 'phone zaroori hai' });
+  if (!phone) return res.status(400).json({ error: 'phone required' });
   try {
     const userRes = await db.query(`SELECT id FROM users WHERE phone = $1 LIMIT 1`, [phone]);
     if (!userRes.rows.length) return res.json({ total_rides: 0, total_spent: 0, avg_fare: 0, total_savings: 0, monthly: [], vehicle: {}, days7: [], payment_methods: {} });
@@ -1581,7 +1581,7 @@ router.get('/customer-analytics', async (req, res) => {
       days7:         days7.rows.map(r => ({ label: r.label, rides: parseInt(r.rides), spent: Math.round(parseFloat(r.spent)) })),
       payment_methods: payMap,
     });
-  } catch (err) { console.error('[rides/customer-analytics]', err.message); res.status(500).json({ error: 'Kuch problem aayi — dobara try karo' }); }
+  } catch (err) { console.error('[rides/customer-analytics]', err.message); res.status(500).json({ error: 'Something went wrong — please try again' }); }
 });
 
 module.exports = router;
