@@ -226,6 +226,8 @@ input,select,textarea{outline:none}
 <div class="main">
   <div class="stats" id="stats-grid"><div class="loading">Loading dashboard...</div></div>
 
+  <div id="net-earnings-card" style="margin-bottom:20px"><div class="loading">Loading P&amp;L...</div></div>
+
   <div class="tabs">
     <button class="tab active" onclick="showSection('transactions',this)">📋 Transactions</button>
     <button class="tab" onclick="showSection('rides',this)">🛺 Rides</button>
@@ -532,68 +534,75 @@ input,select,textarea{outline:none}
       <div class="card-title">📊 Current Hourly Fares</div>
       <div id="fares-display" style="font-size:12px;color:#666">Loading...</div>
     </div>
-    <div class="grid2" style="margin-top:14px">
-      <div class="card">
-        <div class="card-title">🚗 Standard Ride Fare Editor</div>
-        <p style="font-size:12px;color:#666;margin-bottom:10px">Auto · Bike · Car · E-Riksha · <strong style="color:#9C27B0">Ultra Luxury</strong> ke base fare set karo</p>
-        <select id="std-fare-vehicle" class="input-sm" style="margin-bottom:8px" onchange="loadStdFare()">
-          <option value="bike">🏍️ Bike</option>
-          <option value="auto">🛺 Auto</option>
-          <option value="car">🚕 Car</option>
-          <option value="eriksha">🛵 E-Riksha</option>
-          <option value="luxury">🚙 Ultra Luxury ★</option>
-          <option value="green_bike">⚡🏍️ Green Bike</option>
-          <option value="electric_auto">⚡🛺 Electric Auto</option>
-        </select>
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px">
-          <input id="std-base-fare" type="number" placeholder="Base fare (₹)" class="input-sm">
-          <input id="std-per-km" type="number" step="0.5" placeholder="0–8km rate (₹/km)" class="input-sm">
+    <!-- All-Vehicles Fare Editor -->
+    <div class="card" style="margin-top:14px;margin-bottom:18px">
+      <div class="card-title">🚗 Standard Ride Fares — All Vehicles <button class="refresh-btn" onclick="loadStdFares()">⟳ Reload</button></div>
+      <p style="font-size:12px;color:#6B7280;margin-bottom:14px">Har vehicle ke base fare, per km rates, night settings, aur commission — ek jagah. ✏️ Edit karke Save karo.</p>
+      <div id="fare-table-container"><div class="loading">Loading...</div></div>
+    </div>
+
+    <!-- Commission Rates bulk-update (kept for quick global changes) -->
+    <div class="card" style="margin-bottom:18px">
+      <div class="card-title">💰 Bulk Commission Update <button class="refresh-btn" onclick="loadCommRates()">⟳ Reload</button></div>
+      <p style="font-size:12px;color:#6B7280;margin-bottom:14px">Ek hi click mein sabhi vehicles ka commission update karo. Per-vehicle edit ke liye upar wala table use karo.</p>
+      <div style="display:flex;gap:16px;flex-wrap:wrap;margin-bottom:14px">
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:12px;background:#f9fafb;border-radius:10px;flex:1;min-width:240px">
+          <span style="font-size:12px;font-weight:700;color:#374151">🛺 Standard — Sabhi:</span>
+          <input id="comm-bulk-rate" type="number" min="0" max="50" step="0.5" placeholder="e.g. 15" style="width:72px;padding:6px 8px;border:1px solid #e0e0e0;border-radius:6px;font-size:13px">
+          <button onclick="saveCommBulk('standard')" class="refresh-btn" style="background:#1a1a2e;color:#fff;font-size:11px">✅ Apply</button>
+          <span id="comm-bulk-status" style="font-size:12px"></span>
         </div>
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px">
-          <input id="std-per-km-t2" type="number" step="0.5" placeholder="8–20km rate (₹/km)" class="input-sm">
-          <input id="std-per-km-t3" type="number" step="0.5" placeholder="20km+ rate (₹/km)" class="input-sm">
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:12px;background:#f0f9ff;border-radius:10px;flex:1;min-width:240px">
+          <span style="font-size:12px;font-weight:700;color:#0369a1">⏱️ Hourly — Sabhi:</span>
+          <input id="comm-bulk-hourly" type="number" min="0" max="50" step="0.5" placeholder="e.g. 12" style="width:72px;padding:6px 8px;border:1px solid #bae6fd;border-radius:6px;font-size:13px">
+          <button onclick="saveCommBulk('hourly')" class="refresh-btn" style="background:#0369a1;color:#fff;font-size:11px">✅ Apply</button>
+          <span id="comm-bulk-hourly-status" style="font-size:12px"></span>
         </div>
-        <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-bottom:8px">
-          <input id="std-time-rate" type="number" step="0.05" placeholder="Time (₹/min)" class="input-sm">
-          <input id="std-platform-fee" type="number" step="0.5" placeholder="Platform fee (₹)" class="input-sm">
-          <input id="std-min-fare" type="number" placeholder="Min fare (₹)" class="input-sm">
-        </div>
-        <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-bottom:10px">
-          <input id="std-night-mult" type="number" step="0.1" min="1" max="3" placeholder="Night ×" class="input-sm">
-          <input id="std-night-start" type="text" placeholder="Night start" class="input-sm">
-          <input id="std-night-end" type="text" placeholder="Night end" class="input-sm">
-        </div>
-        <div style="display:grid;grid-template-columns:1fr;gap:8px;margin-bottom:10px">
-          <input id="std-commission-rate" type="number" step="0.5" min="0" max="30" placeholder="Commission % (e.g. 15 for fuel, 12 for electric)" class="input-sm">
-        </div>
-        <button onclick="saveStdFare()" style="width:100%;background:#1a1a2e;color:#fff;border:none;border-radius:8px;padding:10px;cursor:pointer;font-weight:700;font-size:13px">💾 Save Standard Fare</button>
-        <div id="std-fare-status" style="font-size:12px;color:#4CAF50;margin-top:8px"></div>
       </div>
-      <div class="card">
-        <div class="card-title">📊 Vehicle Fare Details <button class="refresh-btn" onclick="loadStdFares()">⟳ Reload</button></div>
-        <p style="font-size:12px;color:#6B7280;margin-bottom:14px">Har vehicle ka standard ride + hourly packages — sabhi charges ek jagah.</p>
-        <div id="std-fares-display">Loading...</div>
+      <div id="comm-rates-table"><div class="loading">Loading...</div></div>
+    </div>
+  </div>
+
+  <!-- Fare Edit Modal -->
+  <div id="fare-edit-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:9000;align-items:center;justify-content:center;padding:16px">
+    <div style="background:#fff;border-radius:18px;padding:24px;width:560px;max-width:100%;max-height:92vh;overflow-y:auto;box-shadow:0 20px 60px rgba(0,0,0,.3)">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:18px">
+        <div id="fare-modal-title" style="font-size:16px;font-weight:800;color:#1a1a2e"></div>
+        <button onclick="closeFareModal()" style="background:none;border:none;font-size:20px;cursor:pointer;color:#888;line-height:1">✕</button>
       </div>
 
-      <!-- COMMISSION RATES -->
-      <div class="card">
-        <div class="card-title">💰 Platform Commission Rates <button class="refresh-btn" onclick="loadCommRates()">⟳ Reload</button></div>
-        <p style="font-size:12px;color:#6B7280;margin-bottom:14px">Har vehicle ka alag commission set karo. Standard rides aur Hourly rides ke liye alag rate hota hai.</p>
-        <div style="display:flex;gap:16px;flex-wrap:wrap;margin-bottom:14px">
-          <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:12px;background:#f9fafb;border-radius:10px;flex:1;min-width:240px">
-            <span style="font-size:12px;font-weight:700;color:#374151">🛺 Standard — Sabhi:</span>
-            <input id="comm-bulk-rate" type="number" min="0" max="50" step="0.5" placeholder="e.g. 15" style="width:72px;padding:6px 8px;border:1px solid #e0e0e0;border-radius:6px;font-size:13px">
-            <button onclick="saveCommBulk('standard')" class="refresh-btn" style="background:#1a1a2e;color:#fff;font-size:11px">✅ Apply</button>
-            <span id="comm-bulk-status" style="font-size:12px"></span>
-          </div>
-          <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:12px;background:#f0f9ff;border-radius:10px;flex:1;min-width:240px">
-            <span style="font-size:12px;font-weight:700;color:#0369a1">⏱️ Hourly — Sabhi:</span>
-            <input id="comm-bulk-hourly" type="number" min="0" max="50" step="0.5" placeholder="e.g. 12" style="width:72px;padding:6px 8px;border:1px solid #bae6fd;border-radius:6px;font-size:13px">
-            <button onclick="saveCommBulk('hourly')" class="refresh-btn" style="background:#0369a1;color:#fff;font-size:11px">✅ Apply</button>
-            <span id="comm-bulk-hourly-status" style="font-size:12px"></span>
-          </div>
-        </div>
-        <div id="comm-rates-table"><div class="loading">Loading...</div></div>
+      <div style="font-size:10px;font-weight:800;color:#6B7280;letter-spacing:.8px;margin-bottom:8px">BASE FARE &amp; MINIMUMS</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-bottom:14px">
+        <div><div style="font-size:11px;color:#555;margin-bottom:3px">Base Fare (₹)</div><input id="fm-base-fare" type="number" min="0" step="1" class="input-sm" style="width:100%"></div>
+        <div><div style="font-size:11px;color:#555;margin-bottom:3px">Min Fare (₹)</div><input id="fm-min-fare" type="number" min="0" step="1" class="input-sm" style="width:100%"></div>
+        <div><div style="font-size:11px;color:#555;margin-bottom:3px">Platform Fee (₹)</div><input id="fm-platform-fee" type="number" min="0" step="0.5" class="input-sm" style="width:100%"></div>
+      </div>
+
+      <div style="font-size:10px;font-weight:800;color:#6B7280;letter-spacing:.8px;margin-bottom:8px">PER KM RATES</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-bottom:14px">
+        <div><div style="font-size:11px;color:#555;margin-bottom:3px">0–8 km (₹/km)</div><input id="fm-per-km" type="number" min="0" step="0.5" class="input-sm" style="width:100%"></div>
+        <div><div style="font-size:11px;color:#555;margin-bottom:3px">8–20 km (₹/km)</div><input id="fm-per-km-t2" type="number" min="0" step="0.5" class="input-sm" style="width:100%"></div>
+        <div><div style="font-size:11px;color:#555;margin-bottom:3px">20 km+ (₹/km)</div><input id="fm-per-km-t3" type="number" min="0" step="0.5" class="input-sm" style="width:100%"></div>
+      </div>
+
+      <div style="font-size:10px;font-weight:800;color:#6B7280;letter-spacing:.8px;margin-bottom:8px">TIME &amp; NIGHT</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:8px;margin-bottom:14px">
+        <div><div style="font-size:11px;color:#555;margin-bottom:3px">Time Rate (₹/min)</div><input id="fm-time-rate" type="number" min="0" step="0.05" class="input-sm" style="width:100%"></div>
+        <div><div style="font-size:11px;color:#555;margin-bottom:3px">Night Mult (×)</div><input id="fm-night-mult" type="number" min="1" max="3" step="0.1" class="input-sm" style="width:100%"></div>
+        <div><div style="font-size:11px;color:#555;margin-bottom:3px">Night Start</div><input id="fm-night-start" type="text" placeholder="22:00" class="input-sm" style="width:100%"></div>
+        <div><div style="font-size:11px;color:#555;margin-bottom:3px">Night End</div><input id="fm-night-end" type="text" placeholder="06:00" class="input-sm" style="width:100%"></div>
+      </div>
+
+      <div style="font-size:10px;font-weight:800;color:#6B7280;letter-spacing:.8px;margin-bottom:8px">COMMISSION</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:20px">
+        <div><div style="font-size:11px;color:#555;margin-bottom:3px">Standard Rides (%)</div><input id="fm-commission" type="number" min="0" max="40" step="0.5" class="input-sm" style="width:100%"></div>
+        <div><div style="font-size:11px;color:#555;margin-bottom:3px">Hourly Rides (%)</div><input id="fm-hourly-commission" type="number" min="0" max="40" step="0.5" class="input-sm" style="width:100%"></div>
+      </div>
+
+      <div id="fare-modal-status" style="font-size:12px;min-height:16px;margin-bottom:12px"></div>
+      <div style="display:flex;gap:8px">
+        <button onclick="saveFareModal()" style="flex:1;background:#1a1a2e;color:#fff;border:none;border-radius:10px;padding:11px;cursor:pointer;font-weight:700;font-size:14px">💾 Save Fares</button>
+        <button onclick="closeFareModal()" style="flex:0 0 100px;background:#f0f0f0;border:none;border-radius:10px;padding:11px;cursor:pointer;font-weight:600;font-size:13px">Cancel</button>
       </div>
     </div>
   </div>
@@ -1102,6 +1111,71 @@ async function loadDashboard(){
       document.getElementById('stats-grid').innerHTML='<div class="loading">❌ Dashboard error: '+e.message+'</div>';
   }
 }
+
+// ── Net Earnings P&L ─────────────────────────────────────
+var _ne = null; // cached data
+var _nePeriod = 'all_time';
+async function loadNetEarnings(){
+  var el = document.getElementById('net-earnings-card');
+  if(!el) return;
+  try {
+    _ne = await aJson('/api/admin/net-earnings');
+    renderNetEarnings();
+  } catch(e) {
+    el.innerHTML = '<div class="card" style="color:#e94560;padding:14px">❌ P&L load error: '+e.message+'</div>';
+  }
+}
+function renderNetEarnings(){
+  var el = document.getElementById('net-earnings-card');
+  if(!el||!_ne) return;
+  var p = _nePeriod;
+  var inc = _ne.income, lib = _ne.liabilities, net = _ne.net;
+  function r(obj){ return rupee(obj[p]); }
+  var netVal = net[p];
+  var netColor = netVal >= 0 ? '#2e7d32' : '#c62828';
+  var netBg = netVal >= 0 ? '#e8f5e9' : '#ffebee';
+  function pill(key,label){
+    var active = _nePeriod===key;
+    return '<button onclick="neSwitch(\''+key+'\')" style="padding:5px 14px;border-radius:20px;border:none;cursor:pointer;font-size:12px;font-weight:600;background:'+(active?'#1a1a2e':'#f0f0f0')+';color:'+(active?'#fff':'#555')+';transition:all .15s">'+label+'</button>';
+  }
+  function incRow(label,obj,bold){
+    var style = bold?'font-weight:700;border-top:1px solid #e0e0e0;padding-top:8px;margin-top:4px':'';
+    return '<div style="display:flex;justify-content:space-between;align-items:center;padding:5px 0;'+style+'"><span style="color:#555;font-size:13px">'+label+'</span><span style="color:#2e7d32;font-weight:'+(bold?'800':'600')+';font-size:13px">+ '+r(obj)+'</span></div>';
+  }
+  function libRow(label,obj,bold){
+    var style = bold?'font-weight:700;border-top:1px solid #e0e0e0;padding-top:8px;margin-top:4px':'';
+    return '<div style="display:flex;justify-content:space-between;align-items:center;padding:5px 0;'+style+'"><span style="color:#555;font-size:13px">'+label+'</span><span style="color:#c62828;font-weight:'+(bold?'800':'600')+';font-size:13px">− '+r(obj)+'</span></div>';
+  }
+  el.innerHTML =
+    '<div class="card" style="margin-bottom:0">'+
+      '<div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;margin-bottom:14px">'+
+        '<div class="card-title" style="margin-bottom:0">📊 Platform P&amp;L — Net Earning</div>'+
+        '<div style="display:flex;gap:6px">'+pill('today','Today')+pill('this_month','This Month')+pill('all_time','All Time')+'</div>'+
+      '</div>'+
+      '<div style="display:grid;grid-template-columns:1fr 1fr;gap:20px">'+
+        '<div>'+
+          '<div style="font-size:11px;font-weight:700;color:#888;text-transform:uppercase;letter-spacing:.5px;margin-bottom:8px">Income</div>'+
+          incRow('Ride Commission', inc.rides_commission)+
+          incRow('Hourly Commission', inc.hourly_commission)+
+          incRow('Subscription Revenue', inc.subscriptions)+
+          incRow('Total Income', inc.total, true)+
+        '</div>'+
+        '<div>'+
+          '<div style="font-size:11px;font-weight:700;color:#888;text-transform:uppercase;letter-spacing:.5px;margin-bottom:8px">Liabilities</div>'+
+          libRow('Driver Bonuses', lib.driver_bonuses)+
+          libRow('Scratch Card Cashback', lib.scratch_cards)+
+          libRow('Referral Rewards', lib.referral_rewards)+
+          libRow('Per-Ride Cashback', lib.cashback_events)+
+          libRow('Total Liability', lib.total, true)+
+        '</div>'+
+      '</div>'+
+      '<div style="margin-top:16px;border-radius:12px;padding:14px 18px;background:'+netBg+';display:flex;justify-content:space-between;align-items:center">'+
+        '<span style="font-size:15px;font-weight:700;color:'+netColor+'">Net Platform Earning</span>'+
+        '<span style="font-size:24px;font-weight:900;color:'+netColor+'">'+rupee(netVal)+'</span>'+
+      '</div>'+
+    '</div>';
+}
+function neSwitch(period){ _nePeriod=period; renderNetEarnings(); }
 
 // ── Transactions ────────────────────────────────────────
 async function loadTransactions(){
@@ -1646,7 +1720,23 @@ async function loadFares(){
 // ── Standard Ride Fares ─────────────────────────────────
 var stdFaresCache={};
 var hourlyFaresCache={};
+var _fareModalVehicle=null;
+var _fareVehicleDefs={
+  bike:         {b:15, k:8,  k2:9,  k3:10, tr:0.5,  pf:2,   mf:30,  n:1.3, ns:'22:00',ne:'06:00',cr:15,hcr:12},
+  auto:         {b:25, k:12, k2:14, k3:15, tr:0.75, pf:2,   mf:45,  n:1.5, ns:'22:00',ne:'06:00',cr:15,hcr:12},
+  car:          {b:40, k:15, k2:17, k3:18, tr:1.0,  pf:2.5, mf:65,  n:1.5, ns:'22:00',ne:'06:00',cr:15,hcr:12},
+  eriksha:      {b:20, k:10, k2:11, k3:12, tr:0.65, pf:2,   mf:35,  n:1.3, ns:'22:00',ne:'06:00',cr:15,hcr:12},
+  luxury:       {b:80, k:25, k2:28, k3:30, tr:1.5,  pf:3,   mf:120, n:1.8, ns:'22:00',ne:'06:00',cr:15,hcr:12},
+  green_bike:   {b:12, k:6,  k2:7,  k3:8,  tr:0.4,  pf:2,   mf:25,  n:1.2, ns:'22:00',ne:'06:00',cr:12,hcr:10},
+  electric_auto:{b:20, k:9,  k2:11, k3:12, tr:0.6,  pf:2,   mf:38,  n:1.3, ns:'22:00',ne:'06:00',cr:12,hcr:10}
+};
+var _fareVehicleLabels={
+  bike:'🏍️ Bike', auto:'🛺 Auto', car:'🚕 Car', eriksha:'🛵 E-Riksha',
+  luxury:'🚙 Ultra Luxury', green_bike:'⚡🏍️ Green Bike', electric_auto:'⚡🛺 Electric Auto'
+};
 async function loadStdFares(){
+  var el=document.getElementById('fare-table-container');
+  if(el) el.innerHTML='<div class="loading">Loading...</div>';
   try{
     const [sd, hd] = await Promise.all([
       fetch(API+'/api/fare-settings').then(r=>r.json()),
@@ -1654,135 +1744,109 @@ async function loadStdFares(){
     ]);
     stdFaresCache={};
     hourlyFaresCache=hd.fares||{};
-    if(sd.fares) sd.fares.forEach(f=>{stdFaresCache[f.vehicle_type]=f;});
-    const types=[
-      {id:'bike',        hid:'bike',         icon:'🏍️',  label:'Bike'},
-      {id:'auto',        hid:'auto',         icon:'🛺',  label:'Auto'},
-      {id:'car',         hid:'car',          icon:'🚕',  label:'Car'},
-      {id:'eriksha',     hid:'eriksha',      icon:'🛵',  label:'E-Riksha'},
-      {id:'luxury',      hid:'ultra_luxury', icon:'🚙',  label:'Ultra Luxury'},
-      {id:'green_bike',  hid:'green_bike',   icon:'⚡🏍️',label:'Green Bike'},
-      {id:'electric_auto',hid:'electric_auto',icon:'⚡🛺',label:'Electric Auto'}
-    ];
-    var chips='background:#f0fdf4;color:#166534;padding:3px 8px;border-radius:4px;font-weight:700;font-size:12px';
-    var label='color:#6B7280;font-size:11px;margin-bottom:2px';
-    var val='font-size:14px;font-weight:800;color:#111827';
-    var pkgs=[2,4,6,8,24,48,72];
-    var html='<div style="display:flex;flex-direction:column;gap:14px">';
-    types.forEach(function(t){
-      var f=stdFaresCache[t.id];
-      var h=hourlyFaresCache[t.hid]||{};
-      var r1=f?parseFloat(f.per_km_rate)||0:0;
-      var r2=f?(f.per_km_rate_t2!=null?parseFloat(f.per_km_rate_t2):r1):0;
-      var r3=f?(f.per_km_rate_t3!=null?parseFloat(f.per_km_rate_t3):r2):0;
-      var cr= f?(parseFloat(f.commission_rate)||15):15;
-      var hcr=f?(parseFloat(f.hourly_commission_rate)||12):12;
-      var hasHourly=pkgs.some(function(p){return h[p];});
-      html+='<div style="border:1px solid #e5e7eb;border-radius:12px;overflow:hidden">';
-      // Header
-      html+='<div style="background:#1a1a2e;padding:10px 14px;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px">';
-      html+='<span style="font-size:15px;font-weight:900;color:#fff">'+t.icon+' '+t.label+'</span>';
-      html+='<span style="display:flex;gap:6px"><span style="background:rgba(255,255,255,0.12);color:#d1d5db;padding:3px 9px;border-radius:20px;font-size:11px;font-weight:700">Std '+cr.toFixed(0)+'%</span>';
-      html+='<span style="background:rgba(59,130,246,0.25);color:#93c5fd;padding:3px 9px;border-radius:20px;font-size:11px;font-weight:700">Hourly '+hcr.toFixed(0)+'%</span></span></div>';
-      if(!f){
-        html+='<div style="padding:12px;color:#9ca3af;font-size:12px;text-align:center">Default — fare settings mein save karo</div>';
-      } else {
-        // Standard ride section
-        html+='<div style="padding:12px 14px">';
-        html+='<div style="font-size:10px;font-weight:800;color:#6B7280;letter-spacing:.8px;margin-bottom:10px">STANDARD RIDE</div>';
-        html+='<div style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:10px">';
-        var items=[
-          {l:'Base Fare',    v:'₹'+parseFloat(f.base_fare).toFixed(0)},
-          {l:'Min Fare',     v:'₹'+parseFloat(f.min_fare||0).toFixed(0)},
-          {l:'Platform Fee', v:'₹'+parseFloat(f.platform_fee||2).toFixed(1)},
-          {l:'Time Rate',    v:'₹'+parseFloat(f.time_rate||0).toFixed(2)+'/min'},
-          {l:'Night',        v:parseFloat(f.night_multiplier||1.3).toFixed(1)+'×  ('+f.night_start+'–'+f.night_end+')'}
-        ];
-        items.forEach(function(i){
-          html+='<div style="background:#f9fafb;border:1px solid #e5e7eb;border-radius:8px;padding:7px 12px;min-width:100px">';
-          html+='<div style="'+label+'">'+i.l+'</div><div style="'+val+'">'+i.v+'</div></div>';
-        });
-        html+='</div>';
-        // Per km tiers
-        html+='<div style="background:#eff6ff;border-radius:8px;padding:9px 12px;display:flex;gap:16px;flex-wrap:wrap">';
-        html+='<span style="font-size:11px;font-weight:700;color:#1e40af">Per KM</span>';
-        html+='<span style="font-size:12px;color:#1e3a8a"><b>0–8 km:</b> ₹'+r1.toFixed(0)+'</span>';
-        html+='<span style="font-size:12px;color:#1e3a8a"><b>8–20 km:</b> ₹'+r2.toFixed(0)+'</span>';
-        html+='<span style="font-size:12px;color:#1e3a8a"><b>20km+:</b> ₹'+r3.toFixed(0)+'</span>';
-        html+='</div>';
-        html+='</div>';
-        // Hourly packages section
-        if(hasHourly){
-          html+='<div style="border-top:1px solid #e5e7eb;padding:12px 14px">';
-          html+='<div style="font-size:10px;font-weight:800;color:#6B7280;letter-spacing:.8px;margin-bottom:10px">HOURLY PACKAGES &nbsp;<span style="font-weight:500;color:#9ca3af">Extra km: ₹'+(h.extra||'—')+'/km</span></div>';
-          html+='<div style="display:flex;flex-wrap:wrap;gap:6px">';
-          pkgs.forEach(function(p){
-            var pkg=h[p];
-            if(!pkg) return;
-            var lbl=p>=24?(p/24)+'d':p+'h';
-            html+='<div style="background:#f0fdf4;border:1px solid #bbf7d0;border-radius:8px;padding:6px 10px;text-align:center;min-width:64px">';
-            html+='<div style="font-size:10px;font-weight:800;color:#166534">'+lbl+'</div>';
-            html+='<div style="font-size:13px;font-weight:900;color:#15803d">₹'+pkg.fare+'</div>';
-            html+='<div style="font-size:10px;color:#4ade80">'+pkg.km+' km</div>';
-            html+='</div>';
-          });
-          html+='</div></div>';
-        }
-      }
-      html+='</div>';
-    });
-    html+='</div>';
-    document.getElementById('std-fares-display').innerHTML=html;
-    loadStdFare();
-  }catch(e){document.getElementById('std-fares-display').textContent='Error loading';}
+    if(sd.fares) sd.fares.forEach(function(f){stdFaresCache[f.vehicle_type]=f;});
+    renderFareTable();
+  }catch(e){
+    var el2=document.getElementById('fare-table-container');
+    if(el2) el2.innerHTML='<div style="color:#c62828;font-size:12px">❌ Error: '+e.message+'</div>';
+  }
 }
-function loadStdFare(){
-  var v=document.getElementById('std-fare-vehicle').value;
+function renderFareTable(){
+  var el=document.getElementById('fare-table-container');
+  if(!el) return;
+  var types=['bike','auto','car','eriksha','luxury','green_bike','electric_auto'];
+  var rows='';
+  types.forEach(function(v){
+    var f=stdFaresCache[v];
+    var def=_fareVehicleDefs[v]||{};
+    var label=_fareVehicleLabels[v]||v;
+    var r1=f?parseFloat(f.per_km_rate):def.k;
+    var r2=f&&f.per_km_rate_t2!=null?parseFloat(f.per_km_rate_t2):def.k2;
+    var r3=f&&f.per_km_rate_t3!=null?parseFloat(f.per_km_rate_t3):def.k3;
+    var bf=f?parseFloat(f.base_fare):def.b;
+    var mf=f&&f.min_fare!=null?parseFloat(f.min_fare):def.mf;
+    var pf=f&&f.platform_fee!=null?parseFloat(f.platform_fee):def.pf;
+    var tr=f&&f.time_rate!=null?parseFloat(f.time_rate):def.tr;
+    var nm=f?parseFloat(f.night_multiplier):def.n;
+    var ns=f?(f.night_start||def.ns):def.ns;
+    var ne=f?(f.night_end||def.ne):def.ne;
+    var cr=f&&f.commission_rate!=null?parseFloat(f.commission_rate):def.cr;
+    var hcr=f&&f.hourly_commission_rate!=null?parseFloat(f.hourly_commission_rate):def.hcr;
+    var chip=function(lbl,val,bg,col){return '<span style="background:'+bg+';color:'+col+';padding:3px 7px;border-radius:5px;font-size:11px;font-weight:700;white-space:nowrap">'+lbl+': '+val+'</span>';};
+    rows+='<div style="display:flex;align-items:center;flex-wrap:wrap;gap:10px;padding:12px 14px;border-bottom:1px solid #f0f0f0">'
+      +'<div style="min-width:130px;font-size:14px;font-weight:800;color:#1a1a2e">'+label+'</div>'
+      +'<div style="display:flex;flex-wrap:wrap;gap:6px;flex:1">'
+        +chip('Base','₹'+bf.toFixed(0),'#f0fdf4','#166534')
+        +chip('Min','₹'+mf.toFixed(0),'#fafafa','#374151')
+        +chip('PF','₹'+pf.toFixed(1),'#fafafa','#374151')
+        +chip('0–8km','₹'+r1.toFixed(0)+'/km','#eff6ff','#1e40af')
+        +chip('8–20km','₹'+r2.toFixed(0)+'/km','#eff6ff','#1e40af')
+        +chip('20km+','₹'+r3.toFixed(0)+'/km','#eff6ff','#1e40af')
+        +chip('Time','₹'+tr.toFixed(2)+'/m','#fdf4ff','#7e22ce')
+        +chip('Night',nm.toFixed(1)+'× ('+ns+'–'+ne+')','#fff7ed','#c2410c')
+        +chip('Std',cr.toFixed(0)+'%','#f0f9ff','#0369a1')
+        +chip('Hrly',hcr.toFixed(0)+'%','#ecfdf5','#047857')
+      +'</div>'
+      +'<button onclick="editFareVehicle(\''+v+'\')" style="padding:7px 14px;background:#1a1a2e;color:#fff;border:none;border-radius:8px;cursor:pointer;font-size:12px;font-weight:700;white-space:nowrap">✏️ Edit</button>'
+    +'</div>';
+  });
+  el.innerHTML='<div style="border:1px solid #e5e7eb;border-radius:12px;overflow:hidden">'+rows+'<div style="padding:10px 14px;background:#fafafa;font-size:11px;color:#9ca3af">Kisi bhi vehicle ka ✏️ Edit button dabao → modal mein sab fields edit karo → 💾 Save karo</div></div>';
+}
+function editFareVehicle(v){
   var f=stdFaresCache[v];
-  var defs={
-    bike:{b:15,k:8,k2:9,k3:10,tr:0.5,pf:2,mf:30,n:1.3,cr:15},
-    auto:{b:25,k:12,k2:14,k3:15,tr:0.75,pf:2,mf:45,n:1.5,cr:15},
-    car:{b:40,k:15,k2:17,k3:18,tr:1.0,pf:2.5,mf:65,n:1.5,cr:15},
-    eriksha:{b:20,k:10,k2:11,k3:12,tr:0.65,pf:2,mf:35,n:1.3,cr:15},
-    luxury:{b:80,k:25,k2:28,k3:30,tr:1.5,pf:3,mf:120,n:1.8,cr:15},
-    green_bike:{b:12,k:6,k2:7,k3:8,tr:0.4,pf:2,mf:25,n:1.2,cr:12},
-    electric_auto:{b:20,k:9,k2:11,k3:12,tr:0.6,pf:2,mf:38,n:1.3,cr:12}
-  };
-  var def=defs[v]||{b:25,k:12,k2:14,k3:15,tr:0.75,pf:2,mf:45,n:1.5,cr:15};
-  var r1=f?parseFloat(f.per_km_rate):def.k;
-  var r2=f&&f.per_km_rate_t2!=null?parseFloat(f.per_km_rate_t2):def.k2;
-  var r3=f&&f.per_km_rate_t3!=null?parseFloat(f.per_km_rate_t3):def.k3;
-  document.getElementById('std-base-fare').value=f?parseFloat(f.base_fare):def.b;
-  document.getElementById('std-per-km').value=r1;
-  document.getElementById('std-per-km-t2').value=r2;
-  document.getElementById('std-per-km-t3').value=r3;
-  document.getElementById('std-time-rate').value=f&&f.time_rate!=null?parseFloat(f.time_rate):def.tr;
-  document.getElementById('std-platform-fee').value=f&&f.platform_fee!=null?parseFloat(f.platform_fee):def.pf;
-  document.getElementById('std-min-fare').value=f&&f.min_fare!=null?parseFloat(f.min_fare):def.mf;
-  document.getElementById('std-night-mult').value=f?parseFloat(f.night_multiplier):def.n;
-  document.getElementById('std-night-start').value=f?(f.night_start||'22:00'):'22:00';
-  document.getElementById('std-night-end').value=f?(f.night_end||'06:00'):'06:00';
-  document.getElementById('std-commission-rate').value=f&&f.commission_rate!=null?parseFloat(f.commission_rate):def.cr;
+  var def=_fareVehicleDefs[v]||{};
+  _fareModalVehicle=v;
+  document.getElementById('fare-modal-title').textContent='✏️ Edit Fares — '+(_fareVehicleLabels[v]||v);
+  document.getElementById('fm-base-fare').value    = f?parseFloat(f.base_fare):def.b;
+  document.getElementById('fm-min-fare').value     = f&&f.min_fare!=null?parseFloat(f.min_fare):def.mf;
+  document.getElementById('fm-platform-fee').value = f&&f.platform_fee!=null?parseFloat(f.platform_fee):def.pf;
+  document.getElementById('fm-per-km').value       = f?parseFloat(f.per_km_rate):def.k;
+  document.getElementById('fm-per-km-t2').value    = f&&f.per_km_rate_t2!=null?parseFloat(f.per_km_rate_t2):def.k2;
+  document.getElementById('fm-per-km-t3').value    = f&&f.per_km_rate_t3!=null?parseFloat(f.per_km_rate_t3):def.k3;
+  document.getElementById('fm-time-rate').value    = f&&f.time_rate!=null?parseFloat(f.time_rate):def.tr;
+  document.getElementById('fm-night-mult').value   = f?parseFloat(f.night_multiplier):def.n;
+  document.getElementById('fm-night-start').value  = f?(f.night_start||def.ns):def.ns;
+  document.getElementById('fm-night-end').value    = f?(f.night_end||def.ne):def.ne;
+  document.getElementById('fm-commission').value   = f&&f.commission_rate!=null?parseFloat(f.commission_rate):def.cr;
+  document.getElementById('fm-hourly-commission').value = f&&f.hourly_commission_rate!=null?parseFloat(f.hourly_commission_rate):def.hcr;
+  document.getElementById('fare-modal-status').textContent='';
+  document.getElementById('fare-edit-modal').style.display='flex';
 }
-async function saveStdFare(){
-  var vehicle_type=document.getElementById('std-fare-vehicle').value;
-  var base_fare=parseFloat(document.getElementById('std-base-fare').value);
-  var per_km_rate=parseFloat(document.getElementById('std-per-km').value);
-  var per_km_rate_t2=parseFloat(document.getElementById('std-per-km-t2').value)||null;
-  var per_km_rate_t3=parseFloat(document.getElementById('std-per-km-t3').value)||null;
-  var time_rate=parseFloat(document.getElementById('std-time-rate').value)||0;
-  var platform_fee=parseFloat(document.getElementById('std-platform-fee').value)||2;
-  var min_fare=parseFloat(document.getElementById('std-min-fare').value)||0;
-  var night_multiplier=parseFloat(document.getElementById('std-night-mult').value)||1.5;
-  var night_start=document.getElementById('std-night-start').value||'22:00';
-  var night_end=document.getElementById('std-night-end').value||'06:00';
-  var commission_rate=parseFloat(document.getElementById('std-commission-rate').value)||15;
-  var el=document.getElementById('std-fare-status');
-  if(!base_fare||!per_km_rate){el.style.color='#c62828';el.textContent='❌ Base fare aur Per KM rate required';return;}
-  var d=await aJson('/api/admin/fare-settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({vehicle_type,base_fare,per_km_rate,per_km_rate_t2,per_km_rate_t3,time_rate,platform_fee,min_fare,night_multiplier,night_start,night_end,commission_rate})});
-  el.style.color=d.success?'#2e7d32':'#c62828';
-  el.textContent=d.success?'✅ '+vehicle_type+' saved! Base ₹'+base_fare+' | ₹'+per_km_rate+'/km | ₹'+time_rate+'/min | PF ₹'+platform_fee:'❌ '+(d.error||'Error');
-  if(d.success) loadStdFares();
+function closeFareModal(){
+  document.getElementById('fare-edit-modal').style.display='none';
+  _fareModalVehicle=null;
+}
+async function saveFareModal(){
+  var v=_fareModalVehicle;
+  if(!v) return;
+  var bf=parseFloat(document.getElementById('fm-base-fare').value);
+  var mf=parseFloat(document.getElementById('fm-min-fare').value);
+  var pf=parseFloat(document.getElementById('fm-platform-fee').value);
+  var pkr=parseFloat(document.getElementById('fm-per-km').value);
+  var pkr2=parseFloat(document.getElementById('fm-per-km-t2').value)||null;
+  var pkr3=parseFloat(document.getElementById('fm-per-km-t3').value)||null;
+  var tr=parseFloat(document.getElementById('fm-time-rate').value)||0;
+  var nm=parseFloat(document.getElementById('fm-night-mult').value)||1.3;
+  var ns=document.getElementById('fm-night-start').value||'22:00';
+  var ne=document.getElementById('fm-night-end').value||'06:00';
+  var cr=parseFloat(document.getElementById('fm-commission').value)||15;
+  var hcr=parseFloat(document.getElementById('fm-hourly-commission').value)||12;
+  var st=document.getElementById('fare-modal-status');
+  if(!bf||isNaN(bf)){st.style.color='#c62828';st.textContent='❌ Base Fare required';return;}
+  if(!pkr||isNaN(pkr)){st.style.color='#c62828';st.textContent='❌ Per KM rate required';return;}
+  if(isNaN(nm)||nm<1){st.style.color='#c62828';st.textContent='❌ Night multiplier must be >= 1';return;}
+  st.style.color='#555';st.textContent='Saving...';
+  try{
+    var d=await aJson('/api/admin/fare-settings',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({vehicle_type:v,base_fare:bf,min_fare:mf,platform_fee:pf,per_km_rate:pkr,per_km_rate_t2:pkr2,per_km_rate_t3:pkr3,time_rate:tr,night_multiplier:nm,night_start:ns,night_end:ne,commission_rate:cr,hourly_commission_rate:hcr})});
+    if(d.success){
+      st.style.color='#2e7d32';st.textContent='✅ Saved!';
+      await loadStdFares();
+      closeFareModal();
+    } else {
+      st.style.color='#c62828';st.textContent='❌ '+(d.error||'Error saving');
+    }
+  }catch(e){st.style.color='#c62828';st.textContent='❌ '+e.message;}
 }
 
 // ── Marketing ───────────────────────────────────────────
@@ -2582,6 +2646,7 @@ async function loadReferralDetail() {
 async function loadAll(){
   document.getElementById('last-refresh').textContent=new Date().toLocaleTimeString('en-IN');
   await loadDashboard();
+  loadNetEarnings();
   await loadTransactions();
   loadRevenueChart();
 }

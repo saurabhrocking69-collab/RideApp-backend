@@ -13,6 +13,12 @@ const HOURLY_FARES = {
 
 let SURGE_MULTIPLIER = 1.0;
 
+// Server runs in UTC (Railway default); night_start/night_end are configured as IST values by admins.
+// Always compare against IST hour to avoid 5.5-hour drift.
+function getISTHour() {
+  return new Date(Date.now() + 5.5 * 60 * 60 * 1000).getUTCHours();
+}
+
 // Distance tier breakpoints (km) — fixed platform-wide
 const DIST_T1 = 8;
 const DIST_T2 = 20;
@@ -71,4 +77,4 @@ function calculateFare(f, distKm, durationMin = 0, isNight = false) {
   };
 }
 
-module.exports = { HOURLY_FARES, getSurge: () => SURGE_MULTIPLIER, setSurge: (v) => { SURGE_MULTIPLIER = v; }, calculateFare };
+module.exports = { HOURLY_FARES, getSurge: () => SURGE_MULTIPLIER, setSurge: (v) => { SURGE_MULTIPLIER = v; }, calculateFare, getISTHour };

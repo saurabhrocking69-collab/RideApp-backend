@@ -177,7 +177,8 @@ router.get('/driver/detail', async (req, res) => {
     const driverId = user.rows[0].id;
     const w = await db.query('SELECT balance, total_earned, COALESCE(total_withdrawn,0) AS total_withdrawn FROM driver_wallet WHERE driver_id=$1', [driverId]);
     const rides = await db.query(
-      `SELECT r.id, r.fare, r.payment_method, r.ride_type, r.created_at, p.name AS passenger_name
+      `SELECT r.id, r.fare, r.payment_method, r.ride_type, r.created_at, r.commission_amount,
+              p.name AS passenger_name
        FROM rides r JOIN users d ON r.driver_id=d.id LEFT JOIN users p ON r.passenger_id=p.id
        WHERE d.phone=$1 AND r.status='completed' ORDER BY r.created_at DESC LIMIT 50`, [phone]
     );

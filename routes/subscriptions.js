@@ -98,7 +98,7 @@ router.post('/create-order', async (req, res) => {
       amount: amountPaise,
       currency: 'INR',
       receipt: `sub_${phone}_${plan_id}_${Date.now()}`,
-      notes: { phone, plan_id: String(plan_id), plan_name: plan.name },
+      notes: { phone, plan_id: String(plan_id), plan_name: plan.name, type: 'subscription' },
     });
 
     // Create pending subscription record

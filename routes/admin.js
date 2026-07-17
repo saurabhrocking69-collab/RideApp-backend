@@ -530,7 +530,8 @@ router.post('/commission-rates', async (req, res) => {
 // POST /api/admin/fare-settings
 router.post('/fare-settings', async (req, res) => {
   const { vehicle_type, base_fare, per_km_rate, night_multiplier, night_start, night_end,
-          time_rate, platform_fee, min_fare, per_km_rate_t2, per_km_rate_t3, commission_rate } = req.body;
+          time_rate, platform_fee, min_fare, per_km_rate_t2, per_km_rate_t3,
+          commission_rate, hourly_commission_rate } = req.body;
   const bf  = parseFloat(base_fare);
   const pkr = parseFloat(per_km_rate);
   const nm  = parseFloat(night_multiplier);
@@ -538,29 +539,31 @@ router.post('/fare-settings', async (req, res) => {
   if (isNaN(bf)  || bf  < 0) return res.status(400).json({ error: 'base_fare must be a non-negative number' });
   if (isNaN(pkr) || pkr < 0) return res.status(400).json({ error: 'per_km_rate must be a non-negative number' });
   if (isNaN(nm)  || nm  < 1) return res.status(400).json({ error: 'night_multiplier must be >= 1' });
-  const tr   = time_rate       != null ? parseFloat(time_rate)       : null;
-  const pf   = platform_fee    != null ? parseFloat(platform_fee)    : null;
-  const mf   = min_fare        != null ? parseFloat(min_fare)        : null;
-  const pkr2 = per_km_rate_t2  != null ? parseFloat(per_km_rate_t2)  : null;
-  const pkr3 = per_km_rate_t3  != null ? parseFloat(per_km_rate_t3)  : null;
-  const cr   = commission_rate != null ? parseFloat(commission_rate) : null;
+  const tr   = time_rate              != null ? parseFloat(time_rate)              : null;
+  const pf   = platform_fee           != null ? parseFloat(platform_fee)           : null;
+  const mf   = min_fare               != null ? parseFloat(min_fare)               : null;
+  const pkr2 = per_km_rate_t2         != null ? parseFloat(per_km_rate_t2)         : null;
+  const pkr3 = per_km_rate_t3         != null ? parseFloat(per_km_rate_t3)         : null;
+  const cr   = commission_rate        != null ? parseFloat(commission_rate)        : null;
+  const hcr  = hourly_commission_rate != null ? parseFloat(hourly_commission_rate) : null;
   try {
     await db.query(
       `WITH updated AS (
          UPDATE fare_settings SET
            base_fare=$1, per_km_rate=$2, night_multiplier=$3, night_start=$4, night_end=$5,
-           time_rate      = COALESCE($7,  time_rate),
-           platform_fee   = COALESCE($8,  platform_fee),
-           min_fare       = COALESCE($9,  min_fare),
-           per_km_rate_t2 = COALESCE($10, per_km_rate_t2),
-           per_km_rate_t3 = COALESCE($11, per_km_rate_t3),
-           commission_rate= COALESCE($12, commission_rate),
+           time_rate               = COALESCE($7,  time_rate),
+           platform_fee            = COALESCE($8,  platform_fee),
+           min_fare                = COALESCE($9,  min_fare),
+           per_km_rate_t2          = COALESCE($10, per_km_rate_t2),
+           per_km_rate_t3          = COALESCE($11, per_km_rate_t3),
+           commission_rate         = COALESCE($12, commission_rate),
+           hourly_commission_rate  = COALESCE($13, hourly_commission_rate),
            updated_at=NOW()
          WHERE vehicle_type=$6 RETURNING 1
        )
        INSERT INTO fare_settings (vehicle_type, base_fare, per_km_rate, night_multiplier, night_start, night_end)
        SELECT $6, $1, $2, $3, $4, $5 WHERE NOT EXISTS (SELECT 1 FROM updated)`,
-      [bf, pkr, nm, night_start || '22:00', night_end || '06:00', vehicle_type, tr, pf, mf, pkr2, pkr3, cr]
+      [bf, pkr, nm, night_start || '22:00', night_end || '06:00', vehicle_type, tr, pf, mf, pkr2, pkr3, cr, hcr]
     );
     const io = getIO();
     if (io) io.emit('fareSettingsUpdated', { vehicle_type, base_fare: bf, per_km_rate: pkr, night_multiplier: nm, time_rate: tr, platform_fee: pf, min_fare: mf });
@@ -1285,6 +1288,77 @@ router.get('/revenue-daily', async (req, res) => {
       ORDER BY dr.date
     `, [days]);
     res.json({ days: r.rows });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// GET /api/admin/net-earnings — platform P&L: gross income vs liabilities
+router.get('/net-earnings', async (req, res) => {
+  try {
+    const [ridesR, hourlyR, subsR, bonusR, scratchR, referralR, cashbackR] = await Promise.all([
+      db.query(`SELECT
+        COALESCE(SUM(commission_amount),0) AS all_time,
+        COALESCE(SUM(CASE WHEN date_trunc('month',created_at)=date_trunc('month',NOW()) THEN commission_amount ELSE 0 END),0) AS this_month,
+        COALESCE(SUM(CASE WHEN created_at>=CURRENT_DATE THEN commission_amount ELSE 0 END),0) AS today
+        FROM rides WHERE status='completed'`),
+      db.query(`SELECT
+        COALESCE(SUM(platform_fee),0) AS all_time,
+        COALESCE(SUM(CASE WHEN date_trunc('month',created_at)=date_trunc('month',NOW()) THEN platform_fee ELSE 0 END),0) AS this_month,
+        COALESCE(SUM(CASE WHEN created_at>=CURRENT_DATE THEN platform_fee ELSE 0 END),0) AS today
+        FROM hourly_bookings WHERE status='completed'`).catch(()=>({rows:[{all_time:0,this_month:0,today:0}]})),
+      db.query(`SELECT
+        COALESCE(SUM(amount_paid),0) AS all_time,
+        COALESCE(SUM(CASE WHEN date_trunc('month',created_at)=date_trunc('month',NOW()) THEN amount_paid ELSE 0 END),0) AS this_month,
+        COALESCE(SUM(CASE WHEN created_at>=CURRENT_DATE THEN amount_paid ELSE 0 END),0) AS today
+        FROM driver_subscriptions WHERE status IN ('active','queued','expired')`).catch(()=>({rows:[{all_time:0,this_month:0,today:0}]})),
+      db.query(`SELECT
+        COALESCE(SUM(amount),0) AS all_time,
+        COALESCE(SUM(CASE WHEN date_trunc('month',ref_date)=date_trunc('month',CURRENT_DATE) THEN amount ELSE 0 END),0) AS this_month,
+        COALESCE(SUM(CASE WHEN ref_date=CURRENT_DATE THEN amount ELSE 0 END),0) AS today
+        FROM bonus_ledger WHERE amount>0`).catch(()=>({rows:[{all_time:0,this_month:0,today:0}]})),
+      db.query(`SELECT
+        COALESCE(SUM(reward_amount),0) AS all_time,
+        COALESCE(SUM(CASE WHEN date_trunc('month',created_at)=date_trunc('month',NOW()) THEN reward_amount ELSE 0 END),0) AS this_month,
+        COALESCE(SUM(CASE WHEN created_at>=CURRENT_DATE THEN reward_amount ELSE 0 END),0) AS today
+        FROM scratch_cards WHERE is_scratched=true`).catch(()=>({rows:[{all_time:0,this_month:0,today:0}]})),
+      db.query(`SELECT
+        COALESCE(SUM(reward_amount),0) AS all_time,
+        COALESCE(SUM(CASE WHEN date_trunc('month',created_at)=date_trunc('month',NOW()) THEN reward_amount ELSE 0 END),0) AS this_month,
+        COALESCE(SUM(CASE WHEN created_at>=CURRENT_DATE THEN reward_amount ELSE 0 END),0) AS today
+        FROM referrals WHERE status='completed'`).catch(()=>({rows:[{all_time:0,this_month:0,today:0}]})),
+      db.query(`SELECT
+        COALESCE(SUM(amount),0) AS all_time,
+        COALESCE(SUM(CASE WHEN date_trunc('month',created_at)=date_trunc('month',NOW()) THEN amount ELSE 0 END),0) AS this_month,
+        COALESCE(SUM(CASE WHEN created_at>=CURRENT_DATE THEN amount ELSE 0 END),0) AS today
+        FROM cashback_events`).catch(()=>({rows:[{all_time:0,this_month:0,today:0}]})),
+    ]);
+
+    function row(r) {
+      const d = r.rows[0] || {};
+      return { today: parseFloat(d.today||0), this_month: parseFloat(d.this_month||0), all_time: parseFloat(d.all_time||0) };
+    }
+    const rc = row(ridesR), hc = row(hourlyR), sc = row(subsR);
+    const bn = row(bonusR), sk = row(scratchR), rf = row(referralR), cb = row(cashbackR);
+
+    const income = {
+      rides_commission: rc,
+      hourly_commission: hc,
+      subscriptions: sc,
+      total: { today: rc.today+hc.today+sc.today, this_month: rc.this_month+hc.this_month+sc.this_month, all_time: rc.all_time+hc.all_time+sc.all_time },
+    };
+    const liabilities = {
+      driver_bonuses: bn,
+      scratch_cards: sk,
+      referral_rewards: rf,
+      cashback_events: cb,
+      total: { today: bn.today+sk.today+rf.today+cb.today, this_month: bn.this_month+sk.this_month+rf.this_month+cb.this_month, all_time: bn.all_time+sk.all_time+rf.all_time+cb.all_time },
+    };
+    const net = {
+      today: income.total.today - liabilities.total.today,
+      this_month: income.total.this_month - liabilities.total.this_month,
+      all_time: income.total.all_time - liabilities.total.all_time,
+    };
+
+    res.json({ income, liabilities, net });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 

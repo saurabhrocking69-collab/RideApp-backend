@@ -13,7 +13,7 @@ const { getRideStatus, getDriverLoc, setRideStatus, clearRide: clearRideCache } 
 const { creditPeakBonusIfApplicable } = require('./bonus');
 const { maybeGrantReferralReward } = require('./referral');
 const { getSurgeMultiplier } = require('../services/locationIntelligence');
-const { calculateFare } = require('../services/pricing');
+const { calculateFare, getISTHour } = require('../services/pricing');
 const { useSubscriptionIfActive } = require('../services/subscription');
 
 function emitRideUpdate(rideId, data) {
@@ -119,7 +119,7 @@ router.post('/book', async (req, res) => {
       electric_auto: { base_fare: 20,  per_km_rate: 9,  per_km_rate_t2: 11, per_km_rate_t3: 12, time_rate: 0.6,  platform_fee: 2.0, min_fare: 38,  night_multiplier: 1.3, night_start: '22:00', night_end: '06:00' },
     };
     const f = fareRes.rows[0] || defaultFares[ride_type] || defaultFares.auto;
-    const hour = new Date().getHours();
+    const hour = getISTHour();
     const nightStart = parseInt(String(f.night_start || '22').split(':')[0]);
     const nightEnd   = parseInt(String(f.night_end   || '6').split(':')[0]);
     const isNight = hour >= nightStart || hour < nightEnd;
@@ -1191,7 +1191,7 @@ router.post('/switch-vehicle', async (req, res) => {
     const fareRes = await db.query('SELECT * FROM fare_settings WHERE vehicle_type=$1', [new_vehicle_type]);
     const defaultFares = { luxury: { base_fare: 80, per_km_rate: 25 }, car: { base_fare: 40, per_km_rate: 15 }, auto: { base_fare: 25, per_km_rate: 12 }, eriksha: { base_fare: 20, per_km_rate: 10 }, bike: { base_fare: 15, per_km_rate: 8 } };
     const f = fareRes.rows[0] || defaultFares[new_vehicle_type] || defaultFares.auto;
-    const hour = new Date().getHours();
+    const hour = getISTHour();
     const isNight = hour >= parseInt(String(f.night_start || '22').split(':')[0]) || hour < parseInt(String(f.night_end || '6').split(':')[0]);
     const dist = parseFloat(distance || '5');
     let newFare = Math.round(parseFloat(f.base_fare) + dist * parseFloat(f.per_km_rate));

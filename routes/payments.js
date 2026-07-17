@@ -75,8 +75,14 @@ async function webhookHandler(req, res) {
     if (event.event === 'payment.captured') {
       const payment = event?.payload?.payment?.entity;
       if (payment) {
-        const paymentId = payment.id;
-        const phone     = payment.notes?.phone;
+        const paymentId   = payment.id;
+        const phone       = payment.notes?.phone;
+        const paymentType = payment.notes?.type;
+        // Skip wallet credit for non-wallet-recharge payments
+        if (paymentType === 'buddy_fund' || paymentType === 'subscription') {
+          console.log(`ℹ️ Webhook skipping wallet credit for ${paymentType} payment ${paymentId}`);
+          return res.json({ status: 'ok' });
+        }
         if (phone && payment.amount) {
           // Idempotency: skip if already confirmed
           const dup = await db.query("SELECT id FROM razorpay_topups WHERE payment_id=$1 AND status='confirmed'", [paymentId]);

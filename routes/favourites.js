@@ -3,7 +3,7 @@ const router  = express.Router();
 const db      = require('../config/db');
 const { sendFCM }    = require('../config/firebase');
 const { emitToRoom } = require('../config/socket');
-const { calculateFare } = require('../services/pricing');
+const { calculateFare, getISTHour } = require('../services/pricing');
 const { rideQueue }  = require('../workers/rideWorker');
 
 // Kept for backwards-compat export — internal Set replaced by DB query in reject-offer (multi-instance safe)
@@ -162,7 +162,7 @@ router.post('/book', async (req, res) => {
     const ride_type = buddy.vehicle_type || 'auto';
     const fareRow = await client.query('SELECT * FROM fare_settings WHERE vehicle_type=$1', [ride_type]);
     const f = fareRow.rows[0] || defaultFares[ride_type] || defaultFares.auto;
-    const hour = new Date().getHours();
+    const hour = getISTHour();
     const isNight = hour >= parseInt(String(f.night_start || '22').split(':')[0]) || hour < parseInt(String(f.night_end || '6').split(':')[0]);
     const fareCalc = calculateFare(f, dist, durMin, isNight);
     const fare = fareCalc.fare;

@@ -65,7 +65,8 @@ router.post('/fare-estimate', async (req, res) => {
     }
     // If duration not provided, estimate from distance at 20 km/h city average
     const durMin = duration_min != null ? parseFloat(duration_min) : (distKm / 20) * 60;
-    const hour = new Date().getHours();
+    const { getISTHour: _getISTHour } = require('../services/pricing');
+    const hour = _getISTHour();
     const isNight = hour >= parseInt(String(f.night_start || '22').split(':')[0]) || hour < parseInt(String(f.night_end || '6').split(':')[0]);
     const result = calculateFare(f, distKm, durMin, isNight);
     if (isNaN(result.fare)) return res.status(500).json({ error: 'Fare calculation failed — invalid DB values' });
