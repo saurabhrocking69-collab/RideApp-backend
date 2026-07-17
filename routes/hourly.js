@@ -84,7 +84,28 @@ router.post('/book', async (req, res) => {
       [phone, vehicle_type, package_hours, pkg.km, baseFare, pickup, pickup_lat || null, pickup_lng || null, drop_location || null, drop_lat || null, drop_lng || null, is_roundtrip || false, stay_hours || 0, otp, schedAt]
     );
     await client.query('COMMIT');
-    res.json({ success: true, booking_id: bk.rows[0].id, fare: baseFare, km_included: pkg.km, scheduled_at: schedAt });
+    const bookingId = bk.rows[0].id;
+    res.json({ success: true, booking_id: bookingId, fare: baseFare, km_included: pkg.km, scheduled_at: schedAt });
+
+    // Notify online drivers with matching vehicle type (fire-and-forget, outside transaction)
+    setImmediate(async () => {
+      try {
+        const io = getIO();
+        const onlineDrivers = await db.query(
+          `SELECT u.phone FROM drivers d JOIN users u ON d.id=u.id
+           WHERE d.vehicle_type=$1 AND d.is_online=true AND d.verification_status='approved' LIMIT 60`,
+          [vehicle_type]
+        );
+        const hoursLabel = package_hours >= 8 ? 'Full Day (8h)' : `${package_hours}h`;
+        const title = `⏱️ Nayi Hourly Booking — ${hoursLabel}`;
+        const body  = `${pickup} · ₹${baseFare} guaranteed — pickup pe jao!`;
+        const data  = { type: 'hourly_available', booking_id: String(bookingId) };
+        for (const dr of onlineDrivers.rows) {
+          sendFCM(dr.phone, title, body, data, { channelId: 'ride_requests', role: 'driver' }).catch(() => {});
+          if (io) io.to('driver_' + dr.phone).emit('newHourlyRideRequest');
+        }
+      } catch (e) { console.error('[hourly broadcast]', e.message); }
+    });
   } catch (err) { await client.query('ROLLBACK'); console.error('[hourly]', err.message); res.status(500).json({ error: 'Kuch problem aayi — dobara try karo' }); }
   finally { client.release(); }
 });
