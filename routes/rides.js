@@ -988,23 +988,6 @@ router.post('/payment-not-received', async (req, res) => {
       `UPDATE users SET trust_score = GREATEST(0, COALESCE(trust_score,100) - 25) WHERE id=$1`, [ride.passenger_id_val]
     ).catch(() => {});
 
-    // Check if repeat offender (3+ payment skips → restrict booking)
-    const skipCount = await db.query(
-      `SELECT COUNT(*) FROM ride_incidents WHERE customer_id=$1 AND incident_type='payment_skipped'`,
-      [ride.passenger_id_val]
-    );
-    const totalSkips = parseInt(skipCount.rows[0]?.count || 0);
-    if (totalSkips >= 3) {
-      await db.query(
-        `UPDATE users SET booking_restricted=true, booking_restricted_reason='3+ payment skips — admin review required' WHERE id=$1`,
-        [ride.passenger_id_val]
-      ).catch(() => {});
-      sendFCM(ride.passenger_phone, '🚫 Booking Suspended',
-        'Your account is on hold for review. Please contact support.',
-        { type: 'account_restricted' },
-        { role: 'customer' }
-      ).catch(() => {});
-    }
 
     // FCM to customer — warning
     sendFCM(ride.passenger_phone,
