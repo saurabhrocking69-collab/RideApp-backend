@@ -141,7 +141,7 @@ router.post('/book', async (req, res) => {
     // 2s delay: customer needs time to join the socket room before any rideUpdate events fire.
     // Without this, instant-escalation (0 drivers) emits surge_offer before the room is joined.
     const _rideId = ride.rows[0].id, _pLat = pickup_lat || null, _pLng = pickup_lng || null;
-    setTimeout(() => assignRideToNextDriver(_rideId, _pLat, _pLng, ride_type).catch(() => {}), 2000);
+    setTimeout(() => assignRideToNextDriver(_rideId, _pLat, _pLng, ride_type).catch(e => console.error('[RIDE_ASSIGN_FAIL]', e.message)), 2000);
   } catch (err) { console.error('[rides]', err.message); res.status(500).json({ error: 'Something went wrong — please try again' }); }
 });
 
