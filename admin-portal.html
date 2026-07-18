@@ -1216,7 +1216,7 @@ async function loadCustomers(){
   try{
     const d=await aJson('/api/admin/users');
     document.getElementById('cust-body').innerHTML=(d.users||[]).map(u=>`<tr>
-      <td><b>${u.name||'-'}</b>${u.is_blocked?'<span style="color:#c62828;font-size:10px"> 🚫BLOCKED</span>':u.is_suspended?'<span style="color:#e65100;font-size:10px"> ⏸SUSPENDED</span>':''}</td>
+      <td><b>${u.name||'-'}</b>${u.booking_restricted?'<span style="color:#c62828;font-size:10px"> 🔒RESTRICTED</span>':u.is_blocked?'<span style="color:#c62828;font-size:10px"> 🚫BLOCKED</span>':u.is_suspended?'<span style="color:#e65100;font-size:10px"> ⏸SUSPENDED</span>':''}</td>
       <td>${u.phone}</td>
       <td>${u.total_rides||0}</td>
       <td class="amount-green">${rupee(u.total_fare)}</td>
@@ -1224,16 +1224,27 @@ async function loadCustomers(){
       <td>${u.trust_score!=null?u.trust_score+'/100':'-'}${u.is_flagged?'<span style="color:#c62828"> ⚑</span>':''}</td>
       <td style="font-size:10px">${fmt(u.created_at)}</td>
       <td>
-        <button class="action-btn btn-blue" onclick="openUserModal('${u.phone}',${JSON.stringify(u.name||'')},${!!u.is_blocked},${!!u.is_suspended})">Manage</button>
+        <button class="action-btn btn-blue" onclick="openUserModal('${u.phone}',${JSON.stringify(u.name||'')},${!!u.is_blocked},${!!u.is_suspended},${!!u.booking_restricted})">Manage</button>
       </td>
     </tr>`).join('')||'<tr><td colspan=8 class=loading>Koi customer nahi</td></tr>';
   }catch(e){if(e.message!=='Unauthorized')document.getElementById('cust-body').innerHTML='<tr><td colspan=8 class=loading>❌ Load failed</td></tr>';}
 }
 
-function openUserModal(phone,name,isBlocked,isSuspended){
+function openUserModal(phone,name,isBlocked,isSuspended,isRestricted){
   const m=document.getElementById('usr-modal');
   document.getElementById('usr-modal-content').innerHTML=`
     <h3 style="margin-bottom:14px;font-size:15px">👤 User: ${name} (${phone})</h3>
+    <div style="margin-bottom:14px;padding:10px;background:${isRestricted?'#ffebee':'#e8f5e9'};border-radius:8px;font-size:12px;font-weight:700;color:${isRestricted?'#c62828':'#2e7d32'}">
+      Booking Status: ${isRestricted?'🔒 RESTRICTED — Booking band hai':'✅ Active — Booking khuli hai'}
+    </div>
+    <div style="margin-bottom:14px;padding:12px;border:1px solid #e0e0e0;border-radius:8px">
+      <div style="font-size:12px;color:#888;margin-bottom:8px;font-weight:700">🔒 Booking Restriction (Admin Only)</div>
+      <div style="display:flex;gap:8px">
+        <button class="action-btn btn-red" style="flex:1;padding:9px" onclick="restrictUser('${phone}')">🔒 Restrict Booking</button>
+        <button class="action-btn btn-green" style="flex:1;padding:9px" onclick="unrestrictUser('${phone}')">🔓 Remove Restriction</button>
+      </div>
+      <div id="usr-restrict-status" style="font-size:11px;margin-top:6px"></div>
+    </div>
     <div style="margin-bottom:14px">
       <div style="font-size:12px;color:#888;margin-bottom:6px;font-weight:600">📨 Send Message</div>
       <textarea id="usr-msg" placeholder="User ko message likhein..." class="input-sm" style="resize:none;height:60px;margin-bottom:6px"></textarea>
@@ -1263,6 +1274,20 @@ function openUserModal(phone,name,isBlocked,isSuspended){
     </div>
   `;
   m.classList.add('open');
+}
+async function restrictUser(phone){
+  const d=await aJson('/api/admin/users/restrict',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({phone})});
+  const el=document.getElementById('usr-restrict-status');
+  el.textContent=d.success?'✅ Booking restrict ho gayi':'❌ '+d.error;
+  el.style.color=d.success?'#c62828':'#c62828';
+  if(d.success) setTimeout(()=>{closeUsrModal();loadCustomers();},800);
+}
+async function unrestrictUser(phone){
+  const d=await aJson('/api/admin/users/unrestrict',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({phone})});
+  const el=document.getElementById('usr-restrict-status');
+  el.textContent=d.success?'✅ Restriction hata di gayi':'❌ '+d.error;
+  el.style.color=d.success?'#2e7d32':'#c62828';
+  if(d.success) setTimeout(()=>{closeUsrModal();loadCustomers();},800);
 }
 async function sendUserMessage(phone){
   const msg=document.getElementById('usr-msg').value.trim();
