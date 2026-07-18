@@ -90,8 +90,12 @@ async function broadcastToRadius(rideId, pickupLat, pickupLng, rideType, radiusM
       console.log(`[BROADCAST] ride=${rideId} — driver ${dr.phone} included (no GPS yet)`);
       return true;
     }
-    // Driver has GPS → strict distance check using last known location
-    // (stale GPS is better than no check; removes drivers known to be in another city)
+    // GPS is stale (>15 min old) → include anyway; last known location is unreliable
+    if (dr.loc_ts && (now - new Date(dr.loc_ts).getTime()) > STALE_GPS_MS) {
+      console.log(`[BROADCAST] ride=${rideId} — driver ${dr.phone} included (stale GPS ${Math.round((now - new Date(dr.loc_ts).getTime()) / 60000)}m old)`);
+      return true;
+    }
+    // Driver has fresh GPS → strict distance check using last known location
     const distKm = haversineKm(parseFloat(pickupLat), parseFloat(pickupLng), parseFloat(dr.lat), parseFloat(dr.lng));
     const withinRange = distKm * 1000 <= radiusM;
     if (!withinRange) console.log(`[BROADCAST] ride=${rideId} — driver ${dr.phone} excluded (${distKm.toFixed(1)}km > ${(radiusM/1000).toFixed(1)}km)`);
