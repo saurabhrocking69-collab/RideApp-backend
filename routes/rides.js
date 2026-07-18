@@ -900,6 +900,7 @@ router.post('/cash-confirm', async (req, res) => {
     await db.query(`UPDATE rides SET payment_status = 'completed', payment_method = $1, commission_amount = $2 WHERE id = $3`, [method, commission, ride_id]);
     await db.query(`UPDATE driver_commissions SET status = 'cash_owed', commission = $1, payment_method = $2 WHERE ride_id = $3`, [commission, method, ride_id]);
 
+    let totalPending = 0;
     if (commission > 0) {
       // Ensure wallet row exists before updating pending_commission
       const driverUser = await db.query('SELECT id FROM users WHERE phone=$1', [phone]);
@@ -914,7 +915,7 @@ router.post('/cash-confirm', async (req, res) => {
          WHERE driver_id = (SELECT id FROM users WHERE phone = $2) RETURNING pending_commission`,
         [commission, phone]
       );
-      const totalPending = parseFloat(walletRes.rows[0]?.pending_commission || 0);
+      totalPending = parseFloat(walletRes.rows[0]?.pending_commission || 0);
       sendFCM(phone, '💰 Commission Due', `₹${commission.toFixed(0)} commission due. Total pending: ₹${totalPending.toFixed(0)}. Pay in app.`, { type: 'commission_due', pending_commission: String(totalPending) }, { role: 'driver' }).catch(() => {});
     }
     // Cashback for customer (cash/upi rides still earn ride-count cashbacks, not wallet bonus)

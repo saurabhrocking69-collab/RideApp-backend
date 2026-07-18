@@ -942,6 +942,7 @@ setTimeout(async () => {
   await db.query(`ALTER TABLE rides ADD COLUMN IF NOT EXISTS trip_started_at TIMESTAMP`).catch(() => {});
   await db.query(`ALTER TABLE rides ADD COLUMN IF NOT EXISTS distance_km     NUMERIC`).catch(() => {});
   await db.query(`ALTER TABLE rides ADD COLUMN IF NOT EXISTS platform_fee    NUMERIC DEFAULT 0`).catch(() => {});
+  await db.query(`ALTER TABLE rides ADD COLUMN IF NOT EXISTS cancelled_by    VARCHAR(20)`).catch(() => {});
 
   // ── Bonus System Tables ───────────────────────────
   await db.query(`
