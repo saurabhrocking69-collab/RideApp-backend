@@ -1336,6 +1336,25 @@ setInterval(async () => {
   } catch (_e) {}
 }, 2 * 60 * 1000); // runs every 2 minutes
 
+// ── Cron: auto-offline inactive drivers (no GPS update in 24h, every 30 min) ──
+setInterval(async () => {
+  try {
+    const r = await db.query(
+      `UPDATE drivers SET is_online = false
+       WHERE is_online = true
+         AND id IN (
+           SELECT d.id FROM drivers d
+           JOIN users u ON d.id = u.id
+           LEFT JOIN driver_locations dl ON dl.phone = u.phone
+           WHERE dl.updated_at IS NULL
+              OR dl.updated_at < NOW() - INTERVAL '24 hours'
+         )
+       RETURNING id`
+    );
+    if (r.rowCount > 0) console.log(`[CLEANUP] Auto-offlined ${r.rowCount} inactive driver(s) (no GPS in 24h)`);
+  } catch (_e) {}
+}, 30 * 60 * 1000); // runs every 30 minutes
+
 // ── Hourly booking cleanup — auto-cancel pending bookings older than 30 min ──
 setInterval(async () => {
   try {
