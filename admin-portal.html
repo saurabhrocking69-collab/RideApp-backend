@@ -1354,12 +1354,25 @@ async function loadDrivers(){
       <td class="amount-green">${rupee(dr.total_earned)}</td>
       <td>${dr.rating?parseFloat(dr.rating).toFixed(1)+'⭐':'-'}</td>
       <td>
-        <button class="action-btn btn-blue" onclick="openDriverMgmtModal('${dr.phone}',${JSON.stringify(dr.name||'')},${!!dr.is_suspended},${!!dr.is_blocked})">Manage</button>
+        <button class="action-btn btn-blue"
+          data-phone="${dr.phone}"
+          data-name="${(dr.name||'').replace(/&/g,'&amp;').replace(/"/g,'&quot;')}"
+          data-suspended="${!!dr.is_suspended}"
+          data-blocked="${!!dr.is_blocked}"
+          onclick="openDriverMgmtModalFromEl(this)">Manage</button>
       </td>
     </tr>`).join('')||'<tr><td colspan=8 class=loading>Koi driver nahi</td></tr>';
   }catch(e){if(e.message!=='Unauthorized')document.getElementById('drv-body').innerHTML='<tr><td colspan=8 class=loading>❌ Load failed</td></tr>';}
 }
 
+function openDriverMgmtModalFromEl(el){
+  openDriverMgmtModal(
+    el.dataset.phone,
+    el.dataset.name,
+    el.dataset.suspended==='true',
+    el.dataset.blocked==='true'
+  );
+}
 function openDriverMgmtModal(phone,name,isSuspended,isBlocked){
   const m=document.getElementById('drv-modal');
   document.getElementById('drv-modal-content').innerHTML=`
@@ -1409,22 +1422,26 @@ async function suspendDriver(phone){
   const d=await aJson('/api/admin/users/suspend',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
   document.getElementById('dmgmt-suspend-status').textContent=d.success?'✅ '+d.message:'❌ '+d.error;
   document.getElementById('dmgmt-suspend-status').style.color=d.success?'#2e7d32':'#c62828';
+  if(d.success) setTimeout(()=>{closeDrvModal();loadDrivers();},800);
 }
 async function unsuspendDriver(phone){
   const d=await aJson('/api/admin/users/unsuspend',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({phone})});
-  document.getElementById('dmgmt-suspend-status').textContent=d.success?'✅ Unsuspend!':'❌ '+d.error;
+  document.getElementById('dmgmt-suspend-status').textContent=d.success?'✅ Unsuspend ho gaya!':'❌ '+d.error;
   document.getElementById('dmgmt-suspend-status').style.color=d.success?'#2e7d32':'#c62828';
+  if(d.success) setTimeout(()=>{closeDrvModal();loadDrivers();},800);
 }
 async function blockDriver(phone){
   const reason=document.getElementById('dmgmt-block-reason').value||'Admin action';
   const d=await aJson('/api/admin/users/block',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({phone,reason})});
-  document.getElementById('dmgmt-block-status').textContent=d.success?'✅ Block!':'❌ '+d.error;
+  document.getElementById('dmgmt-block-status').textContent=d.success?'✅ Block ho gaya!':'❌ '+d.error;
   document.getElementById('dmgmt-block-status').style.color=d.success?'#2e7d32':'#c62828';
+  if(d.success) setTimeout(()=>{closeDrvModal();loadDrivers();},800);
 }
 async function unblockDriver(phone){
   const d=await aJson('/api/admin/users/unblock',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({phone})});
-  document.getElementById('dmgmt-block-status').textContent=d.success?'✅ Unblock!':'❌ '+d.error;
+  document.getElementById('dmgmt-block-status').textContent=d.success?'✅ Unblock ho gaya!':'❌ '+d.error;
   document.getElementById('dmgmt-block-status').style.color=d.success?'#2e7d32':'#c62828';
+  if(d.success) setTimeout(()=>{closeDrvModal();loadDrivers();},800);
 }
 
 // ── Driver Verification ─────────────────────────────────
@@ -3287,9 +3304,24 @@ function filterCust(q){
 }
 function filterDrvs(q){
   q=q.toLowerCase().trim();
-  document.querySelectorAll('#drv-body tr').forEach(function(tr){
-    tr.style.display=(!q||tr.textContent.toLowerCase().includes(q))?'':'none';
+  var body=document.getElementById('drv-body');
+  var rows=body.querySelectorAll('tr:not(#drv-empty-row)');
+  var visible=0;
+  rows.forEach(function(tr){
+    var show=!q||tr.textContent.toLowerCase().includes(q);
+    tr.style.display=show?'':'none';
+    if(show) visible++;
   });
+  var emptyRow=document.getElementById('drv-empty-row');
+  if(rows.length>0){
+    if(!emptyRow){
+      emptyRow=document.createElement('tr');
+      emptyRow.id='drv-empty-row';
+      emptyRow.innerHTML='<td colspan=8 class=loading>Koi result nahi mila</td>';
+      body.appendChild(emptyRow);
+    }
+    emptyRow.style.display=(q&&!visible)?'':'none';
+  }
 }
 
 // ── CSV Export ───────────────────────────────────────────
