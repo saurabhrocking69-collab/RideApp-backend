@@ -416,6 +416,7 @@ async function activateQueuedRide(driverPhone) {
 
 // ── Escalation: first failure → surge offer, second → no_driver_final ────────
 async function _escalate(rideId, rideType, afterSurge, pickupLat, pickupLng, skipPreAssign = false) {
+  console.log(`[ESCALATE] ride=${rideId} type=${rideType} afterSurge=${afterSurge}`);
   if (afterSurge) {
     // Guard: if the stale-ride cron already cancelled this ride (rare but possible
     // when BullMQ jobs are delayed past the 15-min cleanup window), skip the
@@ -477,16 +478,17 @@ async function _escalate(rideId, rideType, afterSurge, pickupLat, pickupLng, ski
     }
 
     const surgeInfo = await _computeSurgeOffer(pickupLat, pickupLng, rideId);
+    console.log(`[ESCALATE] ride=${rideId} — emitting surge_offer to room ride_${rideId} amt=${surgeInfo.amt}`);
     emitToRoom('ride_' + rideId, 'rideUpdate', {
       rideId, status: 'surge_offer',
       suggested_surge_amt: surgeInfo.amt, surge_label: surgeInfo.label,
       message: `No driver found. Add ₹${surgeInfo.amt} to attract a driver?`,
       timeout_sec: SURGE_GRACE_SEC,
     });
-    rideQueue.add('ride-assignment',
-      { type: 'surge-grace-timeout', rideId, pickupLat, pickupLng, rideType },
-      { delay: SURGE_GRACE_SEC * 1000 }
-    ).catch(() => {});
+    setTimeout(() => {
+      _bmqSurgeGraceTimeout({ rideId, pickupLat, pickupLng, rideType })
+        .catch(e => console.error(`[SURGE_TIMEOUT] handler error ride=${rideId}:`, e.message));
+    }, SURGE_GRACE_SEC * 1000);
   }
 }
 
@@ -558,12 +560,11 @@ async function assignRideToNextDriver(rideId, pickupLat, pickupLng, rideType, _i
       }
       if (result.sent > 0) {
         offeredPhones.push(...result.phones);
-        rideQueue.add('ride-assignment', {
-          type: 'broadcast-advance', rideId, pickupLat, pickupLng,
-          rideType: searchType, radiusM: RADIUS_LEVELS_M[i], afterSurge: !!afterSurge, isScheduled: !!isScheduled,
-        }, { delay: windowSec * 1000 + 1000 }).catch(e =>
-          console.error(`[BROADCAST] ride=${rideId} BullMQ.add failed:`, e.message)
-        );
+        // setTimeout is reliable on single-instance Railway; BullMQ was dropping jobs silently.
+        setTimeout(() => {
+          _bmqBroadcastAdvance({ rideId, pickupLat, pickupLng, rideType: searchType, radiusM: RADIUS_LEVELS_M[i], afterSurge: !!afterSurge, isScheduled: !!isScheduled })
+            .catch(e => console.error(`[ADVANCE] handler error ride=${rideId}:`, e.message));
+        }, (windowSec + 1) * 1000);
         return true;
       }
       console.log(`[BROADCAST] ride=${rideId} type=${searchType} radius=${RADIUS_LEVELS_M[i]}m — 0 drivers`);
