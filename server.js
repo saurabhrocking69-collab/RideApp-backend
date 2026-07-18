@@ -668,7 +668,7 @@ io.on('connection', (socket) => {
 
   // Driver-to-driver zone alerts — broadcast to all drivers within 3 km
   const _zoneAlertThrottle = new Map(); // phone → last sent timestamp (per-connection)
-  socket.on('driverZoneAlert', ({ phone, lat, lng, alertType, message }) => {
+  socket.on('driverZoneAlert', async ({ phone, lat, lng, alertType, message }) => {
     if (!phone || lat == null || lng == null || !alertType) return;
     // Rate-limit: max 1 alert per 30 seconds per driver
     const now = Date.now();
@@ -679,11 +679,16 @@ io.on('connection', (socket) => {
     _zoneAlertThrottle.set(phone, now);
     const RADIUS_KM = 3;
     let count = 0;
-    for (const [driverPhone, loc] of Object.entries(driverLocations)) {
-      if (driverPhone === phone) continue;
-      const dist = _haversineKm(parseFloat(lat), parseFloat(lng), loc.lat, loc.lng);
+    // Query DB so zone alerts work correctly across all cluster workers
+    const nearby = await db.query(
+      `SELECT phone, lat, lng FROM driver_locations
+       WHERE phone != $1 AND updated_at > NOW() - INTERVAL '3 minutes'`,
+      [phone]
+    ).catch(() => ({ rows: [] }));
+    for (const loc of nearby.rows) {
+      const dist = _haversineKm(parseFloat(lat), parseFloat(lng), parseFloat(loc.lat), parseFloat(loc.lng));
       if (dist <= RADIUS_KM) {
-        io.to('driver_' + driverPhone).emit('zoneAlertReceived', {
+        io.to('driver_' + loc.phone).emit('zoneAlertReceived', {
           from: '**' + String(phone).slice(-4),
           alertType,
           message: (message || '').slice(0, 100),
