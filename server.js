@@ -364,6 +364,51 @@ app.post('/debug/trigger-match', debugAuth, async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// ── Customer status check + unrestrict (debug) ───────────────────────────
+app.get('/debug/customer-status', debugAuth, async (req, res) => {
+  const { phone } = req.query;
+  if (!phone) return res.status(400).json({ error: 'phone required' });
+  try {
+    const u = await db.query(
+      `SELECT id, name, phone, booking_restricted, booking_restricted_reason, trust_score
+       FROM users WHERE phone=$1`, [phone]
+    );
+    if (!u.rows[0]) return res.status(404).json({ error: 'User not found' });
+    const activeRides = await db.query(
+      `SELECT id, status, ride_type, created_at FROM rides WHERE passenger_id=$1 AND status IN ('requested','matched','arrived','started') ORDER BY created_at DESC`,
+      [u.rows[0].id]
+    );
+    res.json({ user: u.rows[0], active_rides: activeRides.rows });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/debug/unrestrict-customer', debugAuth, async (req, res) => {
+  const { phone } = req.body;
+  if (!phone) return res.status(400).json({ error: 'phone required' });
+  try {
+    await db.query(
+      `UPDATE users SET booking_restricted=false, booking_restricted_reason=NULL, trust_score=LEAST(100, COALESCE(trust_score,0)+20) WHERE phone=$1`,
+      [phone]
+    );
+    res.json({ success: true, message: `${phone} unrestricted` });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ── Cancel stuck rides for a passenger (cleanup old requested rides) ───────
+app.post('/debug/cancel-stuck-rides', debugAuth, async (req, res) => {
+  const { phone } = req.body;
+  if (!phone) return res.status(400).json({ error: 'phone required' });
+  try {
+    const u = await db.query(`SELECT id FROM users WHERE phone=$1`, [phone]);
+    if (!u.rows[0]) return res.status(404).json({ error: 'User not found' });
+    const result = await db.query(
+      `UPDATE rides SET status='cancelled', cancelled_by='admin' WHERE passenger_id=$1 AND status IN ('requested','matched','arrived') RETURNING id, status, ride_type`,
+      [u.rows[0].id]
+    );
+    res.json({ cancelled: result.rows });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 // ── Live ride tracking page — shareable link for family/friends ───────────
 app.get('/track/:rideId', (req, res) => {
   const { rideId } = req.params;

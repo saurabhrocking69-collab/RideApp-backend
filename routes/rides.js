@@ -103,9 +103,11 @@ router.post('/book', async (req, res) => {
   if (!['auto', 'bike', 'car', 'eriksha', 'luxury', 'green_bike', 'electric_auto'].includes(ride_type)) return res.status(400).json({ error: 'Invalid ride type' });
   try {
     const passenger = await db.query('SELECT * FROM users WHERE phone = $1', [passenger_phone]);
-    if (passenger.rows.length === 0) return res.status(404).json({ error: 'Passenger not found' });
-    if (passenger.rows[0].booking_restricted)
+    if (passenger.rows.length === 0) { console.log(`[rides] ❌ book blocked: phone=${passenger_phone} reason=passenger_not_found`); return res.status(404).json({ error: 'Passenger not found' }); }
+    if (passenger.rows[0].booking_restricted) {
+      console.log(`[rides] ❌ book blocked: phone=${passenger_phone} reason=booking_restricted`);
       return res.status(403).json({ error: '🚫 Your account is temporarily on hold due to a pending payment from a previous ride. Please contact support: help@sppero.in', restricted: true });
+    }
 
     const distance = parseFloat(req.body.distance) || 5;
     const durationMin = parseFloat(req.body.duration_min) || (distance / 20) * 60;
