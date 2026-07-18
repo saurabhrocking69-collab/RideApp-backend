@@ -90,7 +90,7 @@ async function transitionRide(rideId, newStatus, opts = {}) {
   }
 
   // 3 — Redis cache
-  if (['cancelled', 'no_driver', 'payment_complete'].includes(newStatus)) {
+  if (['completed', 'cancelled', 'no_driver', 'payment_complete'].includes(newStatus)) {
     clearRide(rideId).catch(() => {});
   } else {
     setRideStatus(rideId, newStatus).catch(() => {});

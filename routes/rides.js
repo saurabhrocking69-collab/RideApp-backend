@@ -9,7 +9,7 @@ const { maskPhone } = require('../services/phone');
 const { haversineKm } = require('../services/matching');
 const { directFavouriteRideIds } = require('./favourites');
 const { transitionRide } = require('../services/rideStateMachine');
-const { getRideStatus, getDriverLoc, setRideStatus, clearRide: clearRideCache } = require('../services/rideCache');
+const { getRideStatus, getDriverLoc, setRideStatus, setRideData, getRideData, clearRide: clearRideCache } = require('../services/rideCache');
 const { creditPeakBonusIfApplicable } = require('./bonus');
 const { maybeGrantReferralReward } = require('./referral');
 const { getSurgeMultiplier } = require('../services/locationIntelligence');
@@ -177,8 +177,19 @@ router.get('/status/:rideId', async (req, res) => {
   if (!req.params.rideId || req.params.rideId === 'undefined' || req.params.rideId === 'null')
     return res.status(400).json({ error: 'Invalid ride ID' });
   try {
-    const cachedStatus = await getRideStatus(req.params.rideId).catch(() => null);
+    const rideId = req.params.rideId;
+    const [cachedData, cachedStatus] = await Promise.all([
+      getRideData(rideId).catch(() => null),
+      getRideStatus(rideId).catch(() => null),
+    ]);
 
+    // Redis hit — skip DB entirely
+    if (cachedData) {
+      if (cachedStatus) cachedData.status = cachedStatus;
+      return res.json({ ride: cachedData });
+    }
+
+    // Cache miss — hit DB
     const result = await db.query(
       `SELECT r.*, u.name as driver_name, u.phone as driver_phone,
               d.vehicle_no, d.vehicle_brand, d.vehicle_model, d.upi_id as driver_upi_id,
@@ -188,17 +199,20 @@ router.get('/status/:rideId', async (req, res) => {
        LEFT JOIN users u ON r.driver_id = u.id
        LEFT JOIN drivers d ON r.driver_id = d.id
        WHERE r.id = $1`,
-      [req.params.rideId]
+      [rideId]
     );
     if (result.rows.length === 0) return res.status(404).json({ error: 'Ride not found' });
     const ride = { ...result.rows[0] };
-    // Prefer Redis status (fresher), fall back to DB
     if (cachedStatus) ride.status = cachedStatus;
     if (ride.driver_phone) {
       ride.driver_phone_masked = maskPhone(ride.driver_phone);
       delete ride.driver_phone;
     }
     ride.net_fare = Math.max(0, parseFloat(ride.fare || 0) - parseFloat(ride.discount || 0));
+    // Cache for future polls (only while ride is active with driver assigned)
+    if (['matched', 'arrived', 'started'].includes(ride.status)) {
+      setRideData(rideId, ride).catch(() => {});
+    }
     res.json({ ride });
   } catch (err) { console.error('[rides]', err.message); res.status(500).json({ error: 'Something went wrong — please try again' }); }
 });

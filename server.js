@@ -1394,6 +1394,10 @@ server.listen(process.env.PORT || 3000, '0.0.0.0', () => {
   console.log('🚀 Server running on port ' + (process.env.PORT || 3000));
   startLocationJobs();
   healthCheck.start();
+  // Run DB migrations only in PM2 worker 0 (or single-process mode) to avoid race
+  if (!process.env.NODE_APP_INSTANCE || process.env.NODE_APP_INSTANCE === '0') {
+    require('./config/runMigrations').runMigrations().catch(() => {});
+  }
 });
 
 // ── Graceful shutdown ────────────────────────────

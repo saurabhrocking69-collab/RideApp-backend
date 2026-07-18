@@ -24,11 +24,21 @@ async function getDriverLoc(rideId) {
   return raw ? JSON.parse(raw) : null;
 }
 
+async function setRideData(rideId, data) {
+  await redis.set(`ride:${rideId}:data`, JSON.stringify(data), { EX: RIDE_TTL });
+}
+
+async function getRideData(rideId) {
+  const raw = await redis.get(`ride:${rideId}:data`);
+  return raw ? JSON.parse(raw) : null;
+}
+
 async function clearRide(rideId) {
   await Promise.all([
     redis.del(`ride:${rideId}:status`),
     redis.del(`ride:${rideId}:driver_loc`),
+    redis.del(`ride:${rideId}:data`),
   ]);
 }
 
-module.exports = { setRideStatus, getRideStatus, setDriverLoc, getDriverLoc, clearRide };
+module.exports = { setRideStatus, getRideStatus, setRideData, getRideData, setDriverLoc, getDriverLoc, clearRide };
