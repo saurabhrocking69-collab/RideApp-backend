@@ -1294,7 +1294,7 @@ async function restrictUser(phone){
   const d=await aJson('/api/admin/users/restrict',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({phone})});
   const el=document.getElementById('usr-restrict-status');
   el.textContent=d.success?'✅ Booking restrict ho gayi':'❌ '+d.error;
-  el.style.color=d.success?'#c62828':'#c62828';
+  el.style.color=d.success?'#2e7d32':'#c62828';
   if(d.success) setTimeout(()=>{closeUsrModal();loadCustomers();},800);
 }
 async function unrestrictUser(phone){
@@ -3266,9 +3266,24 @@ async function doSupRefund(id, phone) {
 // ── Search filters ───────────────────────────────────────
 function filterCust(q){
   q=q.toLowerCase().trim();
-  document.querySelectorAll('#cust-body tr').forEach(function(tr){
-    tr.style.display=(!q||tr.textContent.toLowerCase().includes(q))?'':'none';
+  var body=document.getElementById('cust-body');
+  var rows=body.querySelectorAll('tr:not(#cust-empty-row)');
+  var visible=0;
+  rows.forEach(function(tr){
+    var show=!q||tr.textContent.toLowerCase().includes(q);
+    tr.style.display=show?'':'none';
+    if(show) visible++;
   });
+  var emptyRow=document.getElementById('cust-empty-row');
+  if(rows.length>0){
+    if(!emptyRow){
+      emptyRow=document.createElement('tr');
+      emptyRow.id='cust-empty-row';
+      emptyRow.innerHTML='<td colspan=8 class=loading>Koi result nahi mila</td>';
+      body.appendChild(emptyRow);
+    }
+    emptyRow.style.display=(q&&!visible)?'':'none';
+  }
 }
 function filterDrvs(q){
   q=q.toLowerCase().trim();
