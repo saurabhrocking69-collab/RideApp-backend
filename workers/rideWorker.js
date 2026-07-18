@@ -85,11 +85,17 @@ async function broadcastToRadius(rideId, pickupLat, pickupLng, rideType, radiusM
     if (alreadySet.has(dr.phone)) return false;
     // No pickup coords → include all online drivers (can't determine distance)
     if (!pickupLat || !pickupLng) return true;
-    // Driver has no GPS record → exclude (can't place them on the map)
-    if (!dr.lat || !dr.lng) return false;
-    // Use last-known location for distance check (stale is fine, but must be within radius)
+    // Driver has no GPS record yet (just came online) → include (benefit of doubt)
+    if (!dr.lat || !dr.lng) {
+      console.log(`[BROADCAST] ride=${rideId} — driver ${dr.phone} included (no GPS yet)`);
+      return true;
+    }
+    // Driver has GPS → strict distance check using last known location
+    // (stale GPS is better than no check; removes drivers known to be in another city)
     const distKm = haversineKm(parseFloat(pickupLat), parseFloat(pickupLng), parseFloat(dr.lat), parseFloat(dr.lng));
-    return distKm * 1000 <= radiusM;
+    const withinRange = distKm * 1000 <= radiusM;
+    if (!withinRange) console.log(`[BROADCAST] ride=${rideId} — driver ${dr.phone} excluded (${distKm.toFixed(1)}km > ${(radiusM/1000).toFixed(1)}km)`);
+    return withinRange;
   });
 
   console.log(`[BROADCAST] ride=${rideId} radius=${radiusM}m — total_online=${drRes.rows.length} new_eligible=${eligible.length} phones=${JSON.stringify(eligible.map(d => d.phone))}`);
