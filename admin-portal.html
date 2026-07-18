@@ -1224,12 +1224,27 @@ async function loadCustomers(){
       <td>${u.trust_score!=null?u.trust_score+'/100':'-'}${u.is_flagged?'<span style="color:#c62828"> ⚑</span>':''}</td>
       <td style="font-size:10px">${fmt(u.created_at)}</td>
       <td>
-        <button class="action-btn btn-blue" onclick="openUserModal('${u.phone}',${JSON.stringify(u.name||'')},${!!u.is_blocked},${!!u.is_suspended},${!!u.booking_restricted})">Manage</button>
+        <button class="action-btn btn-blue"
+          data-phone="${u.phone}"
+          data-name="${(u.name||'').replace(/&/g,'&amp;').replace(/"/g,'&quot;')}"
+          data-blocked="${!!u.is_blocked}"
+          data-suspended="${!!u.is_suspended}"
+          data-restricted="${!!u.booking_restricted}"
+          onclick="openUserModalFromEl(this)">Manage</button>
       </td>
     </tr>`).join('')||'<tr><td colspan=8 class=loading>Koi customer nahi</td></tr>';
   }catch(e){if(e.message!=='Unauthorized')document.getElementById('cust-body').innerHTML='<tr><td colspan=8 class=loading>❌ Load failed</td></tr>';}
 }
 
+function openUserModalFromEl(el){
+  openUserModal(
+    el.dataset.phone,
+    el.dataset.name,
+    el.dataset.blocked==='true',
+    el.dataset.suspended==='true',
+    el.dataset.restricted==='true'
+  );
+}
 function openUserModal(phone,name,isBlocked,isSuspended,isRestricted){
   const m=document.getElementById('usr-modal');
   document.getElementById('usr-modal-content').innerHTML=`
