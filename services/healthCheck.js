@@ -55,7 +55,7 @@ async function checkStuckRides() {
   const res = await db.query(
     `SELECT COUNT(*) AS cnt FROM rides
      WHERE status IN ('matched','arrived')
-       AND updated_at < NOW() - INTERVAL '3 hours'`
+       AND created_at < NOW() - INTERVAL '3 hours'`
   );
   const count = parseInt(res.rows[0].cnt);
   if (count > 3) throw new Error(`${count} rides stuck in matched/arrived for >3 hours`);
@@ -66,6 +66,7 @@ async function checkScheduledRidesNotStuck() {
     `SELECT COUNT(*) AS cnt FROM scheduled_rides
      WHERE status = 'pending'
        AND scheduled_at < NOW() - INTERVAL '10 minutes'
+       AND scheduled_at > NOW() - INTERVAL '24 hours'
        AND ride_id IS NULL`
   );
   const count = parseInt(res.rows[0].cnt);

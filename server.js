@@ -99,6 +99,9 @@ app.post(
 
 app.use(express.json({ limit: '12mb' }));
 
+// Railway sits behind a reverse proxy — trust it so rate-limit IP detection works
+app.set('trust proxy', 1);
+
 // ── Rate limiting ────────────────────────────────
 app.use('/api/auth/send-otp', rateLimit({
   windowMs: 60_000, max: 3,

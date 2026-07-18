@@ -174,6 +174,8 @@ router.post('/:id/driver-location', async (req, res) => {
 // GET /api/rides/status/:rideId
 // Reads status from Redis (fast) — falls back to Postgres for full row
 router.get('/status/:rideId', async (req, res) => {
+  if (!req.params.rideId || req.params.rideId === 'undefined' || req.params.rideId === 'null')
+    return res.status(400).json({ error: 'Invalid ride ID' });
   try {
     const cachedStatus = await getRideStatus(req.params.rideId).catch(() => null);
 
@@ -438,6 +440,8 @@ async function getCancelSettings() {
 
 // GET /api/rides/cancel-info/:ride_id — live cancellation fee + wait fare for a ride
 router.get('/cancel-info/:ride_id', async (req, res) => {
+  if (!req.params.ride_id || req.params.ride_id === 'undefined' || req.params.ride_id === 'null')
+    return res.status(400).json({ error: 'Invalid ride ID' });
   try {
     const rideRes = await db.query(
       `SELECT r.status, r.driver_id, r.arrived_at, r.fare,

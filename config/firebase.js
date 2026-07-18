@@ -30,7 +30,9 @@ async function sendFCM(phone, title, body, data = {}, options = {}) {
     const col  = role === 'driver'
       ? 'COALESCE(driver_fcm_token, fcm_token)'
       : 'fcm_token';
-    const user = await db.query(`SELECT ${col} AS fcm_token FROM users WHERE phone = $1`, [phone]);
+    // Normalize: strip +91 or 91 prefix so DB lookup always uses 10-digit phone
+    const normalizedPhone = String(phone).replace(/^\+?91(\d{10})$/, '$1');
+    const user = await db.query(`SELECT ${col} AS fcm_token FROM users WHERE phone = $1`, [normalizedPhone]);
     const token = user.rows[0]?.fcm_token;
     if (!token) { console.log('⚠️ No FCM token for', phone, `(role: ${role})`); return; }
 

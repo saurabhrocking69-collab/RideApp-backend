@@ -533,7 +533,7 @@ router.get('/level/:phone', async (req, res) => {
     const r = await db.query(`
       SELECT u.id, u.name, d.rating, d.verification_status,
         (SELECT COUNT(*) FROM rides WHERE driver_id = u.id AND payment_status = 'completed') AS completed_rides,
-        (SELECT COALESCE(AVG(rating),0) FROM ride_ratings WHERE driver_id = u.id) AS avg_rating,
+        d.rating AS avg_rating,
         (SELECT COUNT(*) FROM rides WHERE driver_id = u.id AND cancelled_by = 'driver'
           AND created_at > NOW() - INTERVAL '30 days') AS cancels_30d,
         (SELECT COUNT(*) FROM rides WHERE driver_id = u.id
