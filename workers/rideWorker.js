@@ -548,6 +548,11 @@ async function assignRideToNextDriver(rideId, pickupLat, pickupLng, rideType, _i
   const windowSec = isScheduled ? SCHEDULED_WINDOW_SEC : WINDOW_SEC;
   console.log(`[BROADCAST] ▶ Starting broadcast ride=${rideId} type=${rideType} afterSurge=${afterSurge} isScheduled=${isScheduled} window=${windowSec}s`);
 
+  // Diagnostic: show ALL online drivers and their approval status
+  db.query(`SELECT u.phone, d.vehicle_type, d.is_online, d.verification_status FROM drivers d JOIN users u ON d.id=u.id WHERE d.is_online=true`)
+    .then(r => console.log(`[BROADCAST] ride=${rideId} — online driver snapshot: ${JSON.stringify(r.rows.map(d => ({p:d.phone,t:d.vehicle_type,s:d.verification_status})))}`))
+    .catch(() => {});
+
   // Helper: walk all radius levels for a given vehicle type, return true if drivers found
   async function _walkRadii(searchType, offeredPhones) {
     for (let i = 0; i < RADIUS_LEVELS_M.length; i++) {
