@@ -83,10 +83,9 @@ async function broadcastToRadius(rideId, pickupLat, pickupLng, rideType, radiusM
 
   const eligible = drRes.rows.filter(dr => {
     if (alreadySet.has(dr.phone)) return false;
-    // No pickup coords or stale GPS → include (benefit of doubt)
-    if (!pickupLat || !pickupLng || !dr.lat || !dr.lng) return true;
-    const locAge = dr.loc_ts ? (now - new Date(dr.loc_ts).getTime()) : Infinity;
-    if (locAge > STALE_GPS_MS) return true;
+    // No GPS coordinates at all → skip (can't determine distance)
+    if (!pickupLat || !pickupLng || !dr.lat || !dr.lng) return false;
+    // Always use last-known location for distance check, even if GPS is stale
     const distKm = haversineKm(parseFloat(pickupLat), parseFloat(pickupLng), parseFloat(dr.lat), parseFloat(dr.lng));
     return distKm * 1000 <= radiusM;
   });
