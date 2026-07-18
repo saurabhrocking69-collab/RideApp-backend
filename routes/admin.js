@@ -1397,4 +1397,101 @@ router.get('/net-earnings', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+// ── GET /api/admin/area-stats ─────────────────────────────────────────────────
+// Per-area breakdown: ride demand, customers, online drivers, ratio
+router.get('/area-stats', async (req, res) => {
+  try {
+    const [rideRows, driverRows, summaryRow] = await Promise.all([
+      // Ride demand per area — last 7 days, grouped into ~1km cells
+      db.query(`
+        SELECT
+          ROUND(pickup_lat::numeric, 2)  AS lat,
+          ROUND(pickup_lng::numeric, 2)  AS lng,
+          (ARRAY_AGG(pickup ORDER BY LENGTH(pickup) ASC))[1] AS area_name,
+          COUNT(*)                        AS total_searches,
+          COUNT(CASE WHEN created_at AT TIME ZONE 'Asia/Kolkata'
+                          >= CURRENT_DATE AT TIME ZONE 'Asia/Kolkata' THEN 1 END) AS today_searches,
+          COUNT(CASE WHEN status = 'completed' THEN 1 END) AS completed,
+          COUNT(DISTINCT passenger_id)   AS unique_customers,
+          ROUND(AVG(COALESCE(fare,0))::numeric, 0) AS avg_fare
+        FROM rides
+        WHERE created_at > NOW() - INTERVAL '7 days'
+          AND pickup_lat IS NOT NULL AND pickup_lng IS NOT NULL
+        GROUP BY lat, lng
+        ORDER BY total_searches DESC
+        LIMIT 25
+      `),
+      // Online drivers right now (location updated in last 15 min)
+      db.query(`
+        SELECT
+          ROUND(dl.lat::numeric, 2) AS lat,
+          ROUND(dl.lng::numeric, 2) AS lng,
+          COUNT(*)                  AS online_drivers
+        FROM driver_locations dl
+        JOIN users   u ON u.phone = dl.phone
+        JOIN drivers d ON d.id    = u.id
+        WHERE d.is_online = true
+          AND dl.updated > NOW() - INTERVAL '15 minutes'
+        GROUP BY ROUND(dl.lat::numeric,2), ROUND(dl.lng::numeric,2)
+      `),
+      // Summary totals
+      db.query(`
+        SELECT
+          (SELECT COUNT(*) FROM drivers WHERE is_online = true)                           AS total_online_drivers,
+          (SELECT COUNT(DISTINCT passenger_id) FROM rides
+           WHERE created_at > NOW() - INTERVAL '24 hours')                                AS customers_today,
+          (SELECT COUNT(DISTINCT CONCAT(ROUND(pickup_lat::numeric,2),',',
+                                        ROUND(pickup_lng::numeric,2)))
+           FROM rides
+           WHERE created_at > NOW() - INTERVAL '7 days'
+             AND pickup_lat IS NOT NULL)                                                   AS active_areas,
+          (SELECT COUNT(DISTINCT passenger_id) FROM rides
+           WHERE created_at > NOW() - INTERVAL '7 days')                                  AS customers_7d
+      `)
+    ]);
+
+    // Merge ride areas + driver areas
+    const map = {};
+    for (const r of rideRows.rows) {
+      const k = `${r.lat},${r.lng}`;
+      map[k] = {
+        lat: parseFloat(r.lat), lng: parseFloat(r.lng),
+        area_name:        r.area_name || `${r.lat},${r.lng}`,
+        total_searches:   parseInt(r.total_searches),
+        today_searches:   parseInt(r.today_searches),
+        completed:        parseInt(r.completed),
+        unique_customers: parseInt(r.unique_customers),
+        avg_fare:         parseInt(r.avg_fare),
+        online_drivers:   0,
+      };
+    }
+    for (const r of driverRows.rows) {
+      const k = `${r.lat},${r.lng}`;
+      if (!map[k]) {
+        map[k] = {
+          lat: parseFloat(r.lat), lng: parseFloat(r.lng),
+          area_name: `${r.lat},${r.lng}`,
+          total_searches: 0, today_searches: 0, completed: 0,
+          unique_customers: 0, avg_fare: 0,
+        };
+      }
+      map[k].online_drivers = parseInt(r.online_drivers);
+    }
+
+    const areas = Object.values(map)
+      .sort((a, b) => b.total_searches - a.total_searches);
+
+    const s = summaryRow.rows[0];
+    res.json({
+      areas,
+      summary: {
+        total_online_drivers: parseInt(s.total_online_drivers) || 0,
+        customers_today:      parseInt(s.customers_today)      || 0,
+        active_areas:         parseInt(s.active_areas)         || 0,
+        customers_7d:         parseInt(s.customers_7d)         || 0,
+      }
+    });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
 module.exports = router;

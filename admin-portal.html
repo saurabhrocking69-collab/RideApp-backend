@@ -722,7 +722,31 @@ input,select,textarea{outline:none}
       <button class="refresh-btn" onclick="loadLocationIntel()">⟳ Refresh</button>
     </div>
 
-    <!-- Surge + Stats row -->
+    <!-- Area summary stat tiles -->
+    <div class="stats" id="loc-area-stats" style="margin-bottom:18px"></div>
+
+    <!-- Area Coverage Table -->
+    <div class="card" style="margin-bottom:16px">
+      <div class="card-title">📍 Area-wise Coverage <span style="font-size:11px;color:#888;font-weight:400">(Last 7 days ride data · drivers: live now)</span></div>
+      <div style="overflow-x:auto">
+        <table>
+          <thead>
+            <tr>
+              <th>Area</th>
+              <th>Ride Searches (7d)</th>
+              <th>Aaj</th>
+              <th>Unique Customers</th>
+              <th>Online Drivers</th>
+              <th>Demand:Supply</th>
+              <th>Avg Fare</th>
+            </tr>
+          </thead>
+          <tbody id="loc-area-body"><tr><td colspan=7 class=loading>Loading...</td></tr></tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- Surge + demand stats row -->
     <div class="stats" id="loc-stats" style="margin-bottom:18px"></div>
 
     <!-- Hot Zones -->
@@ -731,12 +755,6 @@ input,select,textarea{outline:none}
       <div id="loc-zones">
         <p style="color:#888;text-align:center;padding:20px">Loading zones...</p>
       </div>
-    </div>
-
-    <!-- Surge Map by area -->
-    <div class="card" style="margin-bottom:16px">
-      <div class="card-title">⚡ Surge Status</div>
-      <div id="loc-surge" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:10px;margin-top:8px"></div>
     </div>
 
     <!-- Hourly demand chart -->
@@ -1010,12 +1028,60 @@ function showSection(id,btn){
 }
 
 // ── Location Intelligence ────────────────────────────────────
+function _areaLocality(name){
+  if(!name) return '—';
+  var parts=name.split(',');
+  for(var i=0;i<Math.min(parts.length,2);i++){
+    var p=parts[i].trim();
+    if(p.length>=4&&p.length<=35) return p;
+  }
+  return name.slice(0,30);
+}
 async function loadLocationIntel() {
   try {
-    const [zones, pred] = await Promise.all([
+    const [zones, pred, areaData] = await Promise.all([
       aJson('/api/driver/demand-zones'),
       aJson('/api/driver/demand-prediction'),
+      aJson('/api/admin/area-stats'),
     ]);
+
+    // ── Area Coverage ──────────────────────────────────────
+    const sm = areaData.summary || {};
+    document.getElementById('loc-area-stats').innerHTML = `
+      <div class="stat-card blue"><div class="stat-icon">📍</div><div class="stat-value">${sm.active_areas||0}</div><div class="stat-label">Active Areas (7d)</div></div>
+      <div class="stat-card green"><div class="stat-icon">🚗</div><div class="stat-value">${sm.total_online_drivers||0}</div><div class="stat-label">Online Drivers Now</div></div>
+      <div class="stat-card"><div class="stat-icon">👥</div><div class="stat-value">${sm.customers_today||0}</div><div class="stat-label">Customers Today</div></div>
+      <div class="stat-card"><div class="stat-icon">📅</div><div class="stat-value">${sm.customers_7d||0}</div><div class="stat-label">Customers (7d)</div></div>
+    `;
+    const areas = areaData.areas || [];
+    const aBody = document.getElementById('loc-area-body');
+    if(!areas.length){
+      aBody.innerHTML='<tr><td colspan=7 class=loading>Koi ride data nahi</td></tr>';
+    } else {
+      aBody.innerHTML = areas.map(a=>{
+        const locality = _areaLocality(a.area_name);
+        const drivers  = a.online_drivers || 0;
+        const custs    = a.unique_customers || 0;
+        var ratioTxt, ratioColor;
+        if(drivers===0 && custs===0){ ratioTxt='—'; ratioColor='#999'; }
+        else if(drivers===0){ ratioTxt='⚠️ 0 drivers'; ratioColor='#c62828'; }
+        else {
+          const r = (custs/drivers).toFixed(1);
+          if(r<=2){ ratioTxt='🟢 '+r+':1'; ratioColor='#2e7d32'; }
+          else if(r<=5){ ratioTxt='🟡 '+r+':1'; ratioColor='#e65100'; }
+          else { ratioTxt='🔴 '+r+':1'; ratioColor='#c62828'; }
+        }
+        return `<tr>
+          <td><b style="font-size:12px">${locality}</b><br><span style="font-size:9px;color:#999">${a.lat},${a.lng}</span></td>
+          <td><b>${a.total_searches}</b></td>
+          <td>${a.today_searches||0}</td>
+          <td>${custs}</td>
+          <td>${drivers>0?'<b style="color:#1565c0">'+drivers+'</b>':'<span style="color:#999">0</span>'}</td>
+          <td style="font-weight:700;color:${ratioColor}">${ratioTxt}</td>
+          <td class="amount-green">${a.avg_fare?'₹'+a.avg_fare:'—'}</td>
+        </tr>`;
+      }).join('');
+    }
 
     // Stats row
     const high = (zones.zones||[]).filter(z=>z.heat==='high').length;
