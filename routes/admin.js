@@ -904,6 +904,20 @@ router.get('/customer-profile/:id', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+// ── POST /api/admin/users/unrestrict — unrestrict by phone (no ID needed) ─
+router.post('/users/unrestrict', async (req, res) => {
+  const { phone } = req.body;
+  if (!phone) return res.status(400).json({ error: 'phone required' });
+  try {
+    const r = await db.query(
+      "UPDATE users SET booking_restricted=false, booking_restricted_reason=NULL, trust_score=LEAST(100,COALESCE(trust_score,0)+20) WHERE phone=$1 RETURNING id, phone",
+      [phone]
+    );
+    if (!r.rows[0]) return res.status(404).json({ error: 'User not found' });
+    res.json({ success: true, user: r.rows[0] });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
 // ── PUT /api/admin/customer-profile/:id/unrestrict ────────────────────────
 router.put('/customer-profile/:id/unrestrict', async (req, res) => {
   try {
