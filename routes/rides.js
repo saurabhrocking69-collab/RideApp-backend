@@ -138,7 +138,10 @@ router.post('/book', async (req, res) => {
     const netFare = Math.max(0, fare - disc);
     res.json({ message: 'Searching for a driver...', fare: '₹' + fare, net_fare: netFare, discount: disc, distance: distance + ' km', ride_id: ride.rows[0].id, status: 'requested', surge_multiplier: 1.0, platform_fee: platFee, dist_fare: fareCalc.dist_fare, time_fare: fareCalc.time_fare, base_fare: fareCalc.base_fare, is_night: fareCalc.is_night });
 
-    assignRideToNextDriver(ride.rows[0].id, pickup_lat || null, pickup_lng || null, ride_type).catch(() => {});
+    // 2s delay: customer needs time to join the socket room before any rideUpdate events fire.
+    // Without this, instant-escalation (0 drivers) emits surge_offer before the room is joined.
+    const _rideId = ride.rows[0].id, _pLat = pickup_lat || null, _pLng = pickup_lng || null;
+    setTimeout(() => assignRideToNextDriver(_rideId, _pLat, _pLng, ride_type).catch(() => {}), 2000);
   } catch (err) { console.error('[rides]', err.message); res.status(500).json({ error: 'Something went wrong — please try again' }); }
 });
 
