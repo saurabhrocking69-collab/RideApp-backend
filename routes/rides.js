@@ -97,6 +97,7 @@ async function processCashback(userId, phone, rideId, fare, paymentMethod) {
 // POST /api/rides/book
 router.post('/book', async (req, res) => {
   const { passenger_phone, pickup, drop_location, ride_type, pickup_lat, pickup_lng, drop_lat, drop_lng, discount, promo_code } = req.body;
+  console.log(`[rides] 📥 book request: phone=${passenger_phone} type=${ride_type}`);
   if (!passenger_phone || String(passenger_phone).length !== 10) return res.status(400).json({ error: 'Valid phone do' });
   if (!pickup || !drop_location) return res.status(400).json({ error: 'Pickup and drop location required' });
   if (!['auto', 'bike', 'car', 'eriksha', 'luxury', 'green_bike', 'electric_auto'].includes(ride_type)) return res.status(400).json({ error: 'Invalid ride type' });

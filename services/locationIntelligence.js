@@ -31,7 +31,7 @@ async function getDemandPrediction() {
       SELECT
         EXTRACT(HOUR FROM created_at AT TIME ZONE 'Asia/Kolkata') AS hour,
         COUNT(*) AS rides,
-        ROUND(AVG(CAST(REGEXP_REPLACE(COALESCE(fare,'0'), '[^0-9.]', '', 'g') AS numeric))) AS avg_fare
+        ROUND(AVG(COALESCE(fare, 0))) AS avg_fare
       FROM rides
       WHERE created_at > NOW() - INTERVAL '30 days'
         AND EXTRACT(DOW FROM created_at AT TIME ZONE 'Asia/Kolkata') =

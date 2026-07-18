@@ -496,7 +496,7 @@ router.get('/demand-zones', async (req, res) => {
         ROUND(pickup_lng::numeric / 0.018) * 0.018 AS zone_lng,
         COUNT(*) AS ride_count,
         MAX(ride_type) AS top_vehicle,
-        ROUND(AVG(CAST(REGEXP_REPLACE(COALESCE(fare,'0'), '[^0-9.]', '', 'g') AS numeric))) AS avg_fare
+        ROUND(AVG(COALESCE(fare, 0))) AS avg_fare
       FROM rides
       WHERE created_at > NOW() - INTERVAL '90 minutes'
         AND pickup_lat BETWEEN $1 - 0.35 AND $1 + 0.35
@@ -630,7 +630,7 @@ router.get('/earnings-analytics/:phone', async (req, res) => {
       SELECT
         DATE(created_at AT TIME ZONE 'Asia/Kolkata') AS day,
         COUNT(*) AS rides,
-        COALESCE(SUM(CAST(REGEXP_REPLACE(COALESCE(fare,'0'), '[^0-9.]', '', 'g') AS numeric) * 0.85), 0) AS earned
+        COALESCE(SUM(COALESCE(fare, 0) * 0.85), 0) AS earned
       FROM rides
       WHERE driver_id = $1
         AND payment_status = 'completed'
@@ -644,7 +644,7 @@ router.get('/earnings-analytics/:phone', async (req, res) => {
       SELECT
         EXTRACT(HOUR FROM created_at AT TIME ZONE 'Asia/Kolkata') AS hour,
         COUNT(*) AS rides,
-        COALESCE(AVG(CAST(REGEXP_REPLACE(COALESCE(fare,'0'), '[^0-9.]', '', 'g') AS numeric) * 0.85), 0) AS avg_earned
+        COALESCE(AVG(COALESCE(fare, 0) * 0.85), 0) AS avg_earned
       FROM rides
       WHERE driver_id = $1
         AND payment_status = 'completed'
@@ -658,7 +658,7 @@ router.get('/earnings-analytics/:phone', async (req, res) => {
       SELECT
         CASE WHEN created_at >= date_trunc('week', NOW() AT TIME ZONE 'Asia/Kolkata') THEN 'this' ELSE 'last' END AS week,
         COUNT(*) AS rides,
-        COALESCE(SUM(CAST(REGEXP_REPLACE(COALESCE(fare,'0'), '[^0-9.]', '', 'g') AS numeric) * 0.85), 0) AS earned
+        COALESCE(SUM(COALESCE(fare, 0) * 0.85), 0) AS earned
       FROM rides
       WHERE driver_id = $1
         AND payment_status = 'completed'
