@@ -22,6 +22,8 @@ db.query(`
 db.query(`ALTER TABLE scheduled_rides ALTER COLUMN ride_id TYPE TEXT USING ride_id::TEXT`).catch(() => {});
 db.query('ALTER TABLE scheduled_rides ADD COLUMN IF NOT EXISTS bullmq_job_id VARCHAR(100)').catch(() => {});
 db.query('ALTER TABLE rides ADD COLUMN IF NOT EXISTS cancel_reason TEXT').catch(() => {});
+db.query('ALTER TABLE rides ADD COLUMN IF NOT EXISTS is_scheduled BOOLEAN DEFAULT FALSE').catch(() => {});
+db.query('ALTER TABLE rides ADD COLUMN IF NOT EXISTS scheduled_at TIMESTAMPTZ').catch(() => {});
 
 const VALID_TYPES = ['auto', 'bike', 'car', 'eriksha', 'luxury', 'green_bike', 'electric_auto'];
 
