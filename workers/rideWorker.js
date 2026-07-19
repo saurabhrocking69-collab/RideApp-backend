@@ -123,13 +123,17 @@ async function broadcastToRadius(rideId, pickupLat, pickupLng, rideType, radiusM
     [radiusM, allOffered, rideId]
   );
 
-  // Check if this is a scheduled ride so we can label it correctly for the driver
+  // Check if this is a scheduled and/or intercity ride so we can label it correctly for the driver
   const schedRow = await db.query(
-    `SELECT scheduled_at, is_scheduled FROM rides WHERE id=$1`,
+    `SELECT scheduled_at, is_scheduled, is_intercity, is_roundtrip, fare, distance_km FROM rides WHERE id=$1`,
     [rideId]
   ).catch(() => ({ rows: [] }));
   const isScheduledRide = schedRow.rows[0]?.is_scheduled;
   const scheduledAt     = schedRow.rows[0]?.scheduled_at;
+  const isIntercity     = schedRow.rows[0]?.is_intercity;
+  const isRoundtrip     = schedRow.rows[0]?.is_roundtrip;
+  const icFare          = Math.round(parseFloat(schedRow.rows[0]?.fare || 0));
+  const icKm            = Math.round(parseFloat(schedRow.rows[0]?.distance_km || 0));
   const scheduledTimeStr = scheduledAt
     ? new Date(scheduledAt).toLocaleTimeString('hi-IN', { hour: '2-digit', minute: '2-digit', hour12: true, timeZone: 'Asia/Kolkata' })
     : null;
@@ -140,18 +144,24 @@ async function broadcastToRadius(rideId, pickupLat, pickupLng, rideType, radiusM
     emitToRoom('driver_' + dr.phone, 'newRideRequest', {
       rideId, secondsToAccept: windowSec, radiusM,
       isScheduled: !!isScheduledRide, scheduledAt: scheduledAt || null,
+      isIntercity: !!isIntercity, isRoundtrip: !!isRoundtrip,
     });
-    const fcmTitle = isScheduledRide
-      ? `📅 Scheduled Ride — ${scheduledTimeStr}`
-      : `${rideEmoji} Nayi Ride Request!`;
-    const fcmBody = isScheduledRide
-      ? `${rideEmoji} ${(rideType || '').toUpperCase()} — for ${scheduledTimeStr}. Accept now, you have time!`
-      : `${rideType.toUpperCase()} ride — accept within ${windowSec}s!`;
+    const icLabel = isRoundtrip ? 'ROUND TRIP' : 'ONE WAY';
+    const fcmTitle = isIntercity
+      ? (isScheduledRide ? `🛣️ Intercity ${icLabel} — ${scheduledTimeStr}` : `🛣️ INTERCITY ${icLabel} — ₹${icFare}!`)
+      : isScheduledRide
+        ? `📅 Scheduled Ride — ${scheduledTimeStr}`
+        : `${rideEmoji} Nayi Ride Request!`;
+    const fcmBody = isIntercity
+      ? `${icKm}km intercity trip, ₹${icFare} fare — badi kamai! ${isScheduledRide ? `Departure ${scheduledTimeStr}.` : `Accept within ${windowSec}s!`}`
+      : isScheduledRide
+        ? `${rideEmoji} ${(rideType || '').toUpperCase()} — for ${scheduledTimeStr}. Accept now, you have time!`
+        : `${rideType.toUpperCase()} ride — accept within ${windowSec}s!`;
     sendFCM(
       dr.phone,
       fcmTitle,
       fcmBody,
-      { type: 'new_ride', ride_id: String(rideId), is_scheduled: isScheduledRide ? 'true' : 'false', scheduled_at: scheduledAt ? String(scheduledAt) : '' },
+      { type: 'new_ride', ride_id: String(rideId), is_scheduled: isScheduledRide ? 'true' : 'false', scheduled_at: scheduledAt ? String(scheduledAt) : '', is_intercity: isIntercity ? 'true' : 'false' },
       { channelId: 'ride_requests', role: 'driver' }
     ).catch(() => {});
     db.query(

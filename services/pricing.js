@@ -11,6 +11,59 @@ const HOURLY_FARES = {
   electric_auto: { 2:{fare:130,km:20}, 4:{fare:240,km:40}, 6:{fare:350,km:60}, 8:{fare:440,km:80},  24:{fare:1100,km:200}, 48:{fare:2000,km:400}, 72:{fare:2900,km:600}, extra:6  },
 };
 
+// ── Intercity (>80km, cars only) ─────────────────────────────────────────────
+// One-way per-km is higher than round-trip per-km because the driver returns empty.
+// Round trips bill 2x route distance at the lower rate + per-day driver allowance
+// + night-halt for each overnight. Tolls/state tax/parking are NOT included —
+// customer pays those to the driver directly (shown as a note in both apps).
+const INTERCITY_FARES = {
+  car: {
+    label: 'Intercity Economy', vehicle_desc: 'Wagon R, Dzire or similar',
+    base_fare: 200, per_km_oneway: 14, per_km_round: 11,
+    driver_allowance_per_day: 400, night_halt: 300,
+    min_km: 80, seats: 4,
+  },
+  luxury: {
+    label: 'Intercity Premium', vehicle_desc: 'Innova, Ertiga or similar',
+    base_fare: 350, per_km_oneway: 20, per_km_round: 16,
+    driver_allowance_per_day: 600, night_halt: 400,
+    min_km: 80, seats: 6,
+  },
+};
+
+/**
+ * Intercity fare — flat per-km model, no city slabs / night multiplier.
+ * @param {object} cfg      - INTERCITY_FARES entry
+ * @param {number} distKm   - one-way route distance in km
+ * @param {string} tripKind - 'oneway' | 'round'
+ * @param {number} tripDays - calendar days the trip spans (round trips; min 1)
+ */
+function calculateIntercityFare(cfg, distKm, tripKind = 'oneway', tripDays = 1) {
+  const isRound  = tripKind === 'round';
+  const days     = Math.max(1, Math.round(tripDays) || 1);
+  const perKm    = isRound ? cfg.per_km_round : cfg.per_km_oneway;
+  const billedKm = Math.ceil(Math.max(isRound ? distKm * 2 : distKm, cfg.min_km * (isRound ? 2 : 1)));
+  const distFare  = Math.round(billedKm * perKm);
+  const allowance = isRound ? days * cfg.driver_allowance_per_day : cfg.driver_allowance_per_day;
+  const nightHalt = isRound ? (days - 1) * cfg.night_halt : 0;
+  const fare = Math.round(cfg.base_fare + distFare + allowance + nightHalt);
+  return {
+    fare,
+    base_fare:        cfg.base_fare,
+    dist_fare:        distFare,
+    per_km_rate:      perKm,
+    billed_km:        billedKm,
+    driver_allowance: allowance,
+    night_halt:       nightHalt,
+    trip_days:        days,
+    trip_kind:        isRound ? 'round' : 'oneway',
+    distance_km:      Math.round(distKm * 10) / 10,
+    label:            cfg.label,
+    vehicle_desc:     cfg.vehicle_desc,
+    seats:            cfg.seats,
+  };
+}
+
 let SURGE_MULTIPLIER = 1.0;
 
 // Server runs in UTC (Railway default); night_start/night_end are configured as IST values by admins.
@@ -77,4 +130,4 @@ function calculateFare(f, distKm, durationMin = 0, isNight = false) {
   };
 }
 
-module.exports = { HOURLY_FARES, getSurge: () => SURGE_MULTIPLIER, setSurge: (v) => { SURGE_MULTIPLIER = v; }, calculateFare, getISTHour };
+module.exports = { HOURLY_FARES, INTERCITY_FARES, getSurge: () => SURGE_MULTIPLIER, setSurge: (v) => { SURGE_MULTIPLIER = v; }, calculateFare, calculateIntercityFare, getISTHour };

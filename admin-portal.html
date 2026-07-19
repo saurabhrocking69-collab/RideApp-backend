@@ -534,6 +534,12 @@ input,select,textarea{outline:none}
       <div class="card-title">📊 Current Hourly Fares</div>
       <div id="fares-display" style="font-size:12px;color:#666">Loading...</div>
     </div>
+    <!-- Intercity Fares Editor -->
+    <div class="card" style="margin-top:14px">
+      <div class="card-title">🛣️ Intercity Fares (80km+) <button class="refresh-btn" onclick="loadIntercityFares()">⟳ Reload</button></div>
+      <p style="font-size:12px;color:#6B7280;margin-bottom:10px">One-way ₹/km (driver returns empty) · Round ₹/km (2× distance billed) · Allowance per day · Night halt per overnight · Min billed km · Commission %. Changes apply instantly aur restart ke baad bhi rahenge.</p>
+      <div id="intercity-fares-container"><div class="loading">Loading...</div></div>
+    </div>
     <!-- All-Vehicles Fare Editor -->
     <div class="card" style="margin-top:14px;margin-bottom:18px">
       <div class="card-title">🚗 Standard Ride Fares — All Vehicles <button class="refresh-btn" onclick="loadStdFares()">⟳ Reload</button></div>
@@ -1017,7 +1023,7 @@ function showSection(id,btn){
   if(id==='rides') loadRides();
   if(id==='topups') loadTopups();
   if(id==='verify') loadVerifications();
-  if(id==='settings'){loadFares();loadStdFares();loadCancelSettings();loadCommRates();}
+  if(id==='settings'){loadFares();loadStdFares();loadCancelSettings();loadCommRates();loadIntercityFares();}
   if(id==='marketing'){loadCampaigns();loadPromos();loadReferrals();}
   if(id==='payouts'){loadPayouts('pending');}
   if(id==='complaints'){loadComplaints();}
@@ -1840,6 +1846,46 @@ async function loadFares(){
     html+='</tbody></table></div>';
     document.getElementById('fares-display').innerHTML=html;
   }catch(e){document.getElementById('fares-display').textContent='Error loading fares';}
+}
+
+// ── Intercity Fares ─────────────────────────────────
+var _icLabels={car:'🚕 Intercity Economy (Car)',luxury:'🚙 Intercity Premium (Luxury)'};
+async function loadIntercityFares(){
+  var el=document.getElementById('intercity-fares-container');
+  if(el) el.innerHTML='<div class="loading">Loading...</div>';
+  try{
+    const d=await aJson('/api/admin/intercity-fares');
+    if(d.error) throw new Error(d.error);
+    var html='<div style="overflow-x:auto"><table style="font-size:12px"><thead><tr><th>Vehicle</th><th>Base ₹</th><th>One-way ₹/km</th><th>Round ₹/km</th><th>Allowance/day ₹</th><th>Night halt ₹</th><th>Min km</th><th>Comm %</th><th></th></tr></thead><tbody>';
+    ['car','luxury'].forEach(function(v){
+      var f=(d.fares||{})[v]||{};
+      var cr=(d.commissions||{})[v]!=null?d.commissions[v]:10;
+      html+='<tr><td style="font-weight:700;white-space:nowrap">'+_icLabels[v]+'</td>'
+        +'<td><input id="ic-'+v+'-base" type="number" value="'+(f.base_fare||0)+'" style="width:64px" class="input-sm"></td>'
+        +'<td><input id="ic-'+v+'-ow" type="number" step="0.5" value="'+(f.per_km_oneway||0)+'" style="width:64px" class="input-sm"></td>'
+        +'<td><input id="ic-'+v+'-rd" type="number" step="0.5" value="'+(f.per_km_round||0)+'" style="width:64px" class="input-sm"></td>'
+        +'<td><input id="ic-'+v+'-al" type="number" value="'+(f.driver_allowance_per_day||0)+'" style="width:70px" class="input-sm"></td>'
+        +'<td><input id="ic-'+v+'-nh" type="number" value="'+(f.night_halt||0)+'" style="width:64px" class="input-sm"></td>'
+        +'<td><input id="ic-'+v+'-mk" type="number" value="'+(f.min_km||80)+'" style="width:58px" class="input-sm"></td>'
+        +'<td><input id="ic-'+v+'-cr" type="number" step="0.5" value="'+cr+'" style="width:58px" class="input-sm"></td>'
+        +'<td><button class="refresh-btn" style="background:#1a1a2e;color:#fff;font-size:11px" onclick="saveIntercityFare(\''+v+'\')">💾 Save</button></td></tr>';
+    });
+    html+='</tbody></table></div><div id="ic-fare-status" style="font-size:12px;margin-top:8px"></div>';
+    if(el) el.innerHTML=html;
+  }catch(e){if(el) el.innerHTML='<div style="color:#c62828;font-size:12px">❌ Error: '+e.message+'</div>';}
+}
+async function saveIntercityFare(v){
+  var g=function(id){return parseFloat(document.getElementById('ic-'+v+'-'+id).value);};
+  const d=await aJson('/api/admin/intercity-fares',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({
+    vehicle_type:v, base_fare:g('base'), per_km_oneway:g('ow'), per_km_round:g('rd'),
+    driver_allowance_per_day:g('al'), night_halt:g('nh'), min_km:g('mk'), commission_rate:g('cr')
+  })});
+  var el=document.getElementById('ic-fare-status');
+  if(el){
+    el.textContent=d.success?'✅ '+(_icLabels[v]||v)+' rates saved':'❌ '+(d.error||'Failed');
+    el.style.color=d.success?'#2e7d32':'#c62828';
+  }
+  if(d.success) setTimeout(loadIntercityFares,800);
 }
 
 // ── Standard Ride Fares ─────────────────────────────────
@@ -2782,7 +2828,7 @@ function refreshActive(){
     transactions:loadTransactions, rides:loadRides, customers:loadCustomers,
     drivers:loadDrivers, verify:loadVerifications, topups:loadTopups,
     marketing:()=>{loadCampaigns();loadPromos();loadReferrals();},
-    settings:()=>{loadFares();loadStdFares();loadCancelSettings();loadCommRates();},
+    settings:()=>{loadFares();loadStdFares();loadCancelSettings();loadCommRates();loadIntercityFares();},
     payouts:()=>loadPayouts('pending'), complaints:loadComplaints,
     incidents:loadIncidents, rewards:loadRewardSettings,
     location:loadLocationIntel, support:loadSupport

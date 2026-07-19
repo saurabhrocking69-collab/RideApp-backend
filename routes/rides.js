@@ -757,7 +757,7 @@ router.post('/payment-complete', async (req, res) => {
   const { ride_id, payment_method, phone } = req.body;
   try {
     const rideRes = await db.query(
-      `SELECT r.*, fs.commission_rate, u.phone AS driver_phone FROM rides r
+      `SELECT r.*, fs.commission_rate, fs.intercity_commission_rate, u.phone AS driver_phone FROM rides r
        LEFT JOIN fare_settings fs ON fs.vehicle_type = r.ride_type
        LEFT JOIN users u ON u.id = r.driver_id
        WHERE r.id = $1`, [ride_id]
@@ -765,7 +765,10 @@ router.post('/payment-complete', async (req, res) => {
     if (rideRes.rows.length === 0) return res.json({ success: false, message: 'Ride not found' });
     const ride = rideRes.rows[0];
     const fare = Math.max(0, parseFloat(ride.fare) - parseFloat(ride.discount || 0));
-    const commRate = parseFloat(ride.commission_rate || 15) / 100;
+    // Intercity fares are large (₹5k+) — lower commission % keeps drivers motivated
+    const commRate = ride.is_intercity
+      ? parseFloat(ride.intercity_commission_rate || 10) / 100
+      : parseFloat(ride.commission_rate || 15) / 100;
     const normalCommission = Math.round(fare * commRate * 100) / 100;
 
     // Idempotency: if already completed, just re-emit the socket so the driver gets notified
@@ -1206,10 +1209,12 @@ router.post('/switch-vehicle', async (req, res) => {
     return res.status(400).json({ error: 'Invalid vehicle type' });
   try {
     const r = await db.query(
-      `SELECT pickup_lat, pickup_lng, distance FROM rides WHERE id=$1 AND status='requested' AND driver_id IS NULL`,
+      `SELECT pickup_lat, pickup_lng, distance, is_intercity FROM rides WHERE id=$1 AND status='requested' AND driver_id IS NULL`,
       [ride_id]
     );
     if (!r.rows[0]) return res.json({ success: false, message: 'Ride not found or already assigned' });
+    // Intercity fares use their own long-distance model — a city-rate recalc here would misprice a 300km trip
+    if (r.rows[0].is_intercity) return res.json({ success: false, message: 'Vehicle switch is not available for intercity trips' });
     const { pickup_lat, pickup_lng, distance } = r.rows[0];
 
     // Recalculate fare for new vehicle type

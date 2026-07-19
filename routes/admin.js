@@ -3,7 +3,7 @@ const router = express.Router();
 const path = require('path');
 const db = require('../config/db');
 const { sendFCM } = require('../config/firebase');
-const { HOURLY_FARES, setSurge, getSurge } = require('../services/pricing');
+const { HOURLY_FARES, INTERCITY_FARES, setSurge, getSurge } = require('../services/pricing');
 const { getIO } = require('../config/socket');
 
 // GET /api/admin/stats
@@ -618,6 +618,50 @@ router.post('/hourly-fares', (req, res) => {
   if (fare) HOURLY_FARES[vehicle_type][package_hours].fare = fare;
   if (km) HOURLY_FARES[vehicle_type][package_hours].km = km;
   res.json({ success: true, updated: HOURLY_FARES[vehicle_type][package_hours] });
+});
+
+// GET /api/admin/intercity-fares — current intercity rates + commission per vehicle
+router.get('/intercity-fares', async (req, res) => {
+  try {
+    const comm = await db.query(
+      `SELECT vehicle_type, intercity_commission_rate FROM fare_settings WHERE vehicle_type IN ('car','luxury')`
+    ).catch(() => ({ rows: [] }));
+    const commissions = {};
+    comm.rows.forEach(r => { commissions[r.vehicle_type] = parseFloat(r.intercity_commission_rate ?? 10); });
+    res.json({ fares: INTERCITY_FARES, commissions });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// POST /api/admin/intercity-fares — update rates for one vehicle (car | luxury)
+// Mutates the shared INTERCITY_FARES singleton (instant effect) AND persists to
+// intercity_settings so rates survive restarts (unlike hourly fares).
+router.post('/intercity-fares', async (req, res) => {
+  const { vehicle_type, base_fare, per_km_oneway, per_km_round,
+          driver_allowance_per_day, night_halt, min_km, commission_rate } = req.body || {};
+  const cfg = INTERCITY_FARES[vehicle_type];
+  if (!cfg) return res.status(400).json({ error: 'Invalid vehicle type — intercity supports car and luxury' });
+  try {
+    const fields = { base_fare, per_km_oneway, per_km_round, driver_allowance_per_day, night_halt, min_km };
+    for (const [k, v] of Object.entries(fields)) {
+      const n = parseFloat(v);
+      if (v != null && !isNaN(n) && n >= 0) cfg[k] = n;
+    }
+    await db.query(
+      `INSERT INTO intercity_settings
+         (vehicle_type, base_fare, per_km_oneway, per_km_round, driver_allowance_per_day, night_halt, min_km, updated_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,NOW())
+       ON CONFLICT (vehicle_type) DO UPDATE SET
+         base_fare=$2, per_km_oneway=$3, per_km_round=$4,
+         driver_allowance_per_day=$5, night_halt=$6, min_km=$7, updated_at=NOW()`,
+      [vehicle_type, cfg.base_fare, cfg.per_km_oneway, cfg.per_km_round,
+       cfg.driver_allowance_per_day, cfg.night_halt, cfg.min_km]
+    );
+    const cr = parseFloat(commission_rate);
+    if (!isNaN(cr) && cr >= 0 && cr <= 50) {
+      await db.query('UPDATE fare_settings SET intercity_commission_rate=$1 WHERE vehicle_type=$2', [cr, vehicle_type]);
+    }
+    res.json({ success: true, updated: { vehicle_type, ...cfg } });
+  } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 // GET /admin — serve admin portal HTML

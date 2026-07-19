@@ -635,6 +635,7 @@ app.use('/api/wallet',   walletRouter);
 app.use('/api/payment',  paymentsRouter);
 app.use('/api/rides',     ridesRouter);
 app.use('/api/scheduled', require('./routes/scheduled'));
+app.use('/api/intercity', require('./routes/intercity'));
 app.use('/api/driver',   driversRouter);
 app.use('/api/hourly',   hourlyRouter);
 app.use('/api/admin/support', adminAuth, adminSupportRouter);
