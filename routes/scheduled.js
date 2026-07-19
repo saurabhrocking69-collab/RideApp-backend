@@ -7,6 +7,19 @@ const { calculateFare, getISTHour } = require('../services/pricing');
 const { rideQueue }      = require('../workers/rideWorker');
 
 // ── Idempotent schema additions ───────────────────────────────────────────────
+// Create table with correct schema if it doesn't exist yet
+db.query(`
+  CREATE TABLE IF NOT EXISTS scheduled_rides (
+    id            SERIAL PRIMARY KEY,
+    ride_id       TEXT NOT NULL,
+    status        TEXT DEFAULT 'pending',
+    scheduled_at  TIMESTAMPTZ,
+    updated_at    TIMESTAMPTZ DEFAULT NOW(),
+    failed_reason TEXT
+  )
+`).catch(() => {});
+// Migrate: ride_id was INT in the original Railway table, must be TEXT for UUID ride IDs
+db.query(`ALTER TABLE scheduled_rides ALTER COLUMN ride_id TYPE TEXT USING ride_id::TEXT`).catch(() => {});
 db.query('ALTER TABLE scheduled_rides ADD COLUMN IF NOT EXISTS bullmq_job_id VARCHAR(100)').catch(() => {});
 db.query('ALTER TABLE rides ADD COLUMN IF NOT EXISTS cancel_reason TEXT').catch(() => {});
 

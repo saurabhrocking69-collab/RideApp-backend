@@ -1212,12 +1212,14 @@ setTimeout(async () => {
     CREATE TABLE IF NOT EXISTS subscription_ride_log (
       id               SERIAL PRIMARY KEY,
       subscription_id  INT REFERENCES driver_subscriptions(id),
-      ride_id          INT,
+      ride_id          TEXT,
       ride_type        TEXT DEFAULT 'standard',
       commission_saved NUMERIC NOT NULL,
       logged_at        TIMESTAMPTZ DEFAULT NOW()
     )
   `).catch(() => {});
+  // Migrate: ride_id was INT, must be TEXT for UUID ride IDs
+  await db.query(`ALTER TABLE subscription_ride_log ALTER COLUMN ride_id TYPE TEXT USING ride_id::TEXT`).catch(() => {});
   await db.query(`CREATE INDEX IF NOT EXISTS idx_driver_subs_phone ON driver_subscriptions(driver_phone, status)`).catch(() => {});
   // Add validity_days column if not present (default 60 for all existing plans)
   await db.query(`ALTER TABLE subscription_plans ADD COLUMN IF NOT EXISTS validity_days INT DEFAULT 60`).catch(() => {});
