@@ -37,6 +37,7 @@ const rideWorker = new Worker('ride-assignment', async (job) => {
   if (d.type === 'assign-next')            await _bmqAssignNext(d).catch(e => console.error('[ASSIGN-NEXT] error:', e.message));
   if (d.type === 'pre-assign-timeout')     await _bmqPreAssignTimeout(d).catch(e => console.error('[PRE-ASSIGN-TIMEOUT] error:', e.message));
   if (d.type === 'pre-assign-recheck')     await _bmqPreAssignRecheck(d).catch(e => console.error('[PRE-ASSIGN-RECHECK] error:', e.message));
+  if (d.type === 'dispatch-scheduled-ride') await _bmqDispatchScheduledRide(d).catch(e => console.error('[SCHED_DISPATCH] error:', e.message));
 }, { connection: makeBmqConn(), concurrency: 5 });
 
 rideWorker.on('failed', (job, err) => {
@@ -467,6 +468,17 @@ async function _escalate(rideId, rideType, afterSurge, pickupLat, pickupLng, ski
       ).catch(() => {});
     }
   } else {
+    // Scheduled rides skip surge — go straight to no_driver_final so the customer
+    // isn't waiting on an offer they can't interact with at pickup time.
+    const schedCheck = await db.query(
+      `SELECT id FROM scheduled_rides WHERE ride_id=$1 AND status='dispatched'`,
+      [rideId]
+    ).catch(() => ({ rows: [] }));
+    if (schedCheck.rows.length > 0) {
+      console.log(`[ESCALATE] ride=${rideId} — scheduled, skipping surge → no_driver_final`);
+      return _escalate(rideId, rideType, true, pickupLat, pickupLng, skipPreAssign);
+    }
+
     // Before showing surge offer, check if a busy driver is almost at their drop
     // and close enough to the customer to pre-assign this ride.
     if (!skipPreAssign && pickupLat && pickupLng) {
@@ -523,6 +535,50 @@ async function getAvailableAlternatives(rideType) {
   );
   const available = new Set(r.rows.filter(row => parseInt(row.cnt) > 0).map(row => row.vehicle_type));
   return alts.filter(a => available.has(a));
+}
+
+// ── Dispatch a scheduled ride at T-15min ─────────────────────────────────────
+async function _bmqDispatchScheduledRide({ ride_id, scheduled_ride_id, pickup_lat, pickup_lng, ride_type, passenger_phone }) {
+  console.log(`[SCHED_DISPATCH] ride=${ride_id} — T-15min, starting driver match`);
+
+  // Check ride is still waiting (customer may have cancelled)
+  const rideRow = await db.query(
+    `SELECT id, pickup_lat, pickup_lng, ride_type FROM rides WHERE id=$1 AND status='scheduled'`,
+    [ride_id]
+  );
+  if (!rideRow.rows[0]) {
+    console.log(`[SCHED_DISPATCH] ride=${ride_id} — not in scheduled state, abort`);
+    return;
+  }
+
+  // Flip status to 'requested' so broadcastToRadius can pick it up
+  await db.query(`UPDATE rides SET status='requested' WHERE id=$1`, [ride_id]);
+  await db.query(
+    `UPDATE scheduled_rides SET status='dispatched', updated_at=NOW() WHERE ride_id=$1`,
+    [ride_id]
+  );
+
+  // Notify customer that matching has started
+  const pRes = await db.query(
+    `SELECT u.phone FROM rides r JOIN users u ON r.passenger_id::text=u.id::text WHERE r.id=$1`,
+    [ride_id]
+  ).catch(() => ({ rows: [] }));
+  const cPhone = pRes.rows[0]?.phone || passenger_phone;
+  if (cPhone) {
+    sendFCM(
+      cPhone,
+      '🚗 Finding Your Driver',
+      'We\'re matching a driver for your scheduled ride right now. Please stay nearby.',
+      { type: 'scheduled_matching', ride_id: String(ride_id) },
+      { role: 'customer' }
+    ).catch(() => {});
+  }
+
+  const lat  = rideRow.rows[0].pickup_lat  ?? pickup_lat;
+  const lng  = rideRow.rows[0].pickup_lng  ?? pickup_lng;
+  const type = rideRow.rows[0].ride_type   ?? ride_type;
+
+  await assignRideToNextDriver(ride_id, lat, lng, type, null, null, false, true);
 }
 
 // ── Fallback: buddy ignored direct request → start normal broadcast ───────────
