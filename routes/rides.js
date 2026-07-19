@@ -782,7 +782,8 @@ router.post('/payment-complete', async (req, res) => {
       await db.query(
         `INSERT INTO driver_commissions (driver_phone, ride_id, fare, commission, payment_method, status)
          SELECT u.phone, $1, $2, $3, 'cash', 'pending'
-         FROM rides r JOIN users u ON r.driver_id = u.id WHERE r.id = $1`,
+         FROM rides r JOIN users u ON r.driver_id = u.id WHERE r.id = $1
+         ON CONFLICT (ride_id) DO NOTHING`,
         [ride_id, fare, commission]
       );
       // Customer gets a socket ping to show "give cash to driver" UI
@@ -804,14 +805,24 @@ router.post('/payment-complete', async (req, res) => {
         );
       }
 
-      await payClient.query(
-        `UPDATE rides SET payment_method = $1, payment_status = 'completed', commission_amount = $2, commission_status = 'collected' WHERE id = $3`,
+      // Atomic idempotency: only update rides that are not yet 'completed'; returns 0 rows if a
+      // concurrent request already completed it — prevents double commission insertion.
+      const rideUpdate = await payClient.query(
+        `UPDATE rides SET payment_method=$1, payment_status='completed', commission_amount=$2, commission_status='collected'
+         WHERE id=$3 AND payment_status != 'completed' RETURNING id`,
         [payment_method, commission, ride_id]
       );
+      if (!rideUpdate.rows[0]) {
+        await payClient.query('ROLLBACK');
+        payClient.release();
+        emitToRoom('ride_' + ride_id, 'paymentConfirmed', { ride_id, status: 'completed', payment_method, cashbacks: [] });
+        return res.json({ success: true, status: 'completed', already_done: true });
+      }
       const commRow = await payClient.query(
         `INSERT INTO driver_commissions (driver_phone, ride_id, fare, commission, payment_method, status)
          SELECT u.phone, $1, $2, $3, $4, 'collected'
-         FROM rides r JOIN users u ON r.driver_id = u.id WHERE r.id = $1 RETURNING driver_phone`,
+         FROM rides r JOIN users u ON r.driver_id = u.id WHERE r.id = $1
+         ON CONFLICT (ride_id) DO NOTHING RETURNING driver_phone`,
         [ride_id, fare, commission, payment_method]
       );
 

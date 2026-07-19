@@ -1174,6 +1174,8 @@ setTimeout(async () => {
   `).catch(() => {});
   await db.query(`CREATE INDEX IF NOT EXISTS idx_dcp_phone ON driver_commission_payments(driver_phone)`).catch(() => {});
   await db.query(`CREATE INDEX IF NOT EXISTS idx_dcp_payment ON driver_commission_payments(payment_id)`).catch(() => {});
+  // Unique constraint prevents double-commission on concurrent /payment-complete calls
+  await db.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_driver_commissions_ride_id ON driver_commissions(ride_id)`).catch(() => {});
   console.log('✅ driver_commission_payments table ready');
 
   // ── Driver Subscription System ────────────────────────────────────────────

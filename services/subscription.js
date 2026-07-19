@@ -33,30 +33,33 @@ async function activateQueuedSubscription(driverPhone) {
   }
 }
 
-// Check subscription and decrement ride if active.
+// Check subscription and atomically decrement ride if active.
+// Uses a single UPDATE...WHERE id=(SELECT...FOR UPDATE) so concurrent calls
+// cannot double-decrement the same ride pack.
 // Returns { subscribed: true, commission: 0 } or { subscribed: false, commission: normalCommission }
-// dbClient: optional pg client for transaction context (uses module db otherwise)
-async function useSubscriptionIfActive(driverPhone, rideId, rideType, normalCommission, dbClient) {
-  const q = dbClient || db;
+async function useSubscriptionIfActive(driverPhone, rideId, rideType, normalCommission) {
   try {
-    const sub = await q.query(
-      `SELECT * FROM driver_subscriptions
-       WHERE driver_phone=$1 AND status='active' AND rides_remaining>0 AND expires_at>NOW()
-       ORDER BY starts_at ASC LIMIT 1`,
+    // Atomic: lock the row with FOR UPDATE inside the subquery so concurrent
+    // requests queue up; the WHERE rides_remaining>0 then excludes already-zeroed rows.
+    const sub = await db.query(
+      `UPDATE driver_subscriptions
+       SET rides_used      = rides_used + 1,
+           rides_remaining = rides_remaining - 1,
+           status          = CASE WHEN rides_remaining - 1 <= 0 THEN 'expired' ELSE 'active' END
+       WHERE id = (
+         SELECT id FROM driver_subscriptions
+         WHERE driver_phone=$1 AND status='active' AND rides_remaining>0 AND expires_at>NOW()
+         ORDER BY starts_at ASC LIMIT 1
+         FOR UPDATE
+       )
+       RETURNING *`,
       [driverPhone]
     );
     if (!sub.rows[0]) return { subscribed: false, commission: normalCommission };
 
     const s = sub.rows[0];
-    const newRemaining = s.rides_remaining - 1;
-    await q.query(
-      `UPDATE driver_subscriptions
-       SET rides_used=rides_used+1, rides_remaining=$1, status=CASE WHEN $1<=0 THEN 'expired' ELSE 'active' END
-       WHERE id=$2`,
-      [newRemaining, s.id]
-    );
 
-    // Log saved commission (fire-and-forget, always use module db)
+    // Log saved commission (fire-and-forget)
     db.query(
       `INSERT INTO subscription_ride_log (subscription_id, ride_id, ride_type, commission_saved)
        VALUES ($1, $2, $3, $4)`,
@@ -64,7 +67,7 @@ async function useSubscriptionIfActive(driverPhone, rideId, rideType, normalComm
     ).catch(() => {});
 
     // If all rides exhausted, activate the queued plan
-    if (newRemaining <= 0) activateQueuedSubscription(driverPhone).catch(() => {});
+    if (s.rides_remaining <= 0) activateQueuedSubscription(driverPhone).catch(() => {});
 
     return { subscribed: true, commission: 0 };
   } catch (e) {
