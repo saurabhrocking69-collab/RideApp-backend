@@ -1499,75 +1499,92 @@ router.get('/driver-diag', async (req, res) => {
   const { phone } = req.query;
   if (!phone) return res.status(400).json({ error: 'phone required' });
   try {
-    // 1. Driver profile (actual prod column names)
-    const dr = await db.query(`
-      SELECT u.name, u.phone, d.vehicle_type, d.vehicle_no,
-             d.verification_status, d.is_online, d.rating, d.acceptance_rate,
-             d.idle_since
-      FROM drivers d JOIN users u ON d.id = u.id
-      WHERE u.phone = $1
-    `, [phone]);
+    const result = {};
 
-    if (!dr.rows[0]) return res.json({ found: false, phone });
-    const profile = dr.rows[0];
+    // 1. Driver profile — use only columns confirmed in production schema
+    try {
+      const dr = await db.query(`
+        SELECT u.name, u.phone, d.vehicle_type, d.vehicle_no,
+               d.verification_status, d.is_online, d.rating, d.admin_message
+        FROM drivers d JOIN users u ON d.id = u.id
+        WHERE u.phone = $1
+      `, [phone]);
+      if (!dr.rows[0]) return res.json({ found: false, phone });
+      result.profile = dr.rows[0];
+    } catch (e) {
+      result.profile_error = e.message;
+      return res.json({ found: 'unknown', profile_error: e.message });
+    }
 
     // 2. GPS / location
-    const gps = await db.query(`
-      SELECT lat, lng, updated_at,
-             ROUND(EXTRACT(EPOCH FROM (NOW() - updated_at)) / 60) AS mins_ago
-      FROM driver_locations WHERE phone = $1
-    `, [phone]);
+    try {
+      const gps = await db.query(`
+        SELECT lat, lng, updated_at,
+               ROUND(EXTRACT(EPOCH FROM (NOW() - updated_at)) / 60) AS mins_ago
+        FROM driver_locations WHERE phone = $1
+      `, [phone]);
+      result.gps = gps.rows[0] || null;
+    } catch (e) {
+      result.gps = null;
+      result.gps_error = e.message;
+    }
 
     // 3. Active ride check
-    const activeRide = await db.query(`
-      SELECT r.id, r.status, r.ride_type, r.pickup
-      FROM rides r JOIN users u ON r.driver_id = u.id
-      WHERE u.phone = $1 AND r.status IN ('matched','arrived','started','payment')
-    `, [phone]);
+    try {
+      const activeRide = await db.query(`
+        SELECT r.id, r.status, r.ride_type, r.pickup
+        FROM rides r JOIN users u ON r.driver_id = u.id
+        WHERE u.phone = $1 AND r.status IN ('matched','arrived','started','payment')
+      `, [phone]);
+      result.active_ride = activeRide.rows[0] || null;
+    } catch (e) {
+      result.active_ride = null;
+      result.active_ride_error = e.message;
+    }
 
-    // 4. Last 5 recent requested rides — was this driver offered?
-    const recentRides = await db.query(`
-      SELECT id, ride_type, status, pickup, current_radius_m, offered_phones, created_at
-      FROM rides
-      WHERE status IN ('requested','no_driver','cancelled')
-        AND created_at > NOW() - INTERVAL '30 minutes'
-      ORDER BY created_at DESC LIMIT 5
-    `);
+    // 4. Recent requested rides — was this driver offered?
+    try {
+      const recentRides = await db.query(`
+        SELECT id, ride_type, status, pickup, current_radius_m, offered_phones, created_at
+        FROM rides
+        WHERE created_at > NOW() - INTERVAL '60 minutes'
+        ORDER BY created_at DESC LIMIT 10
+      `);
+      result.recent_rides_60min = recentRides.rows.map(r => ({
+        id: r.id,
+        ride_type: r.ride_type,
+        status: r.status,
+        radius_m: r.current_radius_m,
+        offered_to_driver: (r.offered_phones || []).includes(phone),
+        pickup: (r.pickup || '').slice(0, 60),
+        created_at: r.created_at,
+      }));
+    } catch (e) {
+      result.recent_rides_60min = [];
+      result.rides_error = e.message;
+    }
 
-    const ridesInfo = recentRides.rows.map(r => ({
-      id: r.id,
-      ride_type: r.ride_type,
-      status: r.status,
-      radius_m: r.current_radius_m,
-      offered_to_driver: (r.offered_phones || []).includes(phone),
-      pickup: (r.pickup || '').slice(0, 50),
-      created_at: r.created_at,
-    }));
-
-    // 5. Driver dispatch eligibility summary
-    const isOnline = !!profile.is_online;
-    const isApproved = profile.verification_status === 'approved';
-    const hasGps = !!gps.rows[0];
-    const gpsAge = gps.rows[0] ? Number(gps.rows[0].mins_ago) : null;
+    // 5. Eligibility summary
+    const p = result.profile;
+    const isOnline = !!p.is_online;
+    const isApproved = p.verification_status === 'approved';
+    const onActiveRide = !!result.active_ride;
+    const hasGps = !!result.gps;
+    const gpsAge = result.gps ? Number(result.gps.mins_ago) : null;
     const gpsStale = gpsAge !== null && gpsAge > 15;
-    const onActiveRide = activeRide.rows.length > 0;
 
     const blockers = [];
-    if (!isOnline) blockers.push('OFFLINE — driver is not online');
-    if (!isApproved) blockers.push(`NOT APPROVED — status: ${profile.verification_status}`);
-    if (onActiveRide) blockers.push(`BUSY — already on ride ${activeRide.rows[0].id} (${activeRide.rows[0].status})`);
-    if (!hasGps) blockers.push('NO GPS — driver has never sent location');
-    else if (gpsStale) blockers.push(`STALE GPS — last seen ${gpsAge} min ago (still included in broadcast as fallback)`);
+    if (!isOnline)    blockers.push(`OFFLINE — is_online is false`);
+    if (!isApproved)  blockers.push(`NOT APPROVED — verification_status = "${p.verification_status}"`);
+    if (onActiveRide) blockers.push(`ON RIDE — ${result.active_ride.id} status=${result.active_ride.status}`);
+    if (!hasGps)      blockers.push(`NO GPS — driver_locations has no record for this phone`);
+    else if (gpsStale) blockers.push(`GPS STALE — last seen ${gpsAge} min ago (still broadcast as fallback)`);
 
-    res.json({
-      found: true,
-      profile,
-      gps: gps.rows[0] || null,
-      active_ride: activeRide.rows[0] || null,
-      recent_rides_last_30min: ridesInfo,
-      dispatch_eligible: blockers.length === 0,
-      blockers,
-    });
+    result.found = true;
+    result.dispatch_eligible = blockers.length === 0;
+    result.blockers = blockers;
+
+    res.json(result);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
