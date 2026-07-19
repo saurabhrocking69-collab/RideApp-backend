@@ -171,9 +171,14 @@ router.post('/verify', async (req, res) => {
 });
 
 // ── Admin-only endpoints ───────────────────────────────────────────────────
+function adminAuth(req, res, next) {
+  const key = req.headers['x-admin-key'] || req.query._ak;
+  if (!key || key !== process.env.ADMIN_SECRET) return res.status(403).json({ error: 'Admin access denied' });
+  next();
+}
 
 // GET /api/subscriptions/admin/plans — all plans (for admin panel)
-router.get('/admin/plans', async (req, res) => {
+router.get('/admin/plans', adminAuth, async (req, res) => {
   try {
     const r = await db.query(`SELECT * FROM subscription_plans ORDER BY vehicle_category, sort_order, ride_count`);
     res.json({ plans: r.rows });
@@ -181,7 +186,7 @@ router.get('/admin/plans', async (req, res) => {
 });
 
 // POST /api/subscriptions/admin/plans — create or update plan
-router.post('/admin/plans', async (req, res) => {
+router.post('/admin/plans', adminAuth, async (req, res) => {
   try {
     const { id, name, vehicle_category, ride_count, price, original_price, is_active, sort_order, validity_days } = req.body || {};
     const vdays = validity_days ? parseInt(validity_days) : 60;
@@ -202,7 +207,7 @@ router.post('/admin/plans', async (req, res) => {
 });
 
 // GET /api/subscriptions/admin/subscribers — active subscribers
-router.get('/admin/subscribers', async (req, res) => {
+router.get('/admin/subscribers', adminAuth, async (req, res) => {
   try {
     const r = await db.query(
       `SELECT ds.*, sp.name AS plan_name, sp.ride_count AS plan_rides,

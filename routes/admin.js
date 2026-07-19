@@ -1091,10 +1091,9 @@ router.post('/incidents/:id/compensate-driver', async (req, res) => {
     const commission = Math.round(fare * commRate * 100) / 100;
     const compensation = Math.round((fare - commission) * 100) / 100;
 
-    // Credit driver wallet — driver_id is stored as TEXT, cast to INTEGER for driver_wallet FK
     await db.query(
       `INSERT INTO driver_wallet (driver_id, balance, total_earned)
-       VALUES ($1::integer, $2, $3)
+       VALUES ($1::uuid, $2, $3)
        ON CONFLICT (driver_id) DO UPDATE SET
          balance      = driver_wallet.balance + $2,
          total_earned = driver_wallet.total_earned + $3,
@@ -1431,7 +1430,7 @@ router.get('/area-stats', async (req, res) => {
         JOIN users   u ON u.phone = dl.phone
         JOIN drivers d ON d.id    = u.id
         WHERE d.is_online = true
-          AND dl.updated > NOW() - INTERVAL '15 minutes'
+          AND dl.updated_at > NOW() - INTERVAL '15 minutes'
         GROUP BY ROUND(dl.lat::numeric,2), ROUND(dl.lng::numeric,2)
       `),
       // Summary totals

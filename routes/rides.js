@@ -440,7 +440,7 @@ router.post('/cancel', async (req, res) => {
     const rideInfo = await db.query('SELECT p.phone AS passenger_phone FROM rides r JOIN users p ON r.passenger_id=p.id WHERE r.id=$1', [ride_id]);
     if (rideInfo.rows[0]) {
       emitRideUpdate(ride_id, { status: 'cancelled' });
-      sendFCM(rideInfo.rows[0].passenger_phone, '🚫 Ride Cancelled', 'Driver cancelled your ride', { type: 'ride_cancelled', ride_id: String(ride_id) }, { role: 'customer' });
+      sendFCM(rideInfo.rows[0].passenger_phone, '🚫 Ride Cancelled', 'Driver cancelled your ride', { type: 'ride_cancelled', ride_id: String(ride_id) }, { role: 'customer' }).catch(() => {});
     }
     res.json({ success: true, message: 'Trip cancelled', reason });
   } catch (err) { console.error('[rides]', err.message); res.status(500).json({ error: 'Something went wrong — please try again' }); }
@@ -541,7 +541,7 @@ router.post('/cancel-smart', async (req, res) => {
     if (ride.status === 'pre_assigned') {
       await db.query(`UPDATE rides SET status='cancelled' WHERE id=$1 AND status='pre_assigned'`, [ride_id]);
       if (ride.pre_accepted_driver_phone) {
-        emitToRoom('driver_' + ride.pre_accepted_driver_phone, 'preRideCancelled', { rideId: parseInt(ride_id) });
+        emitToRoom('driver_' + ride.pre_accepted_driver_phone, 'preRideCancelled', { rideId: ride_id });
       }
       return res.json({ success: true, penalty: 0, message: 'Ride cancelled (free)' });
     }
@@ -576,7 +576,7 @@ router.post('/cancel-smart', async (req, res) => {
         [cancelsToday + 1, today, newTrust, newTrust < 50, phone]
       );
       if (ride.driver_phone)
-        sendFCM(ride.driver_phone, '🚫 Ride Cancelled', `Customer ne cancel kar di. Reason: ${reason || 'N/A'}`, { type: 'ride_cancelled' }, { channelId: 'ride_requests', role: 'driver' });
+        sendFCM(ride.driver_phone, '🚫 Ride Cancelled', `Customer ne cancel kar di. Reason: ${reason || 'N/A'}`, { type: 'ride_cancelled' }, { channelId: 'ride_requests', role: 'driver' }).catch(() => {});
     }
 
     if (cancelled_by === 'driver') {
@@ -604,7 +604,7 @@ router.post('/cancel-smart', async (req, res) => {
         [totalCancelled, cancelsToday, today, cancelRate.toFixed(2), suspendedUntil, phone]
       );
       if (ride.passenger_phone)
-        sendFCM(ride.passenger_phone, '🚫 Driver ne Cancel Kiya', `Reason: ${reason || 'N/A'}. Please book a new ride from the app.`, { type: 'ride_cancelled' }, { role: 'customer' });
+        sendFCM(ride.passenger_phone, '🚫 Driver ne Cancel Kiya', `Reason: ${reason || 'N/A'}. Please book a new ride from the app.`, { type: 'ride_cancelled' }, { role: 'customer' }).catch(() => {});
     }
 
     const smartCancelRes = await db.query(
@@ -652,7 +652,7 @@ router.post('/complete', async (req, res) => {
     if (ride.trip_started_at && ride.fs_time != null) {
       const actualDurMin = (Date.now() - new Date(ride.trip_started_at).getTime()) / 60000;
       const distKm = parseFloat(ride.distance_km) || 5;
-      const hourNow = new Date().getHours();
+      const hourNow = getISTHour();
       const isNightNow = hourNow >= parseInt(String(ride.fs_ns || '22').split(':')[0]) || hourNow < parseInt(String(ride.fs_ne || '6').split(':')[0]);
       const fsRow = {
         base_fare: ride.fs_base, per_km_rate: ride.fs_pkr, per_km_rate_t2: ride.fs_pkr2,
@@ -987,6 +987,11 @@ router.post('/payment-not-received', async (req, res) => {
     await db.query(
       `UPDATE users SET trust_score = GREATEST(0, COALESCE(trust_score,100) - 25) WHERE id=$1`, [ride.passenger_id_val]
     ).catch(() => {});
+    const skipCountRes = await db.query(
+      `SELECT COUNT(*) AS cnt FROM ride_incidents WHERE customer_id=$1 AND incident_type='payment_skipped'`,
+      [ride.passenger_id_val]
+    ).catch(() => ({ rows: [{ cnt: 0 }] }));
+    const totalSkips = parseInt(skipCountRes.rows[0]?.cnt || 0);
 
 
     // FCM to customer — warning
@@ -1475,7 +1480,7 @@ router.post('/pre-accept', async (req, res) => {
 
     // Confirm acceptance — emit to customer so they know driver confirmed
     emitToRoom('ride_' + ride_id, 'rideUpdate', {
-      rideId: parseInt(ride_id), status: 'pre_assigned', pre_accepted: true,
+      rideId: ride_id, status: 'pre_assigned', pre_accepted: true,
       message: 'Driver confirmed — they will come after completing the current ride',
     });
     res.json({ success: true, message: 'Ride added to queue!' });
@@ -1498,14 +1503,14 @@ router.post('/pre-decline', async (req, res) => {
 
     // Tell customer we're searching again
     emitToRoom('ride_' + ride_id, 'rideUpdate', {
-      rideId: parseInt(ride_id), status: 'searching',
+      rideId: ride_id, status: 'searching',
       message: 'Driver unavailable — searching again...',
     });
 
     // Queue recheck: try next pre-assignable driver or fall to surge
     rideQueue.add('ride-assignment', {
       type: 'pre-assign-recheck',
-      rideId: parseInt(ride_id),
+      rideId: ride_id,
       pickupLat: ride.pickup_lat, pickupLng: ride.pickup_lng, rideType: ride.ride_type,
       excludePhones: [phone],
     }, { delay: 500 }).catch(() => {});

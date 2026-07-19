@@ -66,8 +66,7 @@ async function checkScheduledRidesNotStuck() {
     `SELECT COUNT(*) AS cnt FROM scheduled_rides
      WHERE status = 'pending'
        AND scheduled_at < NOW() - INTERVAL '10 minutes'
-       AND scheduled_at > NOW() - INTERVAL '24 hours'
-       AND ride_id IS NULL`
+       AND scheduled_at > NOW() - INTERVAL '24 hours'`
   );
   const count = parseInt(res.rows[0].cnt);
   if (count > 0) throw new Error(`${count} scheduled rides missed dispatch window (past due, no ride_id)`);
