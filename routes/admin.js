@@ -1494,4 +1494,83 @@ router.get('/area-stats', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+// GET /api/admin/driver-diag?phone=XXXXXXXXXX  — real-time driver dispatch diagnostic
+router.get('/driver-diag', async (req, res) => {
+  const { phone } = req.query;
+  if (!phone) return res.status(400).json({ error: 'phone required' });
+  try {
+    // 1. Driver profile (actual prod column names)
+    const dr = await db.query(`
+      SELECT u.name, u.phone, d.vehicle_type, d.vehicle_no,
+             d.verification_status, d.is_online, d.rating, d.acceptance_rate,
+             d.idle_since
+      FROM drivers d JOIN users u ON d.id = u.id
+      WHERE u.phone = $1
+    `, [phone]);
+
+    if (!dr.rows[0]) return res.json({ found: false, phone });
+    const profile = dr.rows[0];
+
+    // 2. GPS / location
+    const gps = await db.query(`
+      SELECT lat, lng, updated_at,
+             ROUND(EXTRACT(EPOCH FROM (NOW() - updated_at)) / 60) AS mins_ago
+      FROM driver_locations WHERE phone = $1
+    `, [phone]);
+
+    // 3. Active ride check
+    const activeRide = await db.query(`
+      SELECT r.id, r.status, r.ride_type, r.pickup
+      FROM rides r JOIN users u ON r.driver_id = u.id
+      WHERE u.phone = $1 AND r.status IN ('matched','arrived','started','payment')
+    `, [phone]);
+
+    // 4. Last 5 recent requested rides — was this driver offered?
+    const recentRides = await db.query(`
+      SELECT id, ride_type, status, pickup, current_radius_m, offered_phones, created_at
+      FROM rides
+      WHERE status IN ('requested','no_driver','cancelled')
+        AND created_at > NOW() - INTERVAL '30 minutes'
+      ORDER BY created_at DESC LIMIT 5
+    `);
+
+    const ridesInfo = recentRides.rows.map(r => ({
+      id: r.id,
+      ride_type: r.ride_type,
+      status: r.status,
+      radius_m: r.current_radius_m,
+      offered_to_driver: (r.offered_phones || []).includes(phone),
+      pickup: (r.pickup || '').slice(0, 50),
+      created_at: r.created_at,
+    }));
+
+    // 5. Driver dispatch eligibility summary
+    const isOnline = !!profile.is_online;
+    const isApproved = profile.verification_status === 'approved';
+    const hasGps = !!gps.rows[0];
+    const gpsAge = gps.rows[0] ? Number(gps.rows[0].mins_ago) : null;
+    const gpsStale = gpsAge !== null && gpsAge > 15;
+    const onActiveRide = activeRide.rows.length > 0;
+
+    const blockers = [];
+    if (!isOnline) blockers.push('OFFLINE — driver is not online');
+    if (!isApproved) blockers.push(`NOT APPROVED — status: ${profile.verification_status}`);
+    if (onActiveRide) blockers.push(`BUSY — already on ride ${activeRide.rows[0].id} (${activeRide.rows[0].status})`);
+    if (!hasGps) blockers.push('NO GPS — driver has never sent location');
+    else if (gpsStale) blockers.push(`STALE GPS — last seen ${gpsAge} min ago (still included in broadcast as fallback)`);
+
+    res.json({
+      found: true,
+      profile,
+      gps: gps.rows[0] || null,
+      active_ride: activeRide.rows[0] || null,
+      recent_rides_last_30min: ridesInfo,
+      dispatch_eligible: blockers.length === 0,
+      blockers,
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 module.exports = router;
