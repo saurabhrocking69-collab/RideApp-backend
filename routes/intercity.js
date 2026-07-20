@@ -5,6 +5,7 @@ const db      = require('../config/db');
 const { sendFCM } = require('../config/firebase');
 const { INTERCITY_FARES, calculateIntercityFare } = require('../services/pricing');
 const { rideQueue, assignRideToNextDriver } = require('../workers/rideWorker');
+const { requiresAdvance, verifyAdvancePayment } = require('../services/advance');
 
 // ── Idempotent schema additions ───────────────────────────────────────────────
 db.query('ALTER TABLE rides ADD COLUMN IF NOT EXISTS is_intercity BOOLEAN DEFAULT FALSE').catch(() => {});
@@ -119,20 +120,33 @@ router.post('/book', async (req, res) => {
     const fareCalc = calculateIntercityFare(INTERCITY_FARES[vehicle_type], distKm, kind, days);
     const fare     = fareCalc.fare;
 
+    // High-value rides require a 1/3 advance paid online at booking. Verify it
+    // (signature + captured with Razorpay) before creating the ride.
+    let advanceAmount = 0, advanceOrderId = null, advancePaymentId = null;
+    if (requiresAdvance(fare)) {
+      const adv = req.body.advance || {};
+      const v = await verifyAdvancePayment({ order_id: adv.order_id, payment_id: adv.payment_id, signature: adv.signature });
+      if (!v.ok) return res.status(402).json({ error: v.error || 'Advance payment required', advance_required: true, advance_amount: Math.round(fare / 3) });
+      advanceAmount = v.amount; advanceOrderId = adv.order_id; advancePaymentId = adv.payment_id;
+    }
+
     const status = scheduledTime ? 'scheduled' : 'requested';
     const rideRes = await db.query(
       `INSERT INTO rides
          (passenger_id, pickup, drop_location, ride_type, fare, status,
           is_intercity, is_roundtrip, return_at, is_scheduled, scheduled_at,
           pickup_lat, pickup_lng, drop_lat, drop_lng,
-          discount, promo_code, distance_km, platform_fee)
-       VALUES ($1,$2,$3,$4,$5,$6,true,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,0)
+          discount, promo_code, distance_km, platform_fee,
+          advance_amount, advance_status, advance_order_id, advance_payment_id)
+       VALUES ($1,$2,$3,$4,$5,$6,true,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,0,
+          $18,$19,$20,$21)
        RETURNING *`,
       [
         passenger.id, pickup, drop_location, vehicle_type, fare, status,
         kind === 'round', returnTime, !!scheduledTime, scheduledTime,
         pickup_lat || null, pickup_lng || null, drop_lat || null, drop_lng || null,
         discount || 0, promo_code || null, distKm,
+        advanceAmount, advanceAmount > 0 ? 'paid' : 'none', advanceOrderId, advancePaymentId,
       ]
     );
     const rideId = rideRes.rows[0].id;
@@ -179,6 +193,8 @@ router.post('/book', async (req, res) => {
       breakdown: fareCalc,
       trip_kind: kind,
       is_intercity: true,
+      advance_paid: advanceAmount,
+      remaining_due: Math.max(0, fare - advanceAmount),
       scheduled_at: scheduledTime ? scheduledTime.toISOString() : null,
       return_at: returnTime ? returnTime.toISOString() : null,
       distance: distKm + ' km',

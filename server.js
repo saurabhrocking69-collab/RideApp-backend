@@ -23,6 +23,7 @@ const db                  = require('./config/db');
 
 // ── Middleware ───────────────────────────────────
 const adminAuth = require('./middleware/adminAuth');
+const { refundToWallet } = require('./services/advance');
 
 // ── Routes ───────────────────────────────────────
 const authRouter    = require('./routes/auth');
@@ -636,6 +637,7 @@ app.use('/api/payment',  paymentsRouter);
 app.use('/api/rides',     ridesRouter);
 app.use('/api/scheduled', require('./routes/scheduled'));
 app.use('/api/intercity', require('./routes/intercity'));
+app.use('/api/advance',   require('./routes/advance'));
 app.use('/api/driver',   driversRouter);
 app.use('/api/hourly',   hourlyRouter);
 app.use('/api/admin/support', adminAuth, adminSupportRouter);
@@ -1317,13 +1319,21 @@ setInterval(async () => {
       `UPDATE rides SET status='cancelled'
        WHERE status='requested' AND driver_id IS NULL
        AND created_at < NOW() - INTERVAL '15 minutes'
-       RETURNING id, passenger_id`
+       RETURNING id, passenger_id, advance_amount, advance_status`
     );
     for (const row of stale.rows) {
       try {
         const u = await db.query('SELECT phone FROM users WHERE id=$1', [row.passenger_id]);
         if (u.rows[0]) {
-          sendFCM(u.rows[0].phone, '😔 Driver Nahi Mila', 'Koi driver available nahi — thodi der baad try karo.', { type: 'no_driver_found', ride_id: String(row.id) }, { role: 'customer' }).catch(() => {});
+          // No driver found → full refund of any advance paid
+          const advAmt = parseFloat(row.advance_amount || 0);
+          if (advAmt > 0 && row.advance_status === 'paid') {
+            await refundToWallet(null, u.rows[0].phone, advAmt, row.id, 'Advance refund (no driver found)').catch(() => {});
+            await db.query("UPDATE rides SET advance_status='refunded' WHERE id=$1", [row.id]).catch(() => {});
+            sendFCM(u.rows[0].phone, '💸 Advance Refunded', `No driver found — ₹${advAmt} refunded to your wallet.`, { type: 'advance_refunded', ride_id: String(row.id) }, { role: 'customer' }).catch(() => {});
+          } else {
+            sendFCM(u.rows[0].phone, '😔 Driver Nahi Mila', 'Koi driver available nahi — thodi der baad try karo.', { type: 'no_driver_found', ride_id: String(row.id) }, { role: 'customer' }).catch(() => {});
+          }
           emitToRoom('ride_' + row.id, 'rideUpdate', { rideId: row.id, status: 'cancelled', reason: 'no_driver' });
         }
       } catch (_e) {}

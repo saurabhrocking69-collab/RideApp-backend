@@ -15,6 +15,7 @@ const { maybeGrantReferralReward } = require('./referral');
 const { getSurgeMultiplier } = require('../services/locationIntelligence');
 const { calculateFare, getISTHour } = require('../services/pricing');
 const { useSubscriptionIfActive } = require('../services/subscription');
+const { requiresAdvance, verifyAdvancePayment, refundToWallet } = require('../services/advance');
 
 function emitRideUpdate(rideId, data) {
   emitToRoom('ride_' + rideId, 'rideUpdate', { rideId, ...data });
@@ -135,11 +136,20 @@ router.post('/book', async (req, res) => {
     const fare = fareCalc.fare;
     const platFee = fareCalc.platform_fee;
 
+    // High-value city rides (>₹3000, rare) also require the 1/3 advance.
+    let advanceAmount = 0, advanceOrderId = null, advancePaymentId = null;
+    if (requiresAdvance(fare)) {
+      const adv = req.body.advance || {};
+      const v = await verifyAdvancePayment({ order_id: adv.order_id, payment_id: adv.payment_id, signature: adv.signature });
+      if (!v.ok) return res.status(402).json({ error: v.error || 'Advance payment required', advance_required: true, advance_amount: Math.round(fare / 3) });
+      advanceAmount = v.amount; advanceOrderId = adv.order_id; advancePaymentId = adv.payment_id;
+    }
+
     // Surge is NOT applied at booking — it's offered to customer only after no driver accepts
     const ride = await db.query(
-      `INSERT INTO rides (passenger_id, pickup, drop_location, ride_type, fare, status, pickup_lat, pickup_lng, drop_lat, drop_lng, discount, promo_code, distance_km, platform_fee, route_polyline, route_type)
-       VALUES ($1, $2, $3, $4, $5, 'requested', $6, $7, $8, $9, $10, $11, $12, $13, $14, $15) RETURNING *`,
-      [passenger.rows[0].id, pickup, drop_location, ride_type, fare, pickup_lat || null, pickup_lng || null, drop_lat || null, drop_lng || null, discount || 0, promo_code || null, distance, platFee, route_polyline || null, route_type || null]
+      `INSERT INTO rides (passenger_id, pickup, drop_location, ride_type, fare, status, pickup_lat, pickup_lng, drop_lat, drop_lng, discount, promo_code, distance_km, platform_fee, route_polyline, route_type, advance_amount, advance_status, advance_order_id, advance_payment_id)
+       VALUES ($1, $2, $3, $4, $5, 'requested', $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19) RETURNING *`,
+      [passenger.rows[0].id, pickup, drop_location, ride_type, fare, pickup_lat || null, pickup_lng || null, drop_lat || null, drop_lng || null, discount || 0, promo_code || null, distance, platFee, route_polyline || null, route_type || null, advanceAmount, advanceAmount > 0 ? 'paid' : 'none', advanceOrderId, advancePaymentId]
     );
 
     const disc = discount || 0;
@@ -617,6 +627,35 @@ router.post('/cancel-smart', async (req, res) => {
       [ride_id]
     );
     if (!smartCancelRes.rows[0]) return res.json({ success: false, message: 'Ride is already started, completed, or cancelled' });
+
+    // ── Advance refund tiers ─────────────────────────────────────────────────
+    // Refund the 1/3 advance to the customer's wallet, minus a tiered penalty:
+    //   • no driver yet / driver cancelled  → full refund
+    //   • customer cancels ≤3 min after match → full refund (grace)
+    //   • customer cancels >3 min after match → ₹100 penalty
+    //   • customer cancels after driver arrived → ₹300 penalty
+    let advanceRefund = 0, advancePenalty = 0;
+    const advAmt = parseFloat(ride.advance_amount || 0);
+    if (advAmt > 0 && ride.advance_status === 'paid') {
+      if (cancelled_by === 'driver' || !ride.driver_id) {
+        advancePenalty = 0;                                   // platform/driver's fault → full refund
+      } else if (ride.status === 'arrived') {
+        advancePenalty = 300;                                 // driver already at pickup
+      } else if (secondsAfterBook > 180) {
+        advancePenalty = 100;                                 // past the 3-min grace
+      } else {
+        advancePenalty = 0;                                   // within grace
+      }
+      advancePenalty = Math.min(advancePenalty, advAmt);
+      advanceRefund  = Math.round((advAmt - advancePenalty) * 100) / 100;
+      if (advanceRefund > 0 && ride.passenger_phone)
+        await refundToWallet(null, ride.passenger_phone, advanceRefund, ride_id, `Advance refund (₹${advancePenalty} cancel penalty)`).catch(() => {});
+      await db.query(
+        "UPDATE rides SET advance_status=$1 WHERE id=$2",
+        [advancePenalty >= advAmt ? 'forfeited' : (advancePenalty > 0 ? 'partial_refund' : 'refunded'), ride_id]
+      ).catch(() => {});
+      penalty = advancePenalty; // surface the advance penalty as the cancel penalty
+    }
     await db.query(
       `INSERT INTO cancellations (ride_id, cancelled_by, reason, seconds_after_book, penalty_applied) VALUES ($1, $2, $3, $4, $5)`,
       [ride_id, cancelled_by, reason || '', secondsAfterBook, penalty]
@@ -624,7 +663,9 @@ router.post('/cancel-smart', async (req, res) => {
     // Socket: both apps need real-time cancel, FCM alone isn't enough when app is in foreground
     emitRideUpdate(ride_id, { status: 'cancelled', cancelled_by, penalty });
     clearRideCache(ride_id).catch(() => {});
-    res.json({ success: true, penalty, message });
+    if (advAmt > 0 && ride.passenger_phone && advanceRefund > 0)
+      sendFCM(ride.passenger_phone, '💸 Advance Refunded', `₹${advanceRefund} refunded to your wallet${advancePenalty > 0 ? ` (₹${advancePenalty} cancellation charge)` : ''}.`, { type: 'advance_refunded', ride_id: String(ride_id) }, { role: 'customer' }).catch(() => {});
+    res.json({ success: true, penalty, message, advance_refund: advanceRefund, advance_penalty: advancePenalty });
   } catch (err) { console.error('[rides]', err.message); res.status(500).json({ error: 'Something went wrong — please try again' }); }
 });
 
@@ -818,8 +859,12 @@ router.post('/payment-complete', async (req, res) => {
 
       // Atomic idempotency: only update rides that are not yet 'completed'; returns 0 rows if a
       // concurrent request already completed it — prevents double commission insertion.
+      // For an advance ride the platform holds advance + this digital remaining =
+      // full fare, keeps commission, credits driver (fare - commission) below —
+      // same as any digital ride, so just mark the advance settled here.
       const rideUpdate = await payClient.query(
-        `UPDATE rides SET payment_method=$1, payment_status='completed', commission_amount=$2, commission_status='collected'
+        `UPDATE rides SET payment_method=$1, payment_status='completed', commission_amount=$2, commission_status='collected',
+           advance_status = CASE WHEN COALESCE(advance_amount,0) > 0 THEN 'settled' ELSE advance_status END
          WHERE id=$3 AND payment_status != 'completed' RETURNING id`,
         [payment_method, commission, ride_id]
       );
@@ -923,36 +968,51 @@ router.post('/cash-confirm', async (req, res) => {
     // Subscription check
     const { commission } = await useSubscriptionIfActive(phone, ride_id, 'standard', normalCommission);
 
+    const advanceAmt = parseFloat(rideRes.rows[0].advance_amount || 0);
     await db.query(`UPDATE rides SET payment_status = 'completed', payment_method = $1, commission_amount = $2 WHERE id = $3`, [method, commission, ride_id]);
-    // Upsert, not update: the driver can confirm cash before (or without) the
-    // customer ever hitting /payment-complete, so no driver_commissions row may
-    // exist yet. A bare UPDATE would then silently match 0 rows -- the wallet
-    // debt below still gets added, but with no audit-trail record, causing the
-    // per-ride commission list to permanently disagree with the wallet total.
-    await db.query(
-      `INSERT INTO driver_commissions (driver_phone, ride_id, fare, commission, payment_method, status)
-       VALUES ($1, $2, $3, $4, $5, 'cash_owed')
-       ON CONFLICT (ride_id) DO UPDATE SET status = 'cash_owed', commission = $4, payment_method = $5`,
-      [phone, ride_id, fare, commission, method]
-    );
 
     let totalPending = 0;
-    if (commission > 0) {
-      // Ensure wallet row exists before updating pending_commission
-      const driverUser = await db.query('SELECT id FROM users WHERE phone=$1', [phone]);
-      if (driverUser.rows[0]) {
-        await db.query(
-          `INSERT INTO driver_wallet (driver_id) VALUES ($1) ON CONFLICT (driver_id) DO NOTHING`,
-          [driverUser.rows[0].id]
-        );
-      }
-      const walletRes = await db.query(
-        `UPDATE driver_wallet SET pending_commission = COALESCE(pending_commission, 0) + $1
-         WHERE driver_id = (SELECT id FROM users WHERE phone = $2) RETURNING pending_commission`,
-        [commission, phone]
+    if (advanceAmt > 0) {
+      // Advance ride: the platform already holds the 1/3 advance online, so it
+      // takes its commission from THERE — the driver owes nothing and instead
+      // gets (advance - commission) credited to their wallet. Driver already
+      // holds the remaining (fare - advance) in cash. Net = fare - commission,
+      // with ZERO cash-commission debt.
+      const driverCredit = Math.max(0, Math.round((advanceAmt - commission) * 100) / 100);
+      await db.query(
+        `INSERT INTO driver_commissions (driver_phone, ride_id, fare, commission, payment_method, status)
+         VALUES ($1, $2, $3, $4, $5, 'advance_settled')
+         ON CONFLICT (ride_id) DO UPDATE SET status = 'advance_settled', commission = $4, payment_method = $5`,
+        [phone, ride_id, fare, commission, method]
       );
-      totalPending = parseFloat(walletRes.rows[0]?.pending_commission || 0);
-      sendFCM(phone, '💰 Commission Due', `₹${commission.toFixed(0)} commission due. Total pending: ₹${totalPending.toFixed(0)}. Pay in app.`, { type: 'commission_due', pending_commission: String(totalPending) }, { role: 'driver' }).catch(() => {});
+      const drv = await db.query('SELECT id FROM users WHERE phone=$1', [phone]);
+      if (drv.rows[0]) {
+        await db.query('INSERT INTO driver_wallet (driver_id) VALUES ($1) ON CONFLICT (driver_id) DO NOTHING', [drv.rows[0].id]);
+        await db.query('UPDATE driver_wallet SET balance = balance + $1, total_earned = total_earned + $1 WHERE driver_id = $2', [driverCredit, drv.rows[0].id]);
+      }
+      await db.query("UPDATE rides SET advance_status='settled' WHERE id=$1", [ride_id]).catch(() => {});
+      sendFCM(phone, '✅ Trip Settled', `₹${driverCredit.toFixed(0)} credited to your wallet (commission already covered by the advance — nothing due).`, { type: 'advance_settled', ride_id: String(ride_id) }, { role: 'driver' }).catch(() => {});
+    } else {
+      // Normal cash ride: driver owes the commission until they clear it in-app.
+      await db.query(
+        `INSERT INTO driver_commissions (driver_phone, ride_id, fare, commission, payment_method, status)
+         VALUES ($1, $2, $3, $4, $5, 'cash_owed')
+         ON CONFLICT (ride_id) DO UPDATE SET status = 'cash_owed', commission = $4, payment_method = $5`,
+        [phone, ride_id, fare, commission, method]
+      );
+      if (commission > 0) {
+        const driverUser = await db.query('SELECT id FROM users WHERE phone=$1', [phone]);
+        if (driverUser.rows[0]) {
+          await db.query(`INSERT INTO driver_wallet (driver_id) VALUES ($1) ON CONFLICT (driver_id) DO NOTHING`, [driverUser.rows[0].id]);
+        }
+        const walletRes = await db.query(
+          `UPDATE driver_wallet SET pending_commission = COALESCE(pending_commission, 0) + $1
+           WHERE driver_id = (SELECT id FROM users WHERE phone = $2) RETURNING pending_commission`,
+          [commission, phone]
+        );
+        totalPending = parseFloat(walletRes.rows[0]?.pending_commission || 0);
+        sendFCM(phone, '💰 Commission Due', `₹${commission.toFixed(0)} commission due. Total pending: ₹${totalPending.toFixed(0)}. Pay in app.`, { type: 'commission_due', pending_commission: String(totalPending) }, { role: 'driver' }).catch(() => {});
+      }
     }
     // Cashback for customer (cash/upi rides still earn ride-count cashbacks, not wallet bonus)
     let cashbacks = [];
