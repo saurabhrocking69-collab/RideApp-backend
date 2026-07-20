@@ -1373,18 +1373,25 @@ setInterval(async () => {
     }
     if (stuckMatched.rows.length) console.log(`🧹 Auto-cancelled ${stuckMatched.rows.length} stuck matched/arrived rides`);
 
-    // 3. Cancel a 'started' trip ONLY if the driver clearly forgot to end it —
-    //    measured from when the trip STARTED (not booking time), with a window
-    //    generous enough that no legitimate long trip is ever cut:
-    //      • intercity: 6 days (round trips run up to 5 days),
-    //      • city rides: 24h (no real city trip runs a full day).
+    // 3. Cancel a 'started' trip ONLY if the driver clearly forgot to end it.
+    //    No fixed timer can be right for every trip length (a Kanyakumari round
+    //    trip can run 2 weeks), so we tie the window to the trip's OWN expected
+    //    duration instead of a guess:
+    //      • city rides            → 24h from trip start (none run a full day)
+    //      • intercity round trip  → 3 days PAST the return_at the customer
+    //                                 booked (so a 12-day trip is safe till day 15)
+    //      • intercity one-way / no return_at → generous 10-day fallback
     //    Hourly rides live in hourly_bookings (not here) and are untouched.
     const stuckStarted = await db.query(
       `UPDATE rides SET status='cancelled'
        WHERE status = 'started'
-         AND COALESCE(trip_started_at, created_at) < NOW() - (
-           CASE WHEN COALESCE(is_intercity, false) THEN INTERVAL '6 days'
-                ELSE INTERVAL '24 hours' END
+         AND (
+           (COALESCE(is_intercity, false) = false
+              AND COALESCE(trip_started_at, created_at) < NOW() - INTERVAL '24 hours')
+           OR (is_intercity = true AND return_at IS NOT NULL
+              AND return_at < NOW() - INTERVAL '3 days')
+           OR (is_intercity = true AND return_at IS NULL
+              AND COALESCE(trip_started_at, created_at) < NOW() - INTERVAL '10 days')
          )
        RETURNING id, passenger_id`
     );
