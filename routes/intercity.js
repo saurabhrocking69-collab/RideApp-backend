@@ -140,9 +140,9 @@ router.post('/book', async (req, res) => {
     if (scheduledTime) {
       // Reuse the scheduled-rides pipeline: driver matched 15 min before departure
       const srRes = await db.query(
-        `INSERT INTO scheduled_rides (ride_id, status, scheduled_at, updated_at)
-         VALUES ($1,'pending',$2,NOW()) RETURNING id`,
-        [rideId, scheduledTime]
+        `INSERT INTO scheduled_rides (ride_id, customer_phone, status, scheduled_at, updated_at)
+         VALUES ($1,$2,'pending',$3,NOW()) RETURNING id`,
+        [rideId, passenger_phone, scheduledTime]
       );
       const delayMs = Math.max(0, scheduledTime.getTime() - Date.now() - 15 * 60 * 1000);
       try {

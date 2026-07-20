@@ -21,6 +21,28 @@ db.query(`
 // Migrate: ride_id was INT in the original Railway table, must be TEXT for UUID ride IDs
 db.query(`ALTER TABLE scheduled_rides ALTER COLUMN ride_id TYPE TEXT USING ride_id::TEXT`).catch(() => {});
 db.query('ALTER TABLE scheduled_rides ADD COLUMN IF NOT EXISTS bullmq_job_id VARCHAR(100)').catch(() => {});
+// The original Railway scheduled_rides table pre-dates this feature and has extra
+// legacy columns with NOT NULL constraints (e.g. customer_phone) that broke our
+// INSERTs. Ensure every column this code uses exists, and drop NOT NULL from all
+// legacy columns we don't populate.
+db.query('ALTER TABLE scheduled_rides ADD COLUMN IF NOT EXISTS customer_phone VARCHAR(20)').catch(() => {});
+db.query('ALTER TABLE scheduled_rides ADD COLUMN IF NOT EXISTS status TEXT DEFAULT \'pending\'').catch(() => {});
+db.query('ALTER TABLE scheduled_rides ADD COLUMN IF NOT EXISTS scheduled_at TIMESTAMPTZ').catch(() => {});
+db.query('ALTER TABLE scheduled_rides ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT NOW()').catch(() => {});
+db.query('ALTER TABLE scheduled_rides ADD COLUMN IF NOT EXISTS failed_reason TEXT').catch(() => {});
+db.query(`
+  DO $$
+  DECLARE col RECORD;
+  BEGIN
+    FOR col IN
+      SELECT column_name FROM information_schema.columns
+      WHERE table_name='scheduled_rides' AND is_nullable='NO'
+        AND column_name NOT IN ('id','ride_id')
+    LOOP
+      EXECUTE format('ALTER TABLE scheduled_rides ALTER COLUMN %I DROP NOT NULL', col.column_name);
+    END LOOP;
+  END $$;
+`).catch(() => {});
 db.query('ALTER TABLE rides ADD COLUMN IF NOT EXISTS cancel_reason TEXT').catch(() => {});
 db.query('ALTER TABLE rides ADD COLUMN IF NOT EXISTS is_scheduled BOOLEAN DEFAULT FALSE').catch(() => {});
 db.query('ALTER TABLE rides ADD COLUMN IF NOT EXISTS scheduled_at TIMESTAMPTZ').catch(() => {});
@@ -105,9 +127,9 @@ router.post('/', async (req, res) => {
 
     // INSERT into scheduled_rides
     const srRes = await db.query(
-      `INSERT INTO scheduled_rides (ride_id, status, scheduled_at, updated_at)
-       VALUES ($1,'pending',$2,NOW()) RETURNING *`,
-      [rideId, scheduledTime]
+      `INSERT INTO scheduled_rides (ride_id, customer_phone, status, scheduled_at, updated_at)
+       VALUES ($1,$2,'pending',$3,NOW()) RETURNING *`,
+      [rideId, passenger_phone, scheduledTime]
     );
     const srId = srRes.rows[0].id;
 
