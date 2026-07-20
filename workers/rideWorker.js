@@ -559,7 +559,7 @@ async function _bmqDispatchScheduledRide({ ride_id, scheduled_ride_id, pickup_la
 
   // Check ride is still waiting (customer may have cancelled)
   const rideRow = await db.query(
-    `SELECT id, pickup_lat, pickup_lng, ride_type FROM rides WHERE id=$1 AND status='scheduled'`,
+    `SELECT id, pickup_lat, pickup_lng, ride_type, scheduled_at FROM rides WHERE id=$1 AND status='scheduled'`,
     [ride_id]
   );
   if (!rideRow.rows[0]) {
@@ -594,7 +594,17 @@ async function _bmqDispatchScheduledRide({ ride_id, scheduled_ride_id, pickup_la
   const lng  = rideRow.rows[0].pickup_lng  ?? pickup_lng;
   const type = rideRow.rows[0].ride_type   ?? ride_type;
 
-  await assignRideToNextDriver(ride_id, lat, lng, type, null, null, false, true);
+  // The generous 120s-per-radius-level "scheduled" window exists to give
+  // drivers advance notice when this fires at its intended T-15min moment.
+  // If we're dispatching AT or AFTER the customer's actual pickup time
+  // (late original firing, or a health-check recovery run well past due),
+  // the customer is waiting right now -- dispatch urgently (30s/level) like
+  // a real-time ride instead of making them wait up to 24 more minutes.
+  const scheduledAt = rideRow.rows[0].scheduled_at;
+  const isStillAdvanceNotice = scheduledAt ? new Date(scheduledAt).getTime() > Date.now() : true;
+  if (!isStillAdvanceNotice) console.log(`[SCHED_DISPATCH] ride=${ride_id} — dispatching past its scheduled time, using urgent window`);
+
+  await assignRideToNextDriver(ride_id, lat, lng, type, null, null, false, isStillAdvanceNotice);
 }
 
 // ── Fallback: buddy ignored direct request → start normal broadcast ───────────
