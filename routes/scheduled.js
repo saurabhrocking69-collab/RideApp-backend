@@ -183,8 +183,8 @@ router.get('/my-rides', async (req, res) => {
               r.created_at,
               sr.id AS sr_id, sr.status AS sr_status, sr.failed_reason
        FROM rides r
-       JOIN scheduled_rides sr ON sr.ride_id = r.id
-       JOIN users u ON r.passenger_id = u.id
+       JOIN scheduled_rides sr ON sr.ride_id = r.id::text
+       JOIN users u ON r.passenger_id::text = u.id::text
        WHERE u.phone = $1
          AND r.is_scheduled = true
        ORDER BY r.scheduled_at DESC
@@ -209,8 +209,8 @@ router.delete('/:id', async (req, res) => {
       `SELECT r.id, r.status, r.scheduled_at,
               sr.id AS sr_id, sr.bullmq_job_id, sr.status AS sr_status
        FROM rides r
-       JOIN scheduled_rides sr ON sr.ride_id = r.id
-       JOIN users u ON r.passenger_id = u.id
+       JOIN scheduled_rides sr ON sr.ride_id = r.id::text
+       JOIN users u ON r.passenger_id::text = u.id::text
        WHERE r.id=$1 AND u.phone=$2 AND r.is_scheduled=true`,
       [rideId, phone]
     );
