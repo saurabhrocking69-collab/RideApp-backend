@@ -8,6 +8,7 @@ const { maskPhone } = require('../services/phone');
 const { emitToRoom, getIO } = require('../config/socket');
 const { directFavouriteRideIds } = require('./favourites');
 const { setDriverLoc } = require('../services/rideCache');
+const { attachAreaNames } = require('../services/zoneNames');
 
 // POST /api/upload
 router.post('/upload', async (req, res) => {
@@ -522,6 +523,8 @@ router.get('/demand-zones', async (req, res) => {
         heat: count >= 5 ? 'high' : count >= 3 ? 'medium' : 'low',
       };
     }).sort((a, b) => a.dist_km - b.dist_km);
+
+    await attachAreaNames(zones);
 
     res.json({ zones, updated_at: new Date().toISOString() });
   } catch (err) { console.error('[drivers]', err.message); res.status(500).json({ error: 'Something went wrong — please try again' }); }
