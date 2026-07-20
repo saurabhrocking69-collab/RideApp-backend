@@ -896,7 +896,7 @@ router.post('/cash-confirm', async (req, res) => {
   const method = payment_method === 'upi_direct' ? 'upi' : 'cash';
   try {
     const rideRes = await db.query(
-      `SELECT r.*, u.phone AS driver_phone, fs.commission_rate FROM rides r
+      `SELECT r.*, u.phone AS driver_phone, fs.commission_rate, fs.intercity_commission_rate FROM rides r
        JOIN users u ON r.driver_id = u.id
        LEFT JOIN fare_settings fs ON fs.vehicle_type = r.ride_type
        WHERE r.id = $1 AND r.status = 'completed'`,
@@ -908,13 +908,25 @@ router.post('/cash-confirm', async (req, res) => {
     if (rideRes.rows[0].payment_status === 'completed')
       return res.json({ success: true, message: 'Payment already confirmed' });
     const fare = Math.max(0, parseFloat(rideRes.rows[0].fare) - parseFloat(rideRes.rows[0].discount || 0));
-    const commRate = parseFloat(rideRes.rows[0].commission_rate || 15) / 100;
+    const commRate = rideRes.rows[0].is_intercity
+      ? parseFloat(rideRes.rows[0].intercity_commission_rate || 10) / 100
+      : parseFloat(rideRes.rows[0].commission_rate || 15) / 100;
     const normalCommission = Math.round(fare * commRate * 100) / 100;
     // Subscription check
     const { commission } = await useSubscriptionIfActive(phone, ride_id, 'standard', normalCommission);
 
     await db.query(`UPDATE rides SET payment_status = 'completed', payment_method = $1, commission_amount = $2 WHERE id = $3`, [method, commission, ride_id]);
-    await db.query(`UPDATE driver_commissions SET status = 'cash_owed', commission = $1, payment_method = $2 WHERE ride_id = $3`, [commission, method, ride_id]);
+    // Upsert, not update: the driver can confirm cash before (or without) the
+    // customer ever hitting /payment-complete, so no driver_commissions row may
+    // exist yet. A bare UPDATE would then silently match 0 rows -- the wallet
+    // debt below still gets added, but with no audit-trail record, causing the
+    // per-ride commission list to permanently disagree with the wallet total.
+    await db.query(
+      `INSERT INTO driver_commissions (driver_phone, ride_id, fare, commission, payment_method, status)
+       VALUES ($1, $2, $3, $4, $5, 'cash_owed')
+       ON CONFLICT (ride_id) DO UPDATE SET status = 'cash_owed', commission = $4, payment_method = $5`,
+      [phone, ride_id, fare, commission, method]
+    );
 
     let totalPending = 0;
     if (commission > 0) {
