@@ -72,13 +72,13 @@ router.post('/login', async (req, res) => {
     const result = await db.query(
       `SELECT u.id, u.name, u.phone, d.vehicle_type, d.vehicle_no, d.vehicle_brand, d.vehicle_model,
               d.dl_name, d.dl_number, d.aadhaar_number, d.face_photo,
-              d.verification_status, d.admin_message, d.rating
+              d.verification_status, d.admin_message, d.rating, d.is_online
        FROM users u JOIN drivers d ON u.id = d.id WHERE u.phone = $1`, [phone]
     );
     if (result.rows.length === 0) return res.json({ success: false, message: 'This number is not registered. Please sign up as a Sppero Buddy first.' });
     const d = result.rows[0];
     const maskedAadhaar = d.aadhaar_number ? 'XXXX XXXX ' + d.aadhaar_number.replace(/\D/g, '').slice(-4) : null;
-    res.json({ success: true, driver: { name: d.name || d.dl_name, phone: d.phone, vehicle_type: d.vehicle_type, vehicle_no: d.vehicle_no, vehicle_brand: d.vehicle_brand, vehicle_model: d.vehicle_model, dl_number: d.dl_number, aadhaar_masked: maskedAadhaar, face_photo: d.face_photo, rating: d.rating || 5.0, status: d.verification_status, admin_message: d.admin_message } });
+    res.json({ success: true, driver: { name: d.name || d.dl_name, phone: d.phone, vehicle_type: d.vehicle_type, vehicle_no: d.vehicle_no, vehicle_brand: d.vehicle_brand, vehicle_model: d.vehicle_model, dl_number: d.dl_number, aadhaar_masked: maskedAadhaar, face_photo: d.face_photo, rating: d.rating || 5.0, status: d.verification_status, admin_message: d.admin_message, is_online: d.is_online } });
   } catch (err) { console.error('[drivers]', err.message); res.status(500).json({ error: 'Something went wrong — please try again' }); }
 });
 
