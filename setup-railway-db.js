@@ -1,6 +1,11 @@
+require('dotenv').config();
+if (!process.env.DATABASE_PUBLIC_URL && !process.env.DATABASE_URL) {
+  console.error('\u274c Set DATABASE_PUBLIC_URL or DATABASE_URL in your environment before running this script.');
+  process.exit(1);
+}
 const { Pool } = require('pg');
 const db = new Pool({ 
-  connectionString: 'postgresql://postgres:FfxsUaHWYRSbaNfIrUiRrcUtwEweYHhR@zephyr.proxy.rlwy.net:20998/railway',
+  connectionString: process.env.DATABASE_PUBLIC_URL || process.env.DATABASE_URL,
   ssl: { rejectUnauthorized: false }
 });
 
