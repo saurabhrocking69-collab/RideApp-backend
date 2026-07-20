@@ -167,7 +167,9 @@ router.post('/', async (req, res) => {
     ).catch(() => {});
   } catch (err) {
     console.error('[scheduled] POST error:', err.message);
-    res.status(500).json({ error: 'Something went wrong — please try again' });
+    // detail: real pg/js error — client shows only `error`, but detail makes
+    // production failures diagnosable without log access
+    res.status(500).json({ error: 'Something went wrong — please try again', detail: err.message });
   }
 });
 
