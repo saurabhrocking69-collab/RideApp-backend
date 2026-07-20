@@ -1269,12 +1269,21 @@ setTimeout(async () => {
 
   // ── Cancel stuck matched/arrived rides at startup ────────────────────────
   // These hold drivers hostage: worker excludes any driver with an active matched/arrived/started ride.
-  // A ride is "stuck" if it was created 30+ minutes ago and never progressed past matched/arrived.
+  // A ride is "stuck" ONLY if the driver has genuinely vanished — i.e. no fresh
+  // GPS. Never cancel a ride whose driver is actively moving toward pickup, even
+  // if it was booked long ago (scheduled rides have a created_at hours in the
+  // past yet are perfectly live once matched — the old created_at-only rule
+  // killed those, and any instant ride with a >30min approach, mid-trip).
   try {
     const stuckMatched = await db.query(
       `UPDATE rides SET status='cancelled'
        WHERE status IN ('matched','arrived')
-         AND created_at < NOW() - INTERVAL '30 minutes'
+         AND COALESCE(driver_matched_at, created_at) < NOW() - INTERVAL '30 minutes'
+         AND driver_id IN (
+           SELECT u.id FROM users u
+           LEFT JOIN driver_locations dl ON dl.phone = u.phone
+           WHERE dl.updated_at IS NULL OR dl.updated_at < NOW() - INTERVAL '8 minutes'
+         )
        RETURNING id, passenger_id, driver_id`
     );
     for (const r of stuckMatched.rows) {
@@ -1339,11 +1348,19 @@ setInterval(async () => {
       console.log(`🧹 Auto-cancelled ${stalePreAssignedRows.rows.length} stuck pre_assigned rides`);
     }
 
-    // 3. Cancel stuck matched/arrived rides older than 30 min — these block drivers from future matches
+    // 3. Cancel stuck matched/arrived rides — ONLY when the driver has genuinely
+    //    vanished (no fresh GPS). Never cancel a driver actively approaching pickup,
+    //    however long ago the ride was booked (scheduled rides + long approaches
+    //    were being wrongly killed by the old created_at-only rule).
     const stuckMatched = await db.query(
       `UPDATE rides SET status='cancelled'
        WHERE status IN ('matched','arrived')
-         AND created_at < NOW() - INTERVAL '30 minutes'
+         AND COALESCE(driver_matched_at, created_at) < NOW() - INTERVAL '30 minutes'
+         AND driver_id IN (
+           SELECT u.id FROM users u
+           LEFT JOIN driver_locations dl ON dl.phone = u.phone
+           WHERE dl.updated_at IS NULL OR dl.updated_at < NOW() - INTERVAL '8 minutes'
+         )
        RETURNING id, passenger_id, driver_id`
     );
     for (const row of stuckMatched.rows) {
