@@ -74,6 +74,35 @@ router.post('/fare-estimate', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+// POST /api/fare-estimate/batch — all vehicle fares for a distance in ONE call
+// (the app used to fire 7 separate /fare-estimate requests per route; this is
+// one DB read + one response, so fares appear noticeably faster).
+router.post('/fare-estimate/batch', async (req, res) => {
+  const { distance, duration_min, pickup_lat, pickup_lng, drop_lat, drop_lng } = req.body;
+  try {
+    const { calculateFare, getISTHour } = require('../services/pricing');
+    let distKm = distance != null ? parseFloat(distance) : NaN;
+    if (isNaN(distKm) && pickup_lat != null && drop_lat != null) {
+      const R = 6371;
+      const dLat = (parseFloat(drop_lat) - parseFloat(pickup_lat)) * Math.PI / 180;
+      const dLon = (parseFloat(drop_lng) - parseFloat(pickup_lng)) * Math.PI / 180;
+      const a = Math.sin(dLat/2)**2 + Math.cos(parseFloat(pickup_lat)*Math.PI/180)*Math.cos(parseFloat(drop_lat)*Math.PI/180)*Math.sin(dLon/2)**2;
+      distKm = R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+    }
+    if (isNaN(distKm)) return res.status(400).json({ error: 'distance or coords required' });
+    const durMin = duration_min != null ? parseFloat(duration_min) : (distKm / 20) * 60;
+    const hour = getISTHour();
+    const all = await db.query('SELECT * FROM fare_settings');
+    const fares = {};
+    for (const f of all.rows) {
+      const isNight = hour >= parseInt(String(f.night_start || '22').split(':')[0]) || hour < parseInt(String(f.night_end || '6').split(':')[0]);
+      const r = calculateFare(f, distKm, durMin, isNight);
+      if (!isNaN(r.fare)) fares[f.vehicle_type] = r;
+    }
+    res.json({ fares, distance_km: Math.round(distKm * 10) / 10, duration_min: Math.round(durMin) });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
 // POST /api/sos
 router.post('/sos', async (req, res) => {
   const { phone, ride_id, lat, lng, type } = req.body;
