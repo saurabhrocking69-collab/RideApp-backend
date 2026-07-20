@@ -22,6 +22,11 @@ function emitRideUpdate(rideId, data) {
 
 // Ensure arrived_at column exists (idempotent)
 db.query('ALTER TABLE rides ADD COLUMN IF NOT EXISTS arrived_at TIMESTAMP').catch(() => {});
+// Customer-chosen route (bike "fastest vs shortest" feature). Polyline is the
+// encoded Google route the fare was priced on; the driver app draws it so the
+// driver navigates the exact path the customer paid for.
+db.query('ALTER TABLE rides ADD COLUMN IF NOT EXISTS route_polyline TEXT').catch(() => {});
+db.query("ALTER TABLE rides ADD COLUMN IF NOT EXISTS route_type VARCHAR(20)").catch(() => {});
 // Dynamic ETA correction columns + table
 db.query('ALTER TABLE rides ADD COLUMN IF NOT EXISTS driver_matched_at TIMESTAMP').catch(() => {});
 db.query('ALTER TABLE rides ADD COLUMN IF NOT EXISTS eta_estimate_min SMALLINT').catch(() => {});
@@ -96,7 +101,7 @@ async function processCashback(userId, phone, rideId, fare, paymentMethod) {
 
 // POST /api/rides/book
 router.post('/book', async (req, res) => {
-  const { passenger_phone, pickup, drop_location, ride_type, pickup_lat, pickup_lng, drop_lat, drop_lng, discount, promo_code } = req.body;
+  const { passenger_phone, pickup, drop_location, ride_type, pickup_lat, pickup_lng, drop_lat, drop_lng, discount, promo_code, route_polyline, route_type } = req.body;
   console.log(`[rides] 📥 book request: phone=${passenger_phone} type=${ride_type}`);
   if (!passenger_phone || String(passenger_phone).length !== 10) return res.status(400).json({ error: 'Valid phone do' });
   if (!pickup || !drop_location) return res.status(400).json({ error: 'Pickup and drop location required' });
@@ -132,9 +137,9 @@ router.post('/book', async (req, res) => {
 
     // Surge is NOT applied at booking — it's offered to customer only after no driver accepts
     const ride = await db.query(
-      `INSERT INTO rides (passenger_id, pickup, drop_location, ride_type, fare, status, pickup_lat, pickup_lng, drop_lat, drop_lng, discount, promo_code, distance_km, platform_fee)
-       VALUES ($1, $2, $3, $4, $5, 'requested', $6, $7, $8, $9, $10, $11, $12, $13) RETURNING *`,
-      [passenger.rows[0].id, pickup, drop_location, ride_type, fare, pickup_lat || null, pickup_lng || null, drop_lat || null, drop_lng || null, discount || 0, promo_code || null, distance, platFee]
+      `INSERT INTO rides (passenger_id, pickup, drop_location, ride_type, fare, status, pickup_lat, pickup_lng, drop_lat, drop_lng, discount, promo_code, distance_km, platform_fee, route_polyline, route_type)
+       VALUES ($1, $2, $3, $4, $5, 'requested', $6, $7, $8, $9, $10, $11, $12, $13, $14, $15) RETURNING *`,
+      [passenger.rows[0].id, pickup, drop_location, ride_type, fare, pickup_lat || null, pickup_lng || null, drop_lat || null, drop_lng || null, discount || 0, promo_code || null, distance, platFee, route_polyline || null, route_type || null]
     );
 
     const disc = discount || 0;
