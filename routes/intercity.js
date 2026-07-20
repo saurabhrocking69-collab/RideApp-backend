@@ -154,7 +154,7 @@ router.post('/book', async (req, res) => {
             pickup_lat: pickup_lat || null, pickup_lng: pickup_lng || null,
             ride_type: vehicle_type, passenger_phone,
           },
-          { delay: delayMs, removeOnComplete: true }
+          { delay: delayMs, removeOnComplete: true, attempts: 3, backoff: { type: 'exponential', delay: 10000 } }
         );
         await db.query('UPDATE scheduled_rides SET bullmq_job_id=$1 WHERE id=$2', [job.id, srRes.rows[0].id]);
       } catch (qErr) {

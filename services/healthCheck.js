@@ -62,6 +62,53 @@ async function checkStuckRides() {
 }
 
 async function checkScheduledRidesNotStuck() {
+  // The delayed BullMQ dispatch job has no retry -- if it fires during a
+  // transient outage (e.g. a deploy mid-restart), the ride is stranded
+  // forever with scheduled_rides.status stuck at 'pending' and no driver
+  // ever gets matched. Rather than just alert, actively recover: re-run the
+  // same dispatch logic now for anything still genuinely 'scheduled', and
+  // clear the tracker row for anything that left that state some other way
+  // (e.g. cancelled) without the row being updated to match.
+  const stuck = await db.query(`
+    SELECT sr.id AS sr_id, sr.ride_id, r.status AS ride_status,
+           r.pickup_lat, r.pickup_lng, r.ride_type, u.phone AS passenger_phone
+    FROM scheduled_rides sr
+    JOIN rides r ON r.id::text = sr.ride_id
+    LEFT JOIN users u ON u.id = r.passenger_id
+    WHERE sr.status = 'pending'
+      AND sr.scheduled_at < NOW() - INTERVAL '10 minutes'
+      AND sr.scheduled_at > NOW() - INTERVAL '24 hours'
+  `);
+
+  for (const row of stuck.rows) {
+    if (row.ride_status === 'scheduled') {
+      console.warn(`[HEALTH] Auto-recovering stranded scheduled ride=${row.ride_id}`);
+      const { dispatchScheduledRide } = require('../workers/rideWorker');
+      await dispatchScheduledRide({
+        ride_id: row.ride_id, scheduled_ride_id: row.sr_id,
+        pickup_lat: row.pickup_lat, pickup_lng: row.pickup_lng,
+        ride_type: row.ride_type, passenger_phone: row.passenger_phone,
+      }).catch(e => console.error('[HEALTH] Auto-recovery failed:', e.message));
+    } else if (row.ride_status === 'requested') {
+      // A previous partial run already flipped the ride to 'requested' but may
+      // have failed before the driver broadcast actually started -- re-queue
+      // via assign-next, which itself is a no-op if a broadcast is already
+      // in-flight (checked against assignment_expires_at).
+      console.warn(`[HEALTH] Re-queuing broadcast for stranded requested ride=${row.ride_id}`);
+      const { rideQueue } = require('../workers/rideWorker');
+      await rideQueue.add('ride-assignment', {
+        type: 'assign-next', rideId: row.ride_id,
+        pickupLat: row.pickup_lat, pickupLng: row.pickup_lng, rideType: row.ride_type,
+      }).catch(() => {});
+      await db.query(`UPDATE scheduled_rides SET status='dispatched', updated_at=NOW() WHERE id=$1`, [row.sr_id]).catch(() => {});
+    } else {
+      await db.query(
+        `UPDATE scheduled_rides SET status='failed', failed_reason='Reconciled: ride left scheduled state without tracker update', updated_at=NOW() WHERE id=$1`,
+        [row.sr_id]
+      ).catch(() => {});
+    }
+  }
+
   const res = await db.query(
     `SELECT COUNT(*) AS cnt FROM scheduled_rides
      WHERE status = 'pending'

@@ -37,7 +37,13 @@ const rideWorker = new Worker('ride-assignment', async (job) => {
   if (d.type === 'assign-next')            await _bmqAssignNext(d).catch(e => console.error('[ASSIGN-NEXT] error:', e.message));
   if (d.type === 'pre-assign-timeout')     await _bmqPreAssignTimeout(d).catch(e => console.error('[PRE-ASSIGN-TIMEOUT] error:', e.message));
   if (d.type === 'pre-assign-recheck')     await _bmqPreAssignRecheck(d).catch(e => console.error('[PRE-ASSIGN-RECHECK] error:', e.message));
-  if (d.type === 'dispatch-scheduled-ride') await _bmqDispatchScheduledRide(d).catch(e => console.error('[SCHED_DISPATCH] error:', e.message));
+  // NOTE: unlike the other job types above, this one does NOT swallow its
+  // error — it rethrows after logging so BullMQ's attempts/backoff (set at
+  // enqueue time) actually retries a transient failure (e.g. a DB blip
+  // mid-deploy) instead of silently stranding the ride forever.
+  if (d.type === 'dispatch-scheduled-ride') {
+    await _bmqDispatchScheduledRide(d).catch(e => { console.error('[SCHED_DISPATCH] error:', e.message); throw e; });
+  }
 }, { connection: makeBmqConn(), concurrency: 5 });
 
 rideWorker.on('failed', (job, err) => {
@@ -665,4 +671,4 @@ async function assignRideToNextDriver(rideId, pickupLat, pickupLng, rideType, _i
   await _escalate(rideId, rideType, !!afterSurge, pickupLat, pickupLng);
 }
 
-module.exports = { rideQueue, rideWorker, assignRideToNextDriver, broadcastToRadius, activateQueuedRide };
+module.exports = { rideQueue, rideWorker, assignRideToNextDriver, broadcastToRadius, activateQueuedRide, dispatchScheduledRide: _bmqDispatchScheduledRide };

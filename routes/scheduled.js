@@ -148,7 +148,7 @@ router.post('/', async (req, res) => {
           ride_type,
           passenger_phone,
         },
-        { delay: delayMs, removeOnComplete: true }
+        { delay: delayMs, removeOnComplete: true, attempts: 3, backoff: { type: 'exponential', delay: 10000 } }
       );
       bullmqJobId = job.id;
       await db.query(
