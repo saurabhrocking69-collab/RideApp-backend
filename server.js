@@ -1373,11 +1373,19 @@ setInterval(async () => {
     }
     if (stuckMatched.rows.length) console.log(`🧹 Auto-cancelled ${stuckMatched.rows.length} stuck matched/arrived rides`);
 
-    // 3. Cancel stuck 'started' rides older than 4 hours — driver vanished mid-trip
+    // 3. Cancel a 'started' trip ONLY if the driver clearly forgot to end it —
+    //    measured from when the trip STARTED (not booking time), with a window
+    //    generous enough that no legitimate long trip is ever cut:
+    //      • intercity: 6 days (round trips run up to 5 days),
+    //      • city rides: 24h (no real city trip runs a full day).
+    //    Hourly rides live in hourly_bookings (not here) and are untouched.
     const stuckStarted = await db.query(
       `UPDATE rides SET status='cancelled'
        WHERE status = 'started'
-         AND created_at < NOW() - INTERVAL '4 hours'
+         AND COALESCE(trip_started_at, created_at) < NOW() - (
+           CASE WHEN COALESCE(is_intercity, false) THEN INTERVAL '6 days'
+                ELSE INTERVAL '24 hours' END
+         )
        RETURNING id, passenger_id`
     );
     for (const row of stuckStarted.rows) {
