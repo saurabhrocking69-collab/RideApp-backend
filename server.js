@@ -1269,20 +1269,21 @@ setTimeout(async () => {
 
   // ── Cancel stuck matched/arrived rides at startup ────────────────────────
   // These hold drivers hostage: worker excludes any driver with an active matched/arrived/started ride.
-  // A ride is "stuck" ONLY if the driver has genuinely vanished — i.e. no fresh
-  // GPS. Never cancel a ride whose driver is actively moving toward pickup, even
-  // if it was booked long ago (scheduled rides have a created_at hours in the
-  // past yet are perfectly live once matched — the old created_at-only rule
-  // killed those, and any instant ride with a >30min approach, mid-trip).
+  // Only cancel a GENUINELY abandoned ride — deliberately very conservative so
+  // real-world India conditions never kill a live ride:
+  //   • matched >2h ago (no city pickup approach takes 2 hours — even a bad jam),
+  //   • AND driver GPS dead >20min (a traffic jam keeps GPS fresh; brief rain /
+  //     dead-zone network blips are far shorter than 20min).
+  // Both required, so a driver stuck in traffic or with flaky network is safe.
   try {
     const stuckMatched = await db.query(
       `UPDATE rides SET status='cancelled'
        WHERE status IN ('matched','arrived')
-         AND COALESCE(driver_matched_at, created_at) < NOW() - INTERVAL '30 minutes'
+         AND COALESCE(driver_matched_at, created_at) < NOW() - INTERVAL '2 hours'
          AND driver_id IN (
            SELECT u.id FROM users u
            LEFT JOIN driver_locations dl ON dl.phone = u.phone
-           WHERE dl.updated_at IS NULL OR dl.updated_at < NOW() - INTERVAL '8 minutes'
+           WHERE dl.updated_at IS NULL OR dl.updated_at < NOW() - INTERVAL '20 minutes'
          )
        RETURNING id, passenger_id, driver_id`
     );
@@ -1348,18 +1349,18 @@ setInterval(async () => {
       console.log(`🧹 Auto-cancelled ${stalePreAssignedRows.rows.length} stuck pre_assigned rides`);
     }
 
-    // 3. Cancel stuck matched/arrived rides — ONLY when the driver has genuinely
-    //    vanished (no fresh GPS). Never cancel a driver actively approaching pickup,
-    //    however long ago the ride was booked (scheduled rides + long approaches
-    //    were being wrongly killed by the old created_at-only rule).
+    // 3. Cancel stuck matched/arrived rides — ONLY a genuinely abandoned one:
+    //    matched >2h ago AND driver GPS dead >20min (both required). A driver in
+    //    a traffic jam keeps posting fresh GPS → never cancelled; brief rain /
+    //    dead-zone GPS gaps are far shorter than 20min. Deliberately conservative.
     const stuckMatched = await db.query(
       `UPDATE rides SET status='cancelled'
        WHERE status IN ('matched','arrived')
-         AND COALESCE(driver_matched_at, created_at) < NOW() - INTERVAL '30 minutes'
+         AND COALESCE(driver_matched_at, created_at) < NOW() - INTERVAL '2 hours'
          AND driver_id IN (
            SELECT u.id FROM users u
            LEFT JOIN driver_locations dl ON dl.phone = u.phone
-           WHERE dl.updated_at IS NULL OR dl.updated_at < NOW() - INTERVAL '8 minutes'
+           WHERE dl.updated_at IS NULL OR dl.updated_at < NOW() - INTERVAL '20 minutes'
          )
        RETURNING id, passenger_id, driver_id`
     );
