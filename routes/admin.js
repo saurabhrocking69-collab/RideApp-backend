@@ -4,6 +4,7 @@ const path = require('path');
 const db = require('../config/db');
 const { sendFCM } = require('../config/firebase');
 const { HOURLY_FARES, INTERCITY_FARES, setSurge, getSurge } = require('../services/pricing');
+const { refundToWallet, creditDriverWallet } = require('../services/advance');
 const { getIO } = require('../config/socket');
 
 // GET /api/admin/stats
@@ -335,6 +336,48 @@ router.get('/hourly-disputes', async (req, res) => {
     const r = await db.query("SELECT * FROM hourly_bookings WHERE dispute_raised=true ORDER BY id DESC");
     res.json(r.rows);
   } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// GET /api/admin/ride-disputes — emergency mid-trip cancellations awaiting decision
+router.get('/ride-disputes', async (req, res) => {
+  try {
+    const r = await db.query(`
+      SELECT d.*, r.pickup, r.drop_location, r.ride_type, r.is_intercity,
+             EXTRACT(EPOCH FROM (NOW() - d.created_at))/3600 AS hours_ago
+      FROM ride_disputes d LEFT JOIN rides r ON r.id::text = d.ride_id
+      ORDER BY (d.status='pending') DESC, d.created_at DESC LIMIT 100`);
+    res.json({ disputes: r.rows });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// POST /api/admin/ride-disputes/resolve — admin sets penalty, refund, driver award
+// { dispute_id, refund_to_customer, driver_credit, note }
+router.post('/ride-disputes/resolve', async (req, res) => {
+  const { dispute_id, refund_to_customer, driver_credit, note } = req.body;
+  try {
+    const dr = await db.query("SELECT * FROM ride_disputes WHERE id=$1 AND status='pending'", [dispute_id]);
+    if (!dr.rows[0]) return res.status(404).json({ error: 'Dispute not found or already resolved' });
+    const d = dr.rows[0];
+    const refund = Math.max(0, Math.min(parseFloat(refund_to_customer) || 0, parseFloat(d.held_advance)));
+    const drvCredit = Math.max(0, parseFloat(driver_credit) || 0);
+    const penalty = Math.max(0, parseFloat(d.held_advance) - refund);
+
+    if (refund > 0 && d.customer_phone) await refundToWallet(null, d.customer_phone, refund, d.ride_id, 'Emergency ride refund (admin decision)').catch(() => {});
+    if (drvCredit > 0 && d.driver_phone) await creditDriverWallet(null, d.driver_phone, drvCredit, 'Emergency ride compensation').catch(() => {});
+
+    await db.query(
+      "UPDATE ride_disputes SET status='resolved', admin_penalty=$1, admin_refund=$2, driver_credit=$3, admin_note=$4, resolved_at=NOW() WHERE id=$5",
+      [penalty, refund, drvCredit, note || '', dispute_id]
+    );
+    await db.query("UPDATE rides SET advance_status = CASE WHEN $1 >= held.hb THEN 'forfeited' WHEN $1 > 0 THEN 'partial_refund' ELSE 'refunded' END FROM (SELECT $2::numeric AS hb) held WHERE id=$3",
+      [penalty, parseFloat(d.held_advance), d.ride_id]).catch(() => {});
+
+    const { sendFCM } = require('../config/firebase');
+    if (d.customer_phone) sendFCM(d.customer_phone, '✅ Report Resolved', refund > 0 ? `₹${refund} refunded to your wallet${penalty > 0 ? ` (₹${penalty} deducted)` : ''}.` : `After review, no refund was issued.`, { type: 'advance_refunded', ride_id: String(d.ride_id) }, { role: 'customer' }).catch(() => {});
+    if (drvCredit > 0 && d.driver_phone) sendFCM(d.driver_phone, '💰 Compensation Credited', `₹${drvCredit} credited to your wallet for the cancelled trip.`, { type: 'advance_settled', ride_id: String(d.ride_id) }, { role: 'driver' }).catch(() => {});
+
+    res.json({ success: true, refund, penalty, driver_credit: drvCredit });
+  } catch (err) { console.error('[admin] ride-dispute resolve', err.message); res.status(500).json({ error: err.message }); }
 });
 
 // POST /api/admin/resolve-dispute

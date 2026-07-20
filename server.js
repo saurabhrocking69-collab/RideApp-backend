@@ -1458,6 +1458,25 @@ setInterval(async () => {
   } catch (_e) {}
 }, 30 * 60 * 1000); // runs every 30 minutes
 
+// ── Cron: auto-resolve emergency ride disputes after 2 days ──
+// If admin hasn't decided within the 2-day hold, refund the full held advance
+// to the customer (benefit of the doubt for a reported emergency).
+setInterval(async () => {
+  try {
+    const stale = await db.query(
+      `SELECT * FROM ride_disputes WHERE status='pending' AND created_at < NOW() - INTERVAL '2 days'`
+    );
+    for (const d of stale.rows) {
+      const refund = parseFloat(d.held_advance || 0);
+      if (refund > 0 && d.customer_phone) await refundToWallet(null, d.customer_phone, refund, d.ride_id, 'Emergency ride refund (auto — no admin decision in 2 days)').catch(() => {});
+      await db.query("UPDATE ride_disputes SET status='auto_refunded', admin_refund=$1, admin_penalty=0, resolved_at=NOW() WHERE id=$2", [refund, d.id]).catch(() => {});
+      await db.query("UPDATE rides SET advance_status='refunded' WHERE id=$1", [d.ride_id]).catch(() => {});
+      if (d.customer_phone) sendFCM(d.customer_phone, '💸 Advance Refunded', `₹${refund} refunded to your wallet.`, { type: 'advance_refunded', ride_id: String(d.ride_id) }, { role: 'customer' }).catch(() => {});
+    }
+    if (stale.rows.length) console.log(`[CLEANUP] Auto-refunded ${stale.rows.length} unresolved ride dispute(s) after 2 days`);
+  } catch (_e) {}
+}, 60 * 60 * 1000); // hourly
+
 // ── Hourly booking cleanup — auto-cancel pending bookings older than 30 min ──
 setInterval(async () => {
   try {

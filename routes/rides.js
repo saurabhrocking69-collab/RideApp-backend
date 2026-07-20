@@ -669,6 +669,43 @@ router.post('/cancel-smart', async (req, res) => {
   } catch (err) { console.error('[rides]', err.message); res.status(500).json({ error: 'Something went wrong — please try again' }); }
 });
 
+// POST /api/rides/report-cancel — customer emergency-cancels a STARTED ride.
+// The trip ends immediately, but the money (advance) is HELD, not auto-refunded:
+// admin decides the penalty/refund within 2 days (a mid-trip cancel could be a
+// genuine emergency or an abuse, so a human adjudicates).
+router.post('/report-cancel', async (req, res) => {
+  const { ride_id, phone, reason } = req.body;
+  try {
+    const r = await db.query(
+      `SELECT r.*, p.phone AS passenger_phone, u.phone AS driver_phone
+       FROM rides r LEFT JOIN users p ON r.passenger_id = p.id LEFT JOIN users u ON r.driver_id = u.id
+       WHERE r.id = $1`, [ride_id]
+    );
+    if (!r.rows[0]) return res.status(404).json({ error: 'Ride not found' });
+    const ride = r.rows[0];
+    if (ride.passenger_phone !== phone) return res.status(403).json({ error: 'This ride is not yours' });
+    if (ride.status !== 'started') return res.status(400).json({ error: 'Only an in-progress trip can be reported for emergency cancel' });
+
+    const heldAdvance = parseFloat(ride.advance_amount || 0);
+    await db.query("UPDATE rides SET status='cancelled', cancel_reason=$1, advance_status = CASE WHEN COALESCE(advance_amount,0) > 0 THEN 'held' ELSE advance_status END WHERE id=$2",
+      [`emergency_report: ${reason || 'unspecified'}`, ride_id]);
+    await db.query(
+      `INSERT INTO ride_disputes (ride_id, customer_phone, driver_phone, reason, held_advance, fare, status)
+       VALUES ($1,$2,$3,$4,$5,$6,'pending')`,
+      [ride_id, ride.passenger_phone, ride.driver_phone, reason || '', heldAdvance, parseFloat(ride.fare || 0)]
+    );
+
+    emitRideUpdate(ride_id, { status: 'cancelled', cancelled_by: 'customer', reason: 'emergency_report' });
+    clearRideCache(ride_id).catch(() => {});
+    if (ride.driver_phone)
+      sendFCM(ride.driver_phone, '⚠️ Trip Cancelled — Under Review', 'The customer reported an emergency and cancelled. Our team is reviewing; any due amount will be settled to your wallet.', { type: 'ride_cancelled', ride_id: String(ride_id) }, { channelId: 'ride_requests', role: 'driver' }).catch(() => {});
+    const adminPhone = process.env.ADMIN_ALERT_PHONE;
+    if (adminPhone) sendFCM(adminPhone, '🚨 Emergency Ride Report', `Ride ${ride_id} cancelled mid-trip. ₹${heldAdvance} held. Reason: ${reason || 'N/A'}. Review in admin.`, { type: 'health_alert', ride_id: String(ride_id) }, {}).catch(() => {});
+
+    res.json({ success: true, message: 'Your report is under review. Any refund will be decided within 2 days.', held_advance: heldAdvance });
+  } catch (err) { console.error('[rides] report-cancel', err.message); res.status(500).json({ error: 'Something went wrong — please try again' }); }
+});
+
 // POST /api/rides/complete
 // Accepts optional driver_lat/driver_lng for early-completion detection.
 // If driver is >800m from drop point, marks early_completion=true and logs an incident.

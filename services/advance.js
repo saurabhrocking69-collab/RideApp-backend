@@ -17,6 +17,37 @@ db.query("ALTER TABLE rides ADD COLUMN IF NOT EXISTS advance_status TEXT DEFAULT
 db.query('ALTER TABLE rides ADD COLUMN IF NOT EXISTS advance_order_id TEXT').catch(() => {});
 db.query('ALTER TABLE rides ADD COLUMN IF NOT EXISTS advance_payment_id TEXT').catch(() => {});
 
+// Emergency mid-trip cancellations → funds held, admin adjudicates within 2 days.
+db.query(`
+  CREATE TABLE IF NOT EXISTS ride_disputes (
+    id             SERIAL PRIMARY KEY,
+    ride_id        TEXT NOT NULL,
+    customer_phone TEXT,
+    driver_phone   TEXT,
+    reason         TEXT,
+    held_advance   NUMERIC DEFAULT 0,
+    fare           NUMERIC DEFAULT 0,
+    status         TEXT DEFAULT 'pending',   -- pending | resolved | auto_refunded
+    admin_penalty  NUMERIC,
+    admin_refund   NUMERIC,
+    driver_credit  NUMERIC,
+    admin_note     TEXT,
+    created_at     TIMESTAMPTZ DEFAULT NOW(),
+    resolved_at    TIMESTAMPTZ
+  )
+`).catch(() => {});
+
+// Credit a driver's wallet (used when admin awards the driver part of a dispute).
+async function creditDriverWallet(client, driverPhone, amount, note) {
+  const q = client || db;
+  const u = await q.query('SELECT id FROM users WHERE phone=$1', [driverPhone]);
+  if (!u.rows[0]) return false;
+  const driverId = u.rows[0].id;
+  await q.query('INSERT INTO driver_wallet (driver_id) VALUES ($1) ON CONFLICT (driver_id) DO NOTHING', [driverId]);
+  await q.query('UPDATE driver_wallet SET balance = balance + $1, total_earned = total_earned + $1 WHERE driver_id = $2', [amount, driverId]);
+  return true;
+}
+
 function advanceForFare(fare) {
   return Math.round((parseFloat(fare) || 0) * ADVANCE_FRACTION);
 }
@@ -56,5 +87,5 @@ async function refundToWallet(client, customerPhone, amount, rideId, note) {
 
 module.exports = {
   ADVANCE_THRESHOLD, ADVANCE_FRACTION,
-  advanceForFare, requiresAdvance, verifyAdvancePayment, refundToWallet, razorpay,
+  advanceForFare, requiresAdvance, verifyAdvancePayment, refundToWallet, creditDriverWallet, razorpay,
 };
