@@ -652,9 +652,12 @@ router.post('/complete', async (req, res) => {
       return res.status(403).json({ error: 'This ride does not belong to you' });
 
     // ── Recalculate actual fare using real trip duration ───────────────────────
+    // Intercity fares are FIXED at booking (own long-distance model with day
+    // allowance + night halts) — never run the city meter recalc on them, or a
+    // multi-day trip's duration (17,280 min for 12 days) would balloon the fare.
     let finalFare = parseFloat(ride.fare);
     let finalPlatFee = parseFloat(ride.platform_fee || 0);
-    if (ride.trip_started_at && ride.fs_time != null) {
+    if (!ride.is_intercity && ride.trip_started_at && ride.fs_time != null) {
       const actualDurMin = (Date.now() - new Date(ride.trip_started_at).getTime()) / 60000;
       const distKm = parseFloat(ride.distance_km) || 5;
       const hourNow = getISTHour();
