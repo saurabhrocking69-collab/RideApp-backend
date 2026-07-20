@@ -540,6 +540,12 @@ input,select,textarea{outline:none}
       <p style="font-size:12px;color:#6B7280;margin-bottom:10px">One-way ₹/km (driver returns empty) · Round ₹/km (2× distance billed) · Allowance per day · Night halt per overnight · Min billed km · Commission %. Changes apply instantly aur restart ke baad bhi rahenge.</p>
       <div id="intercity-fares-container"><div class="loading">Loading...</div></div>
     </div>
+    <!-- Emergency Ride Disputes -->
+    <div class="card" style="margin-top:14px">
+      <div class="card-title">🚨 Emergency Ride Disputes <button class="refresh-btn" onclick="loadRideDisputes()">⟳ Reload</button></div>
+      <p style="font-size:12px;color:#6B7280;margin-bottom:10px">Customer cancelled mid-trip → advance held. Decide the refund to the customer and any compensation to the driver. Penalty = held − refund. Unresolved cases auto-refund in full after 2 days.</p>
+      <div id="ride-disputes-container"><div class="loading">Loading...</div></div>
+    </div>
     <!-- All-Vehicles Fare Editor -->
     <div class="card" style="margin-top:14px;margin-bottom:18px">
       <div class="card-title">🚗 Standard Ride Fares — All Vehicles <button class="refresh-btn" onclick="loadStdFares()">⟳ Reload</button></div>
@@ -1023,7 +1029,7 @@ function showSection(id,btn){
   if(id==='rides') loadRides();
   if(id==='topups') loadTopups();
   if(id==='verify') loadVerifications();
-  if(id==='settings'){loadFares();loadStdFares();loadCancelSettings();loadCommRates();loadIntercityFares();}
+  if(id==='settings'){loadFares();loadStdFares();loadCancelSettings();loadCommRates();loadIntercityFares();loadRideDisputes();}
   if(id==='marketing'){loadCampaigns();loadPromos();loadReferrals();}
   if(id==='payouts'){loadPayouts('pending');}
   if(id==='complaints'){loadComplaints();}
@@ -1846,6 +1852,57 @@ async function loadFares(){
     html+='</tbody></table></div>';
     document.getElementById('fares-display').innerHTML=html;
   }catch(e){document.getElementById('fares-display').textContent='Error loading fares';}
+}
+
+// ── Emergency Ride Disputes ─────────────────────────
+async function loadRideDisputes(){
+  var el=document.getElementById('ride-disputes-container');
+  if(el) el.innerHTML='<div class="loading">Loading...</div>';
+  try{
+    const d=await aJson('/api/admin/ride-disputes');
+    if(d.error) throw new Error(d.error);
+    var rows=(d.disputes||[]);
+    var pending=rows.filter(function(x){return x.status==='pending';});
+    if(rows.length===0){ if(el) el.innerHTML='<div style="font-size:12px;color:#94a3b8">No emergency disputes.</div>'; return; }
+    var html='';
+    rows.forEach(function(x){
+      var held=parseFloat(x.held_advance||0);
+      var isPending=x.status==='pending';
+      var hoursAgo=Math.round(parseFloat(x.hours_ago||0));
+      html+='<div style="border:1px solid '+(isPending?'#f59e0b':'#e5e7eb')+';border-radius:10px;padding:12px;margin-bottom:10px;background:'+(isPending?'#fffbeb':'#f9fafb')+'">'
+        +'<div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:6px">'
+          +'<div style="font-size:12px;font-weight:700">'+(x.is_intercity?'🛣️ ':'')+(x.ride_type||'ride')+' · Ride '+String(x.ride_id).slice(0,8)+'</div>'
+          +'<div style="font-size:11px;color:'+(isPending?'#b45309':'#16a34a')+';font-weight:800">'+(isPending?('PENDING · '+hoursAgo+'h ago'):x.status.toUpperCase())+'</div>'
+        +'</div>'
+        +'<div style="font-size:11px;color:#64748b;margin-top:4px">'+trunc(x.pickup||'',30)+' → '+trunc(x.drop_location||'',30)+'</div>'
+        +'<div style="font-size:11px;color:#374151;margin-top:4px">Customer: '+(x.customer_phone||'-')+' · Driver: '+(x.driver_phone||'-')+'</div>'
+        +'<div style="font-size:11px;color:#991b1b;margin-top:4px">Reason: '+(x.reason||'—')+'</div>'
+        +'<div style="font-size:12px;font-weight:800;margin-top:6px">Held advance: ₹'+held.toFixed(0)+'</div>';
+      if(isPending){
+        html+='<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:8px">'
+          +'<label style="font-size:11px">Refund to customer ₹ <input id="disp-ref-'+x.id+'" type="number" value="'+held.toFixed(0)+'" max="'+held.toFixed(0)+'" style="width:70px" class="input-sm"></label>'
+          +'<label style="font-size:11px">Driver credit ₹ <input id="disp-drv-'+x.id+'" type="number" value="0" style="width:64px" class="input-sm"></label>'
+          +'<input id="disp-note-'+x.id+'" placeholder="Note (optional)" class="input-sm" style="flex:1;min-width:120px">'
+          +'<button class="refresh-btn" style="background:#dc2626;color:#fff;font-size:11px" onclick="resolveDispute('+x.id+','+held+')">Resolve</button>'
+        +'</div>';
+      } else {
+        html+='<div style="font-size:11px;color:#64748b;margin-top:6px">Refunded ₹'+parseFloat(x.admin_refund||0).toFixed(0)+' · penalty ₹'+parseFloat(x.admin_penalty||0).toFixed(0)+' · driver ₹'+parseFloat(x.driver_credit||0).toFixed(0)+(x.admin_note?(' · '+x.admin_note):'')+'</div>';
+      }
+      html+='</div>';
+    });
+    html+='<div id="disp-status" style="font-size:12px;margin-top:4px"></div>';
+    if(el) el.innerHTML=html;
+  }catch(e){ if(el) el.innerHTML='<div style="color:#c62828;font-size:12px">❌ '+e.message+'</div>'; }
+}
+async function resolveDispute(id, held){
+  var ref=parseFloat(document.getElementById('disp-ref-'+id).value);
+  var drv=parseFloat(document.getElementById('disp-drv-'+id).value);
+  var note=document.getElementById('disp-note-'+id).value;
+  if(isNaN(ref)||ref<0||ref>held){ alert('Refund must be between 0 and ₹'+held); return; }
+  const d=await aJson('/api/admin/ride-disputes/resolve',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({dispute_id:id,refund_to_customer:ref,driver_credit:drv||0,note:note})});
+  var el=document.getElementById('disp-status');
+  if(el){ el.textContent=d.success?('✅ Resolved — refund ₹'+d.refund+', penalty ₹'+d.penalty+', driver ₹'+d.driver_credit):('❌ '+(d.error||'Failed')); el.style.color=d.success?'#2e7d32':'#c62828'; }
+  if(d.success) setTimeout(loadRideDisputes,900);
 }
 
 // ── Intercity Fares ─────────────────────────────────
@@ -2828,7 +2885,7 @@ function refreshActive(){
     transactions:loadTransactions, rides:loadRides, customers:loadCustomers,
     drivers:loadDrivers, verify:loadVerifications, topups:loadTopups,
     marketing:()=>{loadCampaigns();loadPromos();loadReferrals();},
-    settings:()=>{loadFares();loadStdFares();loadCancelSettings();loadCommRates();loadIntercityFares();},
+    settings:()=>{loadFares();loadStdFares();loadCancelSettings();loadCommRates();loadIntercityFares();loadRideDisputes();},
     payouts:()=>loadPayouts('pending'), complaints:loadComplaints,
     incidents:loadIncidents, rewards:loadRewardSettings,
     location:loadLocationIntel, support:loadSupport
