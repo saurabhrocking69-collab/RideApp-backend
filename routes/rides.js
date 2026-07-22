@@ -1053,11 +1053,13 @@ router.post('/cash-confirm', async (req, res) => {
     }
     // Cashback for customer (cash/upi rides still earn ride-count cashbacks, not wallet bonus)
     let cashbacks = [];
+    let customerPhone = null;
     try {
       const passengerRes = await db.query(`SELECT passenger_id FROM rides WHERE id=$1`, [ride_id]);
       if (passengerRes.rows[0]) {
         const custUser = await db.query(`SELECT id, phone FROM users WHERE id=$1`, [passengerRes.rows[0].passenger_id]);
         if (custUser.rows[0]) {
+          customerPhone = custUser.rows[0].phone;
           cashbacks = await processCashback(custUser.rows[0].id, custUser.rows[0].phone, ride_id, fare, method);
           maybeGrantReferralReward(custUser.rows[0].id).catch(() => {});
         }
@@ -1065,6 +1067,13 @@ router.post('/cash-confirm', async (req, res) => {
     } catch (_e) {}
     // Notify customer's payment screen via socket so it can advance to post-ride without polling
     emitToRoom('ride_' + ride_id, 'paymentConfirmed', { ride_id, status: 'completed', payment_method: method, cashbacks });
+    // Socket alone is missed if the customer's app is backgrounded/killed at the
+    // exact moment the driver taps confirm — an FCM push is the durable
+    // fallback (picked up by the customer app's notification handlers, which
+    // also re-check payment_status directly so a missed push isn't fatal either).
+    if (customerPhone) {
+      sendFCM(customerPhone, '✅ Payment Received', `Your ₹${fare.toFixed(0)} payment has been confirmed by the driver.`, { type: 'payment_confirmed', ride_id: String(ride_id) }, { role: 'customer' }).catch(() => {});
+    }
     res.json({ success: true, message: 'Payment confirmed!', pending_commission: totalPending, cashbacks });
     // Activate any pre-assigned ride this driver has queued (fire-and-forget)
     activateQueuedRide(phone).catch(() => {});
