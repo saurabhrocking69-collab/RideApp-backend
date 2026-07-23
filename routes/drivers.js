@@ -121,7 +121,7 @@ router.get('/pending-ride', async (req, res) => {
 
     // Broadcast system: driver sees ride if phone in offered_phones OR directly assigned (favourite buddy)
     const assigned = await db.query(
-      `SELECT r.*, p.name AS passenger_name, p.phone AS passenger_phone
+      `SELECT r.*, COALESCE(NULLIF(r.rider_name,''), p.name) AS passenger_name, COALESCE(NULLIF(r.rider_phone,''), p.phone) AS passenger_phone
        FROM rides r JOIN users p ON r.passenger_id::text = p.id::text
        WHERE (
          $1 = ANY(COALESCE(r.offered_phones, '{}'))
@@ -145,7 +145,7 @@ router.get('/pending-ride', async (req, res) => {
     // Fallback: truly orphaned rides (>2 min, no active BullMQ assignment).
     // MUST exclude this driver if they already rejected — offered_phones tracks rejections.
     const fallback = await db.query(
-      `SELECT r.*, p.name AS passenger_name, p.phone AS passenger_phone FROM rides r JOIN users p ON r.passenger_id::text = p.id::text
+      `SELECT r.*, COALESCE(NULLIF(r.rider_name,''), p.name) AS passenger_name, COALESCE(NULLIF(r.rider_phone,''), p.phone) AS passenger_phone FROM rides r JOIN users p ON r.passenger_id::text = p.id::text
        WHERE r.status='requested' AND r.driver_id IS NULL AND r.ride_type=$1
          AND (r.assigned_to_phone IS NULL OR r.assignment_expires_at < NOW())
          AND r.created_at < NOW() - INTERVAL '2 minutes'
@@ -173,7 +173,7 @@ router.get('/active-ride', async (req, res) => {
   const { phone } = req.query;
   try {
     const result = await db.query(
-      `SELECT r.*, p.name AS passenger_name, p.phone AS passenger_phone, d2.vehicle_no
+      `SELECT r.*, COALESCE(NULLIF(r.rider_name,''), p.name) AS passenger_name, COALESCE(NULLIF(r.rider_phone,''), p.phone) AS passenger_phone, d2.vehicle_no
        FROM rides r JOIN users d ON r.driver_id = d.id LEFT JOIN users p ON r.passenger_id::text = p.id::text LEFT JOIN drivers d2 ON r.driver_id = d2.id
        WHERE d.phone = $1 AND r.status IN ('matched','arrived','started') ORDER BY r.created_at DESC LIMIT 1`,
       [phone]
@@ -379,7 +379,7 @@ router.get('/history', async (req, res) => {
   const { phone } = req.query;
   try {
     const rides = await db.query(
-      `SELECT r.id, r.pickup, r.drop_location, r.fare, r.ride_type, r.status, r.created_at, p.name AS passenger_name
+      `SELECT r.id, r.pickup, r.drop_location, r.fare, r.ride_type, r.status, r.created_at, COALESCE(NULLIF(r.rider_name,''), p.name) AS passenger_name
        FROM rides r JOIN users d ON r.driver_id = d.id LEFT JOIN users p ON r.passenger_id = p.id
        WHERE d.phone = $1 AND r.status = 'completed' ORDER BY r.created_at DESC LIMIT 50`, [phone]
     );
@@ -425,7 +425,7 @@ router.get('/order-history', async (req, res) => {
     const toDate = to || fromDate;
     const ridesRes = await db.query(`
       SELECT r.id, r.pickup, r.drop_location, r.fare, r.ride_type, r.status, r.created_at, r.payment_method,
-             u.name AS passenger_name, can.cancelled_by
+             COALESCE(NULLIF(r.rider_name,''), u.name) AS passenger_name, can.cancelled_by
       FROM rides r
       JOIN users u ON r.passenger_id = u.id
       LEFT JOIN cancellations can ON can.ride_id = r.id

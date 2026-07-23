@@ -31,6 +31,12 @@ db.query("ALTER TABLE rides ADD COLUMN IF NOT EXISTS route_type VARCHAR(20)").ca
 // Dynamic ETA correction columns + table
 db.query('ALTER TABLE rides ADD COLUMN IF NOT EXISTS driver_matched_at TIMESTAMP').catch(() => {});
 db.query('ALTER TABLE rides ADD COLUMN IF NOT EXISTS eta_estimate_min SMALLINT').catch(() => {});
+// "Book for someone else" — who's physically riding, if not the account
+// holder. Null means the account holder is riding themselves. The account
+// holder (passenger_id) stays the source of truth for payment/refunds/OTP;
+// these columns only override what's shown/called by the DRIVER.
+db.query('ALTER TABLE rides ADD COLUMN IF NOT EXISTS rider_name VARCHAR(100)').catch(() => {});
+db.query('ALTER TABLE rides ADD COLUMN IF NOT EXISTS rider_phone VARCHAR(15)').catch(() => {});
 db.query(`CREATE TABLE IF NOT EXISTS eta_zone_corrections (
   geocell        VARCHAR(40) NOT NULL,
   vehicle_type   VARCHAR(30) NOT NULL,
@@ -102,7 +108,7 @@ async function processCashback(userId, phone, rideId, fare, paymentMethod) {
 
 // POST /api/rides/book
 router.post('/book', async (req, res) => {
-  const { passenger_phone, pickup, drop_location, ride_type, pickup_lat, pickup_lng, drop_lat, drop_lng, discount, promo_code, route_polyline, route_type } = req.body;
+  const { passenger_phone, pickup, drop_location, ride_type, pickup_lat, pickup_lng, drop_lat, drop_lng, discount, promo_code, route_polyline, route_type, rider_name, rider_phone } = req.body;
   console.log(`[rides] 📥 book request: phone=${passenger_phone} type=${ride_type}`);
   if (!passenger_phone || String(passenger_phone).length !== 10) return res.status(400).json({ error: 'Valid phone do' });
   if (!pickup || !drop_location) return res.status(400).json({ error: 'Pickup and drop location required' });
@@ -145,11 +151,17 @@ router.post('/book', async (req, res) => {
       advanceAmount = v.amount; advanceOrderId = adv.order_id; advancePaymentId = adv.payment_id;
     }
 
+    // "Book for someone else" — trim to null so a blank string never sits in
+    // the column as truthy; only store rider_phone if it looks like a real
+    // 10-digit number (matches what the customer app itself requires).
+    const riderNameVal  = (rider_name  || '').trim() || null;
+    const riderPhoneVal = /^[0-9]{10}$/.test(String(rider_phone || '').trim()) ? String(rider_phone).trim() : null;
+
     // Surge is NOT applied at booking — it's offered to customer only after no driver accepts
     const ride = await db.query(
-      `INSERT INTO rides (passenger_id, pickup, drop_location, ride_type, fare, status, pickup_lat, pickup_lng, drop_lat, drop_lng, discount, promo_code, distance_km, platform_fee, route_polyline, route_type, advance_amount, advance_status, advance_order_id, advance_payment_id)
-       VALUES ($1, $2, $3, $4, $5, 'requested', $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19) RETURNING *`,
-      [passenger.rows[0].id, pickup, drop_location, ride_type, fare, pickup_lat || null, pickup_lng || null, drop_lat || null, drop_lng || null, discount || 0, promo_code || null, distance, platFee, route_polyline || null, route_type || null, advanceAmount, advanceAmount > 0 ? 'paid' : 'none', advanceOrderId, advancePaymentId]
+      `INSERT INTO rides (passenger_id, pickup, drop_location, ride_type, fare, status, pickup_lat, pickup_lng, drop_lat, drop_lng, discount, promo_code, distance_km, platform_fee, route_polyline, route_type, advance_amount, advance_status, advance_order_id, advance_payment_id, rider_name, rider_phone)
+       VALUES ($1, $2, $3, $4, $5, 'requested', $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21) RETURNING *`,
+      [passenger.rows[0].id, pickup, drop_location, ride_type, fare, pickup_lat || null, pickup_lng || null, drop_lat || null, drop_lng || null, discount || 0, promo_code || null, distance, platFee, route_polyline || null, route_type || null, advanceAmount, advanceAmount > 0 ? 'paid' : 'none', advanceOrderId, advancePaymentId, riderNameVal, riderPhoneVal]
     );
 
     const disc = discount || 0;

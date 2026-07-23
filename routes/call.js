@@ -14,7 +14,8 @@ router.post('/initiate', async (req, res) => {
 
     if (ride_id) {
       const r = await db.query(
-        `SELECT p.phone AS customer_phone, u.phone AS driver_phone
+        `SELECT p.phone AS customer_phone, u.phone AS driver_phone,
+                COALESCE(NULLIF(r.rider_phone,''), p.phone) AS rider_call_phone
          FROM rides r
          JOIN users p ON r.passenger_id = p.id
          LEFT JOIN users u ON r.driver_id = u.id
@@ -22,8 +23,10 @@ router.post('/initiate', async (req, res) => {
         [ride_id]
       );
       if (!r.rows[0]) return res.status(404).json({ success: false, error: 'Active ride not found' });
-      callerPhone = caller_role === 'customer' ? r.rows[0].customer_phone : r.rows[0].driver_phone;
-      targetPhone = caller_role === 'customer' ? r.rows[0].driver_phone   : r.rows[0].customer_phone;
+      // Driver calling in reaches whoever is actually riding (booked-for-someone-
+      // else support) — the account holder's own outgoing call is unaffected.
+      callerPhone = caller_role === 'customer' ? r.rows[0].customer_phone     : r.rows[0].driver_phone;
+      targetPhone = caller_role === 'customer' ? r.rows[0].driver_phone       : r.rows[0].rider_call_phone;
     } else if (booking_id) {
       const b = await db.query(
         `SELECT customer_phone, driver_phone FROM hourly_bookings WHERE id=$1 AND status IN ('matched','active')`,
