@@ -561,6 +561,18 @@ router.post('/cancel-smart', async (req, res) => {
       return res.json({ success: true, penalty: 0, message: 'Ride cancelled (free)' });
     }
 
+    // Idempotency guard FIRST, before any metrics/penalty side effects — a
+    // retried or double-tapped cancel request for a ride that's already been
+    // cancelled must bail out here, before touching customer trust score or
+    // driver cancel-rate/suspension below. (Previously this guard ran last,
+    // so a duplicate request still double-counted those side effects even
+    // though the actual re-cancellation itself was correctly blocked.)
+    const smartCancelRes = await db.query(
+      `UPDATE rides SET status = 'cancelled' WHERE id = $1 AND status IN ('requested', 'pre_assigned', 'matched', 'arrived') RETURNING id`,
+      [ride_id]
+    );
+    if (!smartCancelRes.rows[0]) return res.json({ success: false, message: 'Ride is already started, completed, or cancelled' });
+
     if (cancelled_by === 'customer') {
       const today = new Date().toISOString().split('T')[0];
       let cm = await db.query('SELECT * FROM customer_metrics WHERE phone = $1', [phone]);
@@ -621,12 +633,6 @@ router.post('/cancel-smart', async (req, res) => {
       if (ride.passenger_phone)
         sendFCM(ride.passenger_phone, '🚫 Driver ne Cancel Kiya', `Reason: ${reason || 'N/A'}. Please book a new ride from the app.`, { type: 'ride_cancelled' }, { role: 'customer' }).catch(() => {});
     }
-
-    const smartCancelRes = await db.query(
-      `UPDATE rides SET status = 'cancelled' WHERE id = $1 AND status IN ('requested', 'pre_assigned', 'matched', 'arrived') RETURNING id`,
-      [ride_id]
-    );
-    if (!smartCancelRes.rows[0]) return res.json({ success: false, message: 'Ride is already started, completed, or cancelled' });
 
     // ── Advance refund tiers ─────────────────────────────────────────────────
     // Refund the 1/3 advance to the customer's wallet, minus a tiered penalty:
