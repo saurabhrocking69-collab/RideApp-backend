@@ -157,9 +157,9 @@ async function broadcastToRadius(rideId, pickupLat, pickupLng, rideType, radiusM
       ? (isScheduledRide ? `🛣️ Intercity ${icLabel} — ${scheduledTimeStr}` : `🛣️ INTERCITY ${icLabel} — ₹${icFare}!`)
       : isScheduledRide
         ? `📅 Scheduled Ride — ${scheduledTimeStr}`
-        : `${rideEmoji} Nayi Ride Request!`;
+        : `${rideEmoji} New Ride Request!`;
     const fcmBody = isIntercity
-      ? `${icKm}km intercity trip, ₹${icFare} fare — badi kamai! ${isScheduledRide ? `Departure ${scheduledTimeStr}.` : `Accept within ${windowSec}s!`}`
+      ? `${icKm}km intercity trip, ₹${icFare} fare — great earnings! ${isScheduledRide ? `Departure ${scheduledTimeStr}.` : `Accept within ${windowSec}s!`}`
       : isScheduledRide
         ? `${rideEmoji} ${(rideType || '').toUpperCase()} — for ${scheduledTimeStr}. Accept now, you have time!`
         : `${rideType.toUpperCase()} ride — accept within ${windowSec}s!`;
@@ -423,7 +423,7 @@ async function activateQueuedRide(driverPhone) {
   sendFCM(
     driverPhone,
     '🏍️ Queued Ride Active!',
-    `Ab jao: ${pr.pickup}`,
+    `Head over now: ${pr.pickup}`,
     { type: 'pre_ride_activated', ride_id: String(pr.id) },
     { channelId: 'ride_requests', role: 'driver' }
   ).catch(() => {});

@@ -101,8 +101,8 @@ router.post('/book', async (req, res) => {
           [vehicle_type]
         );
         const hoursLabel = package_hours >= 8 ? 'Full Day (8h)' : `${package_hours}h`;
-        const title = `⏱️ Nayi Hourly Booking — ${hoursLabel}`;
-        const body  = `${pickup} · ₹${baseFare} guaranteed — pickup pe jao!`;
+        const title = `⏱️ New Hourly Booking — ${hoursLabel}`;
+        const body  = `${pickup} · ₹${baseFare} guaranteed — head to pickup!`;
         const data  = { type: 'hourly_available', booking_id: String(bookingId) };
         for (const dr of onlineDrivers.rows) {
           sendFCM(dr.phone, title, body, data, { channelId: 'ride_requests', role: 'driver' }).catch(() => {});
@@ -630,7 +630,7 @@ router.post('/chat/send', async (req, res) => {
         if (b.rows[0]) {
           sendFCM(
             b.rows[0].customer_phone,
-            '💬 Driver ne Message Kiya!',
+            '💬 New Message from Driver!',
             message.length > 60 ? message.slice(0, 57) + '...' : message,
             { type: 'new_chat_message', booking_id: String(booking_id) },
             { role: 'customer' }

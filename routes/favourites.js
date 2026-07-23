@@ -202,7 +202,7 @@ router.post('/book', async (req, res) => {
 
     sendFCM(
       buddy.driver_phone,
-      `⭐ ${customer.name || 'Customer'} ki Direct Request!`,
+      `⭐ Direct Request from ${customer.name || 'Customer'}!`,
       `Your regular customer sent you a direct request — decide within 25 sec!`,
       { type: 'new_ride', ride_id: String(rideId), is_favourite_request: 'true' },
       { channelId: 'ride_requests' }

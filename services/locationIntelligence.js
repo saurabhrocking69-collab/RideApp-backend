@@ -112,7 +112,7 @@ async function runPositioningAlerts() {
         sendFCM(
           drv.phone,
           '🚨 Rides without a driver!',
-          `${count} ride request${count > 1 ? 's' : ''} hain ${drv.dist.toFixed(1)}km door — abhi koi driver nahi! Jaldi aao.`,
+          `${count} ride request${count > 1 ? 's' : ''} within ${drv.dist.toFixed(1)}km — no driver there yet! Head over quickly.`,
           { type: 'coverage_gap', zone_lat: String(zLat), zone_lng: String(zLng), ride_count: String(count) },
           { role: 'driver', channelId: 'default' }
         ).catch(() => {});
@@ -126,8 +126,8 @@ async function runPositioningAlerts() {
         _alertCooldowns[drv.phone] = now;
         sendFCM(
           drv.phone,
-          '🔥 Hot Zone — Move Karo!',
-          `${count} rides maang rahe hain, sirf ${drv.dist.toFixed(1)}km door. Yahan aao, ride pakdo!`,
+          '🔥 Hot Zone — Move Now!',
+          `${count} rides waiting just ${drv.dist.toFixed(1)}km away. Head over and grab one!`,
           { type: 'positioning_alert', zone_lat: String(zLat), zone_lng: String(zLng), ride_count: String(count) },
           { role: 'driver', channelId: 'default' }
         ).catch(() => {});

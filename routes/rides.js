@@ -584,7 +584,7 @@ router.post('/cancel-smart', async (req, res) => {
       let cancelsToday = metrics.last_cancel_date && metrics.last_cancel_date.toISOString().split('T')[0] === today ? metrics.cancels_today : 0;
 
       if (!cs.enabled || secondsAfterBook <= cs.free_cancel_sec) {
-        penalty = 0; message = `Free cancellation (${cs.free_cancel_sec}s ke andar)`;
+        penalty = 0; message = `Free cancellation (within ${cs.free_cancel_sec}s)`;
       } else if (ride.driver_id) {
         if (ride.status === 'arrived') {
           const waitMin = Math.floor(secDriverWaited / 60);
@@ -603,7 +603,7 @@ router.post('/cancel-smart', async (req, res) => {
         [cancelsToday + 1, today, newTrust, newTrust < 50, phone]
       );
       if (ride.driver_phone)
-        sendFCM(ride.driver_phone, '🚫 Ride Cancelled', `Customer ne cancel kar di. Reason: ${reason || 'N/A'}`, { type: 'ride_cancelled' }, { channelId: 'ride_requests', role: 'driver' }).catch(() => {});
+        sendFCM(ride.driver_phone, '🚫 Ride Cancelled', `The customer cancelled the ride. Reason: ${reason || 'N/A'}`, { type: 'ride_cancelled' }, { channelId: 'ride_requests', role: 'driver' }).catch(() => {});
     }
 
     if (cancelled_by === 'driver') {
@@ -624,14 +624,14 @@ router.post('/cancel-smart', async (req, res) => {
         suspendedUntil = new Date(Date.now() + 2 * 60 * 60 * 1000);
         message = '⚠️ Too many cancellations! Suspended for 2 hours.';
       } else if (cancelRate > 15) {
-        message = '⚠️ Warning: Cancel rate zyada hai, kam rides milengi';
+        message = '⚠️ Warning: Your cancel rate is high — you will get fewer rides';
       }
       await db.query(
         `UPDATE driver_metrics SET rides_cancelled = $1, cancels_today = $2, last_cancel_date = $3, cancellation_rate = $4, suspended_until = $5 WHERE phone = $6`,
         [totalCancelled, cancelsToday, today, cancelRate.toFixed(2), suspendedUntil, phone]
       );
       if (ride.passenger_phone)
-        sendFCM(ride.passenger_phone, '🚫 Driver ne Cancel Kiya', `Reason: ${reason || 'N/A'}. Please book a new ride from the app.`, { type: 'ride_cancelled' }, { role: 'customer' }).catch(() => {});
+        sendFCM(ride.passenger_phone, '🚫 Driver Cancelled', `Reason: ${reason || 'N/A'}. Please book a new ride from the app.`, { type: 'ride_cancelled' }, { role: 'customer' }).catch(() => {});
     }
 
     // ── Advance refund tiers ─────────────────────────────────────────────────
@@ -1468,7 +1468,7 @@ router.post('/extension-accept', async (req, res) => {
     await client.query("UPDATE ride_extensions SET status='accepted', new_ride_id=$1 WHERE id=$2", [newRide.rows[0].id, extension_id]);
     await client.query('COMMIT');
     client.release();
-    sendFCM(ext.customer_phone, '✅ Extension Accepted!', `Driver aa raha hai — ${ext.new_drop}`, { type: 'extension_accepted', ride_id: String(newRide.rows[0].id) }, { role: 'customer' });
+    sendFCM(ext.customer_phone, '✅ Extension Accepted!', `Your driver is on the way — ${ext.new_drop}`, { type: 'extension_accepted', ride_id: String(newRide.rows[0].id) }, { role: 'customer' });
     emitRideUpdate(ext.original_ride_id, { status: 'extension_accepted', new_ride_id: newRide.rows[0].id, fare: ext.estimated_fare });
     res.json({ success: true, new_ride_id: newRide.rows[0].id, fare: ext.estimated_fare });
   } catch (err) {

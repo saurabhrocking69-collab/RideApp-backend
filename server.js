@@ -106,7 +106,7 @@ app.set('trust proxy', 1);
 // ── Rate limiting ────────────────────────────────
 app.use('/api/auth/send-otp', rateLimit({
   windowMs: 60_000, max: 3,
-  message: { error: 'Bahut zyada attempts! 1 minute baad try karo' },
+  message: { error: 'Too many attempts! Please try again in 1 minute' },
 }));
 app.use('/api/', rateLimit({
   windowMs: 60_000, max: 400,
@@ -569,7 +569,7 @@ fetch(API_BASE + '/api/rides/track-info/' + RIDE_ID)
     connectSocket();
   })
   .catch(() => {
-    document.getElementById('loading').innerHTML = '<p style="color:#EF4444;padding:20px;text-align:center">Ride track nahi ho pa rahi. Link expire ho gaya hoga.</p>';
+    document.getElementById('loading').innerHTML = '<p style="color:#EF4444;padding:20px;text-align:center">Could not load ride tracking. The link may have expired.</p>';
   });
 
 // ── Socket.io — real-time driver location ─────────────────────────────────
@@ -604,7 +604,7 @@ const cloudinary = require('./config/cloudinary');
 app.post('/api/upload', async (req, res) => {
   const { image } = req.body;
   try {
-    if (!image) return res.status(400).json({ error: 'Image nahi mili' });
+    if (!image) return res.status(400).json({ error: 'Image not found' });
     const result = await cloudinary.uploader.upload(image, { folder: 'rideapp_drivers', resource_type: 'image' });
     res.json({ success: true, url: result.secure_url });
   } catch (err) { res.status(500).json({ error: err.message }); }
@@ -1044,19 +1044,19 @@ setTimeout(async () => {
     const defaults = [
       { vehicle_type: 'two_wheeler',   bonus_type: 'daily_rides',   label: 'Daily Ride Challenge — Bike',
         config: { tiers: [{ rides: 4, amount: 20 }, { rides: 8, amount: 50 }, { rides: 12, amount: 90 }] },
-        description: 'Bike/Green Bike drivers ke liye daily ride targets' },
+        description: 'Daily ride targets for Bike/Green Bike drivers' },
       { vehicle_type: 'three_wheeler', bonus_type: 'daily_rides',   label: 'Daily Ride Challenge — Auto',
         config: { tiers: [{ rides: 4, amount: 25 }, { rides: 8, amount: 60 }, { rides: 12, amount: 110 }] },
-        description: 'Auto/E-Auto drivers ke liye daily ride targets' },
+        description: 'Daily ride targets for Auto/E-Auto drivers' },
       { vehicle_type: 'four_wheeler',  bonus_type: 'daily_rides',   label: 'Daily Ride Challenge — Car',
         config: { tiers: [{ rides: 3, amount: 40 }, { rides: 6, amount: 100 }, { rides: 10, amount: 180 }] },
-        description: 'Car/Taxi/Premium drivers ke liye daily ride targets' },
+        description: 'Daily ride targets for Car/Taxi/Premium drivers' },
       { vehicle_type: 'all',           bonus_type: 'peak_hour',     label: 'Peak Hour Bonus',
         config: { per_ride: 8, slots: [{ start: 7, end: 9 }, { start: 17, end: 20 }] },
-        description: '7-9 AM aur 5-8 PM mein har completed ride pe automatic bonus' },
+        description: 'Automatic bonus on every completed ride between 7-9 AM and 5-8 PM' },
       { vehicle_type: 'all',           bonus_type: 'weekly_streak', label: 'Weekly Warrior',
         config: { target_days: 5, rides_per_day: 4, amount: 250 },
-        description: 'Hafte mein 5 din, har din 4+ rides — streak bonus claim karo' },
+        description: '5 days a week, 4+ rides each day — claim your streak bonus' },
     ];
     for (const r of defaults) {
       await db.query(
@@ -1332,7 +1332,7 @@ setInterval(async () => {
             await db.query("UPDATE rides SET advance_status='refunded' WHERE id=$1", [row.id]).catch(() => {});
             sendFCM(u.rows[0].phone, '💸 Advance Refunded', `No driver found — ₹${advAmt} refunded to your wallet.`, { type: 'advance_refunded', ride_id: String(row.id) }, { role: 'customer' }).catch(() => {});
           } else {
-            sendFCM(u.rows[0].phone, '😔 Driver Nahi Mila', 'Koi driver available nahi — thodi der baad try karo.', { type: 'no_driver_found', ride_id: String(row.id) }, { role: 'customer' }).catch(() => {});
+            sendFCM(u.rows[0].phone, '😔 No Driver Found', 'No driver is available right now — please try again shortly.', { type: 'no_driver_found', ride_id: String(row.id) }, { role: 'customer' }).catch(() => {});
           }
           emitToRoom('ride_' + row.id, 'rideUpdate', { rideId: row.id, status: 'cancelled', reason: 'no_driver' });
         }
@@ -1378,7 +1378,7 @@ setInterval(async () => {
       emitToRoom('ride_' + row.id, 'rideUpdate', { rideId: row.id, status: 'cancelled', reason: 'auto_timeout' });
       try {
         const pRes = await db.query('SELECT phone FROM users WHERE id=$1', [row.passenger_id]);
-        if (pRes.rows[0]) sendFCM(pRes.rows[0].phone, '🚫 Ride Cancel Ho Gayi', 'Driver ke saath connection nahi raha. Dobara try karo.', { type: 'ride_cancelled', ride_id: String(row.id) }, { role: 'customer' }).catch(() => {});
+        if (pRes.rows[0]) sendFCM(pRes.rows[0].phone, '🚫 Ride Cancelled', 'Lost connection with the driver. Please try again.', { type: 'ride_cancelled', ride_id: String(row.id) }, { role: 'customer' }).catch(() => {});
       } catch (_e) {}
     }
     if (stuckMatched.rows.length) console.log(`🧹 Auto-cancelled ${stuckMatched.rows.length} stuck matched/arrived rides`);
@@ -1495,7 +1495,7 @@ setInterval(async () => {
           await client.query(`INSERT INTO transactions (user_id,type,amount,description) VALUES ($1,'credit',$2,'Hourly booking expired - auto refund')`, [cu.rows[0].id, b.base_fare]);
         }
         await client.query('COMMIT');
-        sendFCM(b.customer_phone, '⏰ Hourly Booking Expired', 'Driver nahi mila — aapka paisa 24 ghante mein wallet mein wapis aa jayega.', { type: 'hourly_expired' }, { channelId: 'default', role: 'customer' }).catch(() => {});
+        sendFCM(b.customer_phone, '⏰ Hourly Booking Expired', 'No driver was found — your payment will be refunded to your wallet within 24 hours.', { type: 'hourly_expired' }, { channelId: 'default', role: 'customer' }).catch(() => {});
         console.log(`[HOURLY CLEANUP] Booking #${b.id} auto-cancelled (pending >30min)`);
       } catch (e) { await client.query('ROLLBACK'); console.error('[HOURLY CLEANUP] error:', e.message); }
       finally { client.release(); }

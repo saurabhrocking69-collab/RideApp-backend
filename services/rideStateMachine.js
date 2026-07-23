@@ -14,19 +14,19 @@ const TRANSITIONS = {
 
 // FCM payloads per transition — [title, body, data.type, channelId?]
 const FCM_MAP = {
-  matched:   { customer: ['🚗 Driver Mil Gaya!',         'Aapka driver aa raha hai — OTP ready karo!',           'ride_matched'] },
-  arrived:   { customer: ['📍 Sppero Buddy Pahunch Gaya!', 'Aapka Sppero Buddy pickup point pe pahunch gaya — OTP batao aur trip shuru karo!', 'driver_arrived'] },
-  started:   { customer: ['🚀 Trip Shuru Ho Gaya!',      'Aapka ride chal raha hai. Safe journey!',               'trip_started'] },
+  matched:   { customer: ['🚗 Driver Found!',            'Your driver is on the way — get your OTP ready!',      'ride_matched'] },
+  arrived:   { customer: ['📍 Sppero Buddy Has Arrived!', 'Your Sppero Buddy has reached the pickup point — share the OTP to start the trip!', 'driver_arrived'] },
+  started:   { customer: ['🚀 Trip Started!',            'Your ride is on the way. Safe journey!',                'trip_started'] },
   completed: {
-    customer: ['🏁 Trip Complete!',   'Payment karo aur driver ko rate karo!',  'trip_completed'],
-    driver:   ['✅ Trip Complete!',   'Payment aa rahi hai — wait karo.',        'payment_pending', 'ride_requests'],
+    customer: ['🏁 Trip Complete!',   'Please pay and rate your driver!',  'trip_completed'],
+    driver:   ['✅ Trip Complete!',   'Payment is on the way — please wait.',    'payment_pending', 'ride_requests'],
   },
   cancelled: {
-    customer: ['🚫 Ride Cancel Ho Gayi', 'Ride cancel ho gayi.',         'ride_cancelled'],
-    driver:   ['🚫 Ride Cancel Ho Gayi', 'Ride cancel ho gayi.',         'ride_cancelled', 'ride_requests'],
+    customer: ['🚫 Ride Cancelled', 'Your ride has been cancelled.',         'ride_cancelled'],
+    driver:   ['🚫 Ride Cancelled', 'The ride has been cancelled.',         'ride_cancelled', 'ride_requests'],
   },
   no_driver: {
-    customer: ['😔 Driver Nahi Mila', 'Abhi driver available nahi — thodi der baad try karo.', 'no_driver'],
+    customer: ['😔 No Driver Found', 'No driver is available right now — please try again shortly.', 'no_driver'],
   },
 };
 
