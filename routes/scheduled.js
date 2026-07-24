@@ -64,7 +64,7 @@ router.post('/', async (req, res) => {
   const {
     passenger_phone, pickup, drop_location, ride_type,
     pickup_lat, pickup_lng, drop_lat, drop_lng,
-    discount, promo_code, scheduled_at,
+    discount, promo_code, scheduled_at, rider_name, rider_phone,
   } = req.body;
 
   if (!passenger_phone || String(passenger_phone).length !== 10)
@@ -107,20 +107,25 @@ router.post('/', async (req, res) => {
     const fare       = fareCalc.fare;
     const platFee    = fareCalc.platform_fee;
 
+    // "Book for someone else" — same rule as /api/rides/book: only store
+    // rider_phone if it's a real 10-digit number.
+    const riderNameVal  = (rider_name  || '').trim() || null;
+    const riderPhoneVal = /^[0-9]{10}$/.test(String(rider_phone || '').trim()) ? String(rider_phone).trim() : null;
+
     // INSERT ride with status='scheduled'
     const rideRes = await db.query(
       `INSERT INTO rides
          (passenger_id, pickup, drop_location, ride_type, fare, status,
           is_scheduled, scheduled_at,
           pickup_lat, pickup_lng, drop_lat, drop_lng,
-          discount, promo_code, distance_km, platform_fee)
-       VALUES ($1,$2,$3,$4,$5,'scheduled',true,$6,$7,$8,$9,$10,$11,$12,$13,$14)
+          discount, promo_code, distance_km, platform_fee, rider_name, rider_phone)
+       VALUES ($1,$2,$3,$4,$5,'scheduled',true,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
        RETURNING *`,
       [
         passenger.id, pickup, drop_location, ride_type, fare,
         scheduledTime,
         pickup_lat || null, pickup_lng || null, drop_lat || null, drop_lng || null,
-        discount || 0, promo_code || null, distance, platFee,
+        discount || 0, promo_code || null, distance, platFee, riderNameVal, riderPhoneVal,
       ]
     );
     const rideId = rideRes.rows[0].id;
