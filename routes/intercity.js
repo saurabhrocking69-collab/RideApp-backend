@@ -74,7 +74,7 @@ router.post('/book', async (req, res) => {
   const {
     passenger_phone, pickup, drop_location, vehicle_type, trip_kind,
     pickup_lat, pickup_lng, drop_lat, drop_lng,
-    scheduled_at, return_at, discount, promo_code,
+    scheduled_at, return_at, discount, promo_code, rider_name, rider_phone,
   } = req.body;
 
   if (!passenger_phone || String(passenger_phone).length !== 10)
@@ -130,6 +130,11 @@ router.post('/book', async (req, res) => {
       advanceAmount = v.amount; advanceOrderId = adv.order_id; advancePaymentId = adv.payment_id;
     }
 
+    // Same rule as /api/rides/book: empty string collapses to null, and a phone
+    // is only stored if it's a real 10-digit number.
+    const riderNameVal  = (rider_name  || '').trim() || null;
+    const riderPhoneVal = /^[0-9]{10}$/.test(String(rider_phone || '').trim()) ? String(rider_phone).trim() : null;
+
     const status = scheduledTime ? 'scheduled' : 'requested';
     const rideRes = await db.query(
       `INSERT INTO rides
@@ -137,9 +142,10 @@ router.post('/book', async (req, res) => {
           is_intercity, is_roundtrip, return_at, is_scheduled, scheduled_at,
           pickup_lat, pickup_lng, drop_lat, drop_lng,
           discount, promo_code, distance_km, platform_fee,
-          advance_amount, advance_status, advance_order_id, advance_payment_id)
+          advance_amount, advance_status, advance_order_id, advance_payment_id,
+          rider_name, rider_phone)
        VALUES ($1,$2,$3,$4,$5,$6,true,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,0,
-          $18,$19,$20,$21)
+          $18,$19,$20,$21,$22,$23)
        RETURNING *`,
       [
         passenger.id, pickup, drop_location, vehicle_type, fare, status,
@@ -147,6 +153,7 @@ router.post('/book', async (req, res) => {
         pickup_lat || null, pickup_lng || null, drop_lat || null, drop_lng || null,
         discount || 0, promo_code || null, distKm,
         advanceAmount, advanceAmount > 0 ? 'paid' : 'none', advanceOrderId, advancePaymentId,
+        riderNameVal, riderPhoneVal,
       ]
     );
     const rideId = rideRes.rows[0].id;
