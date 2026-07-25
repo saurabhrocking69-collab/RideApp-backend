@@ -1135,7 +1135,7 @@ setTimeout(async () => {
   `).catch(() => {});
   await db.query(`
     INSERT INTO reward_settings (key, value, label) VALUES
-      ('referral_reward',   50, 'Referral Reward (₹ to both referrer & referred)'),
+      ('referral_reward',   10, 'Referral Reward (₹ to both referrer & referred)'),
       ('scratch_card_min',   1, 'Scratch Card Min Amount (₹)'),
       ('scratch_card_max',   5, 'Scratch Card Max Amount (₹)')
     ON CONFLICT (key) DO NOTHING

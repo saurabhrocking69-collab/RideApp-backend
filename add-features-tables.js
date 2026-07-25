@@ -60,7 +60,7 @@ async function setup() {
         referrer_id UUID REFERENCES users(id),
         referred_id UUID REFERENCES users(id),
         referral_code VARCHAR(20),
-        reward_amount DECIMAL(10,2) DEFAULT 50,
+        reward_amount DECIMAL(10,2) DEFAULT 10,
         status VARCHAR(20) DEFAULT 'pending',
         created_at TIMESTAMP DEFAULT NOW()
       )

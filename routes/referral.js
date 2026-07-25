@@ -37,7 +37,7 @@ router.post('/apply', async (req, res) => {
     const exists = await db.query('SELECT id FROM referrals WHERE referred_id = $1', [newUser.rows[0].id]);
     if (exists.rows.length > 0) return res.json({ success: false, message: 'You have already used a referral code' });
     const settingRow = await db.query(`SELECT value FROM reward_settings WHERE key='referral_reward'`);
-    const reward = settingRow.rows[0] ? parseFloat(settingRow.rows[0].value) : 50;
+    const reward = settingRow.rows[0] ? parseFloat(settingRow.rows[0].value) : 10;
     // Status = 'pending' — reward credited only after referred user completes first ride
     await db.query(
       `INSERT INTO referrals (referrer_id, referred_id, referral_code, reward_amount, status) VALUES ($1,$2,$3,$4,'pending')`,
