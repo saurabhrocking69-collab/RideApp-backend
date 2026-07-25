@@ -271,7 +271,8 @@ router.get('/target', async (req, res) => {
     const target = await db.query('SELECT * FROM driver_targets WHERE active = true LIMIT 1');
     const t = target.rows[0] || { rides_target: 10, bonus_amount: 200 };
     const today = await db.query(
-      `SELECT COUNT(*) FROM rides r JOIN users u ON r.driver_id = u.id WHERE u.phone = $1 AND r.status = 'completed' AND r.created_at >= CURRENT_DATE`, [phone]
+      `SELECT COUNT(*) FROM rides r JOIN users u ON r.driver_id = u.id WHERE u.phone = $1 AND r.status = 'completed' AND r.created_at >= CURRENT_DATE
+       AND NOT EXISTS (SELECT 1 FROM subscription_ride_log srl WHERE srl.ride_id = r.id::text)`, [phone]
     );
     const done = parseInt(today.rows[0].count);
     res.json({ target: t.rides_target, bonus: parseFloat(t.bonus_amount), completed: done, remaining: Math.max(0, t.rides_target - done), achieved: done >= t.rides_target });

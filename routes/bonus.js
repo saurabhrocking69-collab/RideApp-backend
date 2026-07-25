@@ -16,6 +16,20 @@ async function ensureBonusWallet(phone, client = db) {
   );
 }
 
+// Subscription pricing is already a discount deal for the driver — rides completed
+// while a ride-pack subscription is active don't also earn bonuses on top of that.
+async function hasActiveSubscription(phone, client = db) {
+  const r = await client.query(
+    `SELECT 1 FROM driver_subscriptions WHERE driver_phone=$1 AND status='active' AND expires_at > NOW() LIMIT 1`,
+    [phone]
+  );
+  return r.rows.length > 0;
+}
+// Rides actually covered by a subscription (commission waived) are logged here at
+// payment time — used to exclude them from bonus-eligible ride counts even after
+// the subscription itself has since expired or been fully used up.
+const EXCLUDE_SUBSCRIPTION_RIDES = `AND NOT EXISTS (SELECT 1 FROM subscription_ride_log srl WHERE srl.ride_id = r.id::text)`;
+
 // GET /api/bonus/dashboard?phone=X
 router.get('/dashboard', async (req, res) => {
   const { phone } = req.query;
@@ -36,7 +50,7 @@ router.get('/dashboard', async (req, res) => {
         [group]
       ),
       db.query(
-        `SELECT COUNT(*) FROM rides WHERE driver_id=(SELECT id FROM users WHERE phone=$1) AND status='completed' AND DATE(created_at AT TIME ZONE 'Asia/Kolkata')=CURRENT_DATE`,
+        `SELECT COUNT(*) FROM rides r WHERE r.driver_id=(SELECT id FROM users WHERE phone=$1) AND r.status='completed' AND DATE(r.created_at AT TIME ZONE 'Asia/Kolkata')=CURRENT_DATE ${EXCLUDE_SUBSCRIPTION_RIDES}`,
         [phone]
       ),
       db.query(
@@ -48,9 +62,9 @@ router.get('/dashboard', async (req, res) => {
         const dow = now.getDay() === 0 ? 7 : now.getDay();
         const ws = new Date(now); ws.setDate(now.getDate() - dow + 1); ws.setHours(0,0,0,0);
         return db.query(
-          `SELECT DATE(created_at AT TIME ZONE 'Asia/Kolkata') AS ride_date, COUNT(*) AS cnt
-           FROM rides WHERE driver_id=(SELECT id FROM users WHERE phone=$1) AND status='completed' AND created_at >= $2
-           GROUP BY DATE(created_at AT TIME ZONE 'Asia/Kolkata')`,
+          `SELECT DATE(r.created_at AT TIME ZONE 'Asia/Kolkata') AS ride_date, COUNT(*) AS cnt
+           FROM rides r WHERE r.driver_id=(SELECT id FROM users WHERE phone=$1) AND r.status='completed' AND r.created_at >= $2 ${EXCLUDE_SUBSCRIPTION_RIDES}
+           GROUP BY DATE(r.created_at AT TIME ZONE 'Asia/Kolkata')`,
           [phone, ws.toISOString().slice(0,10)]
         ).then(r => ({ rows: r.rows, weekStart: ws.toISOString().slice(0,10) }));
       })(),
@@ -111,7 +125,7 @@ router.post('/claim-daily', async (req, res) => {
     if (!tier) { await client.query('ROLLBACK'); return res.json({ success: false, error: 'Invalid tier' }); }
 
     const ridesRes = await client.query(
-      `SELECT COUNT(*) FROM rides WHERE driver_id=(SELECT id FROM users WHERE phone=$1) AND status='completed' AND DATE(created_at AT TIME ZONE 'Asia/Kolkata')=CURRENT_DATE`,
+      `SELECT COUNT(*) FROM rides r WHERE r.driver_id=(SELECT id FROM users WHERE phone=$1) AND r.status='completed' AND DATE(r.created_at AT TIME ZONE 'Asia/Kolkata')=CURRENT_DATE ${EXCLUDE_SUBSCRIPTION_RIDES}`,
       [phone]
     );
     if (parseInt(ridesRes.rows[0].count) < tier.rides) {
@@ -162,9 +176,9 @@ router.post('/claim-streak', async (req, res) => {
     const weekKey = `week_${ws.toISOString().slice(0,10)}`;
 
     const weekData = await client.query(
-      `SELECT DATE(created_at AT TIME ZONE 'Asia/Kolkata') AS ride_date, COUNT(*) AS cnt
-       FROM rides WHERE driver_id=(SELECT id FROM users WHERE phone=$1) AND status='completed' AND created_at >= $2
-       GROUP BY DATE(created_at AT TIME ZONE 'Asia/Kolkata') HAVING COUNT(*) >= $3`,
+      `SELECT DATE(r.created_at AT TIME ZONE 'Asia/Kolkata') AS ride_date, COUNT(*) AS cnt
+       FROM rides r WHERE r.driver_id=(SELECT id FROM users WHERE phone=$1) AND r.status='completed' AND r.created_at >= $2 ${EXCLUDE_SUBSCRIPTION_RIDES}
+       GROUP BY DATE(r.created_at AT TIME ZONE 'Asia/Kolkata') HAVING COUNT(*) >= $3`,
       [phone, ws.toISOString().slice(0,10), rides_per_day]
     );
     if (weekData.rows.length < target_days) {
@@ -261,6 +275,11 @@ async function creditPeakBonusIfApplicable(drPhone, rideId) {
     const hour = new Date().getHours();
     const isPeak = rule.config.slots.some((s) => hour >= s.start && hour < s.end);
     if (!isPeak) return;
+
+    // Subscription rides are already discounted — no bonus stacks on top. This
+    // ride's subscription_ride_log row (if any) won't exist yet at trip-completion
+    // time (it's written at payment confirmation), so check live subscription status.
+    if (await hasActiveSubscription(drPhone)) return;
 
     // Guard — one bonus per ride
     await db.query(
