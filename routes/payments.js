@@ -97,7 +97,7 @@ async function webhookHandler(req, res) {
                 await client.query('INSERT INTO customer_wallet (user_id) VALUES ($1) ON CONFLICT (user_id) DO NOTHING', [userId]);
                 await client.query('UPDATE customer_wallet SET balance=balance+$1, updated_at=NOW() WHERE user_id=$2', [rupees, userId]);
                 await client.query("INSERT INTO transactions (user_id,type,amount,description) VALUES ($1,'credit',$2,$3)",
-                  [userId, rupees, `Wallet recharge ₹${rupees} (webhook – ${paymentId})`]);
+                  [userId, rupees, `Wallet recharge ₹${rupees}`]);
                 await client.query("INSERT INTO razorpay_topups (user_phone,amount,payment_id,status) VALUES ($1,$2,$3,'confirmed')",
                   [phone, rupees, paymentId]);
                 await client.query('COMMIT');

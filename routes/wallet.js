@@ -139,7 +139,7 @@ router.post('/topup/verify', async (req, res) => {
     const userId = user.rows[0].id;
     await client.query('INSERT INTO customer_wallet (user_id) VALUES ($1) ON CONFLICT (user_id) DO NOTHING', [userId]);
     const w = await client.query('UPDATE customer_wallet SET balance=balance+$1, updated_at=NOW() WHERE user_id=$2 RETURNING balance', [rupees, userId]);
-    await client.query("INSERT INTO transactions (user_id,type,amount,description) VALUES ($1,'credit',$2,$3)", [userId, rupees, `Wallet recharge ₹${rupees} (${razorpay_payment_id})`]);
+    await client.query("INSERT INTO transactions (user_id,type,amount,description) VALUES ($1,'credit',$2,$3)", [userId, rupees, `Wallet recharge ₹${rupees}`]);
     await client.query("INSERT INTO razorpay_topups (user_phone,amount,payment_id,status) VALUES ($1,$2,$3,'confirmed')", [phone, rupees, razorpay_payment_id]);
     await client.query('COMMIT');
     res.json({ success: true, balance: parseFloat(w.rows[0].balance), message: `₹${rupees} added to your wallet!` });
