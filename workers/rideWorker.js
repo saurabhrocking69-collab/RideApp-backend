@@ -447,10 +447,46 @@ async function _escalate(rideId, rideType, afterSurge, pickupLat, pickupLng, ski
     const [alts, pRes, schedRes] = await Promise.all([
       getAvailableAlternatives(rideType).catch(() => []),
       db.query(`SELECT u.phone FROM rides r JOIN users u ON r.passenger_id::text = u.id::text WHERE r.id=$1`, [rideId]),
-      db.query(`SELECT id FROM scheduled_rides WHERE ride_id=$1`, [rideId]),
+      db.query(`SELECT id, retry_count, scheduled_at FROM scheduled_rides WHERE ride_id=$1`, [rideId]),
     ]);
     const customerPhone = pRes.rows[0]?.phone;
     const isScheduled   = schedRes.rows.length > 0;
+    const schedRow      = schedRes.rows[0];
+
+    // Scheduled rides get exactly one automatic retry 3 min after the first
+    // "no driver found" (i.e. at T-12min if dispatched at the intended T-15min) —
+    // only if there's still meaningfully more time before the actual pickup time.
+    const SCHED_RETRY_DELAY_MS = 3 * 60 * 1000;
+    const canRetry = isScheduled && schedRow && (schedRow.retry_count || 0) < 1
+      && schedRow.scheduled_at && (new Date(schedRow.scheduled_at).getTime() - Date.now()) > SCHED_RETRY_DELAY_MS;
+
+    if (canRetry) {
+      console.log(`[ESCALATE] ride=${rideId} — scheduled, no driver yet, retrying in 3 min (attempt ${(schedRow.retry_count || 0) + 1})`);
+      await db.query(`UPDATE scheduled_rides SET retry_count=COALESCE(retry_count,0)+1, updated_at=NOW() WHERE id=$1`, [schedRow.id]).catch(() => {});
+      // Put the ride back to 'scheduled' — _bmqDispatchScheduledRide requires that
+      // status to pick it up again, same guard as the very first T-15 dispatch.
+      await db.query(`UPDATE rides SET status='scheduled' WHERE id=$1`, [rideId]).catch(() => {});
+      if (customerPhone) {
+        sendFCM(
+          customerPhone, '🔄 Still Finding Your Driver',
+          'No driver was available just now — we\'ll try again shortly.',
+          { type: 'scheduled_matching', ride_id: String(rideId) }, { role: 'customer' }
+        ).catch(() => {});
+      }
+      emitToRoom('ride_' + rideId, 'rideUpdate', {
+        rideId, status: 'scheduled_retry', retry_in_sec: SCHED_RETRY_DELAY_MS / 1000,
+        message: 'No driver found yet — retrying shortly.',
+      });
+      setTimeout(() => {
+        _bmqDispatchScheduledRide({
+          ride_id: rideId, scheduled_ride_id: schedRow.id,
+          pickup_lat: pickupLat, pickup_lng: pickupLng,
+          ride_type: rideType, passenger_phone: customerPhone,
+        }).catch(e => console.error(`[SCHED_RETRY] handler error ride=${rideId}:`, e.message));
+      }, SCHED_RETRY_DELAY_MS);
+      return;
+    }
+
     if (customerPhone) {
       const noDriverTitle = '😔 No Driver Found';
       const noDriverBody  = isScheduled

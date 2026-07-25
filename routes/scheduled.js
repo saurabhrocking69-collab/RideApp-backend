@@ -30,6 +30,9 @@ db.query('ALTER TABLE scheduled_rides ADD COLUMN IF NOT EXISTS status TEXT DEFAU
 db.query('ALTER TABLE scheduled_rides ADD COLUMN IF NOT EXISTS scheduled_at TIMESTAMPTZ').catch(() => {});
 db.query('ALTER TABLE scheduled_rides ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT NOW()').catch(() => {});
 db.query('ALTER TABLE scheduled_rides ADD COLUMN IF NOT EXISTS failed_reason TEXT').catch(() => {});
+// Tracks how many times a "no driver found" dispatch has been auto-retried —
+// one automatic retry 3 min later before giving up (see workers/rideWorker.js _escalate)
+db.query('ALTER TABLE scheduled_rides ADD COLUMN IF NOT EXISTS retry_count INT DEFAULT 0').catch(() => {});
 db.query(`
   DO $$
   DECLARE col RECORD;
