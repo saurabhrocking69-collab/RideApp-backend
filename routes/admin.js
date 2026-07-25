@@ -979,6 +979,53 @@ router.post('/incidents', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// SOS ALERTS — customer emergency-button presses
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// ── GET /api/admin/sos-alerts — list, most recent + unresolved first ─────────
+router.get('/sos-alerts', async (req, res) => {
+  const { resolved, limit = 50, offset = 0 } = req.query;
+  try {
+    let where = 'WHERE 1=1';
+    const params = [];
+    if (resolved !== undefined && resolved !== '') { where += ` AND s.resolved=$${params.length+1}`; params.push(resolved === 'true'); }
+
+    const result = await db.query(
+      `SELECT s.*, u.name AS user_name, u.phone AS user_phone,
+              r.pickup, r.drop_location
+       FROM sos_alerts s
+       LEFT JOIN users u ON s.user_id = u.id
+       LEFT JOIN rides r ON s.ride_id = r.id
+       ${where}
+       ORDER BY s.resolved ASC, s.created_at DESC LIMIT $${params.length+1} OFFSET $${params.length+2}`,
+      [...params, limit, offset]
+    );
+
+    const stats = await db.query(`
+      SELECT
+        COUNT(*) AS total,
+        COUNT(*) FILTER (WHERE resolved=false) AS unresolved,
+        COUNT(*) FILTER (WHERE created_at > NOW()-INTERVAL '24 hours') AS today
+      FROM sos_alerts
+    `);
+
+    res.json({ alerts: result.rows, stats: stats.rows[0] });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ── PUT /api/admin/sos-alerts/:id/resolve ─────────────────────────────────────
+router.put('/sos-alerts/:id/resolve', async (req, res) => {
+  try {
+    const { note } = req.body || {};
+    await db.query(
+      `UPDATE sos_alerts SET resolved=true, resolved_at=NOW(), resolved_note=$1 WHERE id=$2`,
+      [note || null, req.params.id]
+    );
+    res.json({ success: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
 // ── GET /api/admin/customer-profile/:id — trust score + incidents + restrictions ──
 router.get('/customer-profile/:id', async (req, res) => {
   try {

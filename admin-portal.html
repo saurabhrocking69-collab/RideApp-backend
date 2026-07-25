@@ -156,6 +156,26 @@ input,select,textarea{outline:none}
   </div>
 </div>
 
+<!-- Resolve SOS Modal -->
+<div class="modal-overlay" id="resolve-sos-modal" onclick="closeResolveSosModal()">
+  <div class="modal-box" style="min-width:340px;max-width:460px" onclick="event.stopPropagation()">
+    <button class="modal-close" onclick="closeResolveSosModal()">✕</button>
+    <div style="font-size:17px;font-weight:900;margin-bottom:6px">✅ Resolve SOS Alert</div>
+    <div style="font-size:13px;color:#666;margin-bottom:16px">Confirm this emergency has been handled before marking it resolved.</div>
+    <input type="hidden" id="resolve-sos-id">
+    <div style="margin-bottom:12px">
+      <label style="font-size:12px;font-weight:700;display:block;margin-bottom:4px">Resolution Note (optional)</label>
+      <textarea id="resolve-sos-note" placeholder="e.g. Called rider, false alarm / police informed, etc." rows="3"
+        style="width:100%;border:1px solid #ddd;border-radius:8px;padding:10px;font-size:13px;resize:none;box-sizing:border-box"></textarea>
+    </div>
+    <div style="display:flex;gap:10px">
+      <button onclick="submitResolveSos()" style="background:#2e7d32;color:#fff;border:none;border-radius:8px;padding:10px 24px;font-size:13px;font-weight:800;cursor:pointer;flex:1">✅ Mark Resolved</button>
+      <button onclick="closeResolveSosModal()" style="background:#f5f5f5;color:#333;border:none;border-radius:8px;padding:10px 18px;font-size:13px;font-weight:700;cursor:pointer">Cancel</button>
+    </div>
+    <div id="resolve-sos-result" style="margin-top:10px;font-size:13px;font-weight:700"></div>
+  </div>
+</div>
+
 <!-- Compensate Driver Modal -->
 <div class="modal-overlay" id="comp-modal" onclick="closeCompModal()">
   <div class="modal-box" style="min-width:340px;max-width:460px" onclick="event.stopPropagation()">
@@ -238,6 +258,7 @@ input,select,textarea{outline:none}
     <button class="tab" onclick="showSection('marketing',this)">📣 Marketing</button>
     <button class="tab" onclick="showSection('settings',this)">⚙️ Settings</button>
     <button class="tab" onclick="showSection('payouts',this)">💰 Payouts</button>
+    <button class="tab" onclick="showSection('sos',this);loadSosAlerts()">🆘 SOS Alerts</button>
     <button class="tab" onclick="showSection('complaints',this);loadComplaints()">⚠️ Complaints</button>
     <button class="tab" onclick="showSection('incidents',this);loadIncidents()">🚨 Incidents</button>
     <button class="tab" onclick="showSection('rewards',this);loadRewards()">💎 Rewards</button>
@@ -701,6 +722,28 @@ input,select,textarea{outline:none}
   </div>
 
   <!-- INCIDENTS -->
+  <!-- SOS ALERTS -->
+  <div id="sos" class="section">
+    <div class="stats" id="sos-stats-row" style="margin-bottom:18px"></div>
+    <div class="card" style="padding:14px">
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+        <select id="sos-filter-resolved" class="input-sm" style="width:140px" onchange="loadSosAlerts()">
+          <option value="false">Unresolved</option>
+          <option value="">All</option>
+          <option value="true">Resolved</option>
+        </select>
+        <button class="refresh-btn" onclick="loadSosAlerts()">⟳ Reload</button>
+        <span id="sos-auto-note" style="font-size:11px;color:#888;margin-left:auto">Auto-refreshes every 20s while this tab is open</span>
+      </div>
+    </div>
+    <div class="card">
+      <div style="overflow-x:auto"><table>
+        <thead><tr><th>Time</th><th>Rider</th><th>Ride</th><th>Location</th><th>Type</th><th>Status</th><th>Action</th></tr></thead>
+        <tbody id="sos-body"><tr><td colspan=7 class=loading>Loading...</td></tr></tbody>
+      </table></div>
+    </div>
+  </div>
+
   <div id="incidents" class="section">
     <div class="stats" id="inc-stats-row" style="margin-bottom:18px"></div>
     <div class="card" style="padding:14px">
@@ -2594,6 +2637,58 @@ async function cmpSendMsg(id){
     setTimeout(()=>openCmpDetail(id),800);
   }catch(e){st.textContent='❌ '+e.message;st.style.color='#c62828';}
 }
+
+// ── SOS Alerts ──────────────────────────────────────────
+async function loadSosAlerts(){
+  const resolved=document.getElementById('sos-filter-resolved').value;
+  const body=document.getElementById('sos-body');
+  body.innerHTML='<tr><td colspan=7 class=loading>Loading...</td></tr>';
+  try{
+    let url='/api/admin/sos-alerts?limit=80';
+    if(resolved!=='') url+='&resolved='+resolved;
+    const d=await aJson(url);
+    const s=d.stats||{};
+    document.getElementById('sos-stats-row').innerHTML=`
+      <div class="stat-card"><div class="stat-icon">🆘</div><div class="stat-value">${s.total||0}</div><div class="stat-label">Total Alerts</div></div>
+      <div class="stat-card red"><div class="stat-icon">🔴</div><div class="stat-value">${s.unresolved||0}</div><div class="stat-label">Unresolved</div></div>
+      <div class="stat-card blue"><div class="stat-icon">📅</div><div class="stat-value">${s.today||0}</div><div class="stat-label">Today</div></div>
+    `;
+    const rows=d.alerts||[];
+    if(!rows.length){body.innerHTML='<tr><td colspan=7 style="text-align:center;color:#aaa;padding:20px">Koi SOS alert nahi</td></tr>';return;}
+    body.innerHTML=rows.map(a=>{
+      const mapLink=(a.lat&&a.lng)?`<a href="https://maps.google.com/?q=${a.lat},${a.lng}" target="_blank">📍 Map</a>`:'-';
+      return `<tr style="${!a.resolved?'background:#fff5f5':''}">
+        <td style="white-space:nowrap">${new Date(a.created_at).toLocaleString('en-IN',{day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'})}</td>
+        <td>${a.user_name||'-'}<br><span style="font-size:10px;color:#888">${a.user_phone||''}</span></td>
+        <td style="font-size:12px">${a.ride_id?'#'+String(a.ride_id).slice(-6):'-'}${a.pickup?`<br><span style="font-size:10px;color:#888">${a.pickup}</span>`:''}</td>
+        <td style="font-size:12px">${mapLink}</td>
+        <td><span class="chip" style="background:#c62828;color:#fff">${a.type||'emergency'}</span></td>
+        <td><span class="chip" style="background:${a.resolved?'#4CAF50':'#f44336'};color:#fff">${a.resolved?'✅ Resolved':'🔴 OPEN'}</span></td>
+        <td>${!a.resolved?`<button class="action-btn btn-green" onclick="resolveSosAlert(${a.id})">✅ Resolve</button>`:(a.resolved_note?`<span style="font-size:11px;color:#666">${a.resolved_note}</span>`:'-')}</td>
+      </tr>`;
+    }).join('');
+  }catch(e){body.innerHTML='<tr><td colspan=7 style="color:#c62828;text-align:center">Error: '+e.message+'</td></tr>';}
+}
+function resolveSosAlert(id){
+  document.getElementById('resolve-sos-id').value = id;
+  document.getElementById('resolve-sos-note').value = '';
+  document.getElementById('resolve-sos-result').innerHTML = '';
+  document.getElementById('resolve-sos-modal').classList.add('open');
+}
+function closeResolveSosModal(){ document.getElementById('resolve-sos-modal').classList.remove('open'); }
+async function submitResolveSos(){
+  const id = document.getElementById('resolve-sos-id').value;
+  const note = document.getElementById('resolve-sos-note').value.trim();
+  const el = document.getElementById('resolve-sos-result');
+  el.innerHTML = '<span style="color:#888">Resolving...</span>';
+  try{
+    const d = await aJson('/api/admin/sos-alerts/'+id+'/resolve',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({note})});
+    if(d.success){ closeResolveSosModal(); loadSosAlerts(); }
+    else el.innerHTML = '<span style="color:#c62828">Failed</span>';
+  }catch(e){ el.innerHTML = '<span style="color:#c62828">Error: '+e.message+'</span>'; }
+}
+// SOS is safety-critical — keep the list fresh without needing a manual reload
+setInterval(()=>{ if(_activeSection==='sos') loadSosAlerts(); }, 20000);
 
 // ── Incidents ───────────────────────────────────────────
 const INC_COLOR={early_completion:'#f44336',payment_skipped:'#e65100'};

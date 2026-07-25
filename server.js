@@ -902,6 +902,25 @@ setTimeout(async () => {
   await db.query(`CREATE INDEX IF NOT EXISTS idx_ticket_msgs      ON ticket_messages(ticket_id, created_at)`).catch(() => {});
   console.log('✅ Support tickets tables ready');
 
+  // ── Emergency contacts — backend-synced so they survive reinstall/device change ──
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS emergency_contacts (
+      id            SERIAL PRIMARY KEY,
+      user_id       UUID REFERENCES users(id) ON DELETE CASCADE,
+      name          TEXT NOT NULL,
+      contact_phone VARCHAR(15) NOT NULL,
+      created_at    TIMESTAMPTZ DEFAULT NOW()
+    )
+  `).catch(() => {});
+  await db.query(`CREATE INDEX IF NOT EXISTS idx_emergency_contacts_user ON emergency_contacts(user_id)`).catch(() => {});
+
+  // ── SOS alerts — add resolution tracking so ops can actually work the queue ──
+  await db.query(`ALTER TABLE sos_alerts ADD COLUMN IF NOT EXISTS resolved BOOLEAN DEFAULT FALSE`).catch(() => {});
+  await db.query(`ALTER TABLE sos_alerts ADD COLUMN IF NOT EXISTS resolved_at TIMESTAMPTZ`).catch(() => {});
+  await db.query(`ALTER TABLE sos_alerts ADD COLUMN IF NOT EXISTS resolved_note TEXT`).catch(() => {});
+  await db.query(`CREATE INDEX IF NOT EXISTS idx_sos_alerts_resolved ON sos_alerts(resolved, created_at)`).catch(() => {});
+  console.log('✅ Emergency contacts + SOS resolution tracking ready');
+
   console.log('✅ DB indexes ready');
 
 // Ensure all vehicle types have fare_settings rows; also repair NULL per_km_rate (causes NaN fare bug)

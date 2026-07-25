@@ -1,6 +1,9 @@
 const express = require('express');
 const router = express.Router();
 const db = require('../config/db');
+const { sendFCM } = require('../config/firebase');
+
+const ADMIN_ALERT_PHONE = process.env.ADMIN_ALERT_PHONE || '';
 
 // GET /api/fare-settings
 router.get('/fare-settings', async (req, res) => {
@@ -107,13 +110,65 @@ router.post('/fare-estimate/batch', async (req, res) => {
 router.post('/sos', async (req, res) => {
   const { phone, ride_id, lat, lng, type } = req.body;
   try {
-    const user = await db.query('SELECT id FROM users WHERE phone = $1', [phone]);
-    await db.query(
-      'INSERT INTO sos_alerts (user_id, ride_id, lat, lng, type) VALUES ($1,$2,$3,$4,$5)',
+    const user = await db.query('SELECT id, name FROM users WHERE phone = $1', [phone]);
+    const alert = await db.query(
+      'INSERT INTO sos_alerts (user_id, ride_id, lat, lng, type) VALUES ($1,$2,$3,$4,$5) RETURNING id',
       [user.rows[0]?.id || null, ride_id || null, lat || null, lng || null, type || 'emergency']
     );
     console.log('🆘 SOS ALERT:', phone, lat, lng);
     res.json({ success: true, message: 'Emergency alert sent', helplines: { police: '100', ambulance: '108', women: '1091' } });
+
+    // Alert a real person — ops phone gets a push the moment SOS fires, not just a DB row.
+    if (ADMIN_ALERT_PHONE) {
+      const mapLink = (lat && lng) ? `https://maps.google.com/?q=${lat},${lng}` : 'location unavailable';
+      sendFCM(
+        ADMIN_ALERT_PHONE,
+        `🆘 SOS — ${user.rows[0]?.name || phone}`,
+        `${phone} pressed the emergency button${ride_id ? ` during ride #${String(ride_id).slice(-6)}` : ''}. ${mapLink}`,
+        { type: 'sos_alert', sos_id: String(alert.rows[0].id), phone, ride_id: ride_id || '' },
+        {}
+      ).catch(() => {});
+    }
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// GET /api/emergency-contacts?phone=X — backend-synced, survives reinstall/device change
+router.get('/emergency-contacts', async (req, res) => {
+  const { phone } = req.query;
+  try {
+    const user = await db.query('SELECT id FROM users WHERE phone = $1', [phone]);
+    if (!user.rows.length) return res.json({ contacts: [] });
+    const r = await db.query(
+      'SELECT id, name, contact_phone FROM emergency_contacts WHERE user_id = $1 ORDER BY created_at ASC',
+      [user.rows[0].id]
+    );
+    res.json({ contacts: r.rows });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// POST /api/emergency-contacts/save
+router.post('/emergency-contacts/save', async (req, res) => {
+  const { phone, name, contact_phone } = req.body;
+  if (!name || !contact_phone) return res.status(400).json({ error: 'name and contact_phone required' });
+  try {
+    const user = await db.query('SELECT id FROM users WHERE phone = $1', [phone]);
+    if (!user.rows.length) return res.status(404).json({ error: 'User not found' });
+    const count = await db.query('SELECT COUNT(*) FROM emergency_contacts WHERE user_id = $1', [user.rows[0].id]);
+    if (parseInt(count.rows[0].count) >= 3) return res.status(400).json({ error: 'Maximum 3 emergency contacts allowed' });
+    const r = await db.query(
+      'INSERT INTO emergency_contacts (user_id, name, contact_phone) VALUES ($1,$2,$3) RETURNING id, name, contact_phone',
+      [user.rows[0].id, name, contact_phone]
+    );
+    res.json({ success: true, contact: r.rows[0] });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// POST /api/emergency-contacts/delete
+router.post('/emergency-contacts/delete', async (req, res) => {
+  const { id } = req.body;
+  try {
+    await db.query('DELETE FROM emergency_contacts WHERE id = $1', [id]);
+    res.json({ success: true });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
