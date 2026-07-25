@@ -251,6 +251,7 @@ input,select,textarea{outline:none}
   <div class="tabs">
     <button class="tab active" onclick="showSection('transactions',this)">📋 Transactions</button>
     <button class="tab" onclick="showSection('rides',this)">🛺 Rides</button>
+    <button class="tab" onclick="showSection('liverides',this);loadLiveRides()">🔴 Live Rides</button>
     <button class="tab" onclick="showSection('customers',this)">👥 Customers</button>
     <button class="tab" onclick="showSection('drivers',this)">🚗 Drivers</button>
     <button class="tab" onclick="showSection('verify',this)">✅ Verify Drivers</button>
@@ -290,8 +291,36 @@ input,select,textarea{outline:none}
         <button class="refresh-btn" style="margin-left:0" onclick="loadRides()">Reload</button>
         <button class="refresh-btn" style="background:#1a1a2e;margin-left:6px" onclick="exportRidesCsv()">⬇️ CSV</button>
       </div>
-      <div style="overflow-x:auto"><table><thead><tr><th>Date</th><th>Passenger</th><th>Driver</th><th>Pickup</th><th>Drop</th><th>Fare</th><th>Type</th><th>Status</th><th>Rating</th></tr></thead>
-      <tbody id="rides-body"><tr><td colspan=9 class=loading>Loading...</td></tr></tbody></table></div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:12px">
+        <input id="ride-search" placeholder="🔍 Search phone or ride ID..." class="input-sm" style="max-width:260px" onkeydown="if(event.key==='Enter')loadRides()">
+        <select id="ride-status-filter" class="input-sm" style="width:160px" onchange="loadRides()">
+          <option value="">All Statuses</option>
+          <option value="requested">Requested</option>
+          <option value="matched">Matched</option>
+          <option value="arrived">Arrived</option>
+          <option value="started">Started</option>
+          <option value="completed">Completed</option>
+          <option value="cancelled">Cancelled</option>
+        </select>
+        <button class="refresh-btn" onclick="loadRides()">Apply</button>
+      </div>
+      <div style="overflow-x:auto"><table><thead><tr><th>Date</th><th>Passenger</th><th>Driver</th><th>Pickup</th><th>Drop</th><th>Fare</th><th>Type</th><th>Status</th><th>Rating</th><th></th></tr></thead>
+      <tbody id="rides-body"><tr><td colspan=10 class=loading>Loading...</td></tr></tbody></table></div>
+    </div>
+  </div>
+
+  <!-- LIVE RIDES -->
+  <div id="liverides" class="section">
+    <div class="stats" id="live-stats-row" style="margin-bottom:18px"></div>
+    <div class="card">
+      <div class="card-title">🔴 Currently Active Rides
+        <button class="refresh-btn" onclick="loadLiveRides()">⟳ Reload</button>
+        <span style="font-size:11px;color:#888;margin-left:10px">Auto-refreshes every 15s while this tab is open</span>
+      </div>
+      <div style="overflow-x:auto"><table>
+        <thead><tr><th>Started</th><th>Passenger</th><th>Driver</th><th>Pickup</th><th>Drop</th><th>Fare</th><th>Status</th><th>Driver Location</th></tr></thead>
+        <tbody id="live-body"><tr><td colspan=8 class=loading>Loading...</td></tr></tbody>
+      </table></div>
     </div>
   </div>
 
@@ -801,6 +830,18 @@ input,select,textarea{outline:none}
       </div>
     </div>
 
+    <!-- Max / Min demand callout -->
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:16px" id="loc-maxmin-wrap">
+      <div class="card">
+        <div class="card-title">🔥 Highest Demand Areas</div>
+        <div id="loc-top-areas"><div class="loading">Loading...</div></div>
+      </div>
+      <div class="card">
+        <div class="card-title">❄️ Lowest Demand Areas <span style="font-size:11px;color:#888;font-weight:400">(among tracked areas)</span></div>
+        <div id="loc-bottom-areas"><div class="loading">Loading...</div></div>
+      </div>
+    </div>
+
     <!-- Surge + demand stats row -->
     <div class="stats" id="loc-stats" style="margin-bottom:18px"></div>
 
@@ -1138,6 +1179,29 @@ async function loadLocationIntel() {
       }).join('');
     }
 
+    // ── Max / Min demand callout (reuses the already-sorted areas array — no extra call) ──
+    const top5 = areas.slice(0,5);
+    const bottom5 = areas.length>5 ? areas.slice(-5).reverse() : [];
+    const maxSearches = top5[0]?.total_searches || 1;
+    const renderAreaBar = (a,color) => {
+      const pct = Math.max(4, Math.round((a.total_searches/maxSearches)*100));
+      return `<div style="margin-bottom:10px">
+        <div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:3px">
+          <span><b>${_areaLocality(a.area_name)}</b></span>
+          <span style="font-weight:800">${a.total_searches} rides</span>
+        </div>
+        <div style="background:#f0f0f0;border-radius:6px;height:8px;overflow:hidden">
+          <div style="background:${color};height:100%;width:${pct}%;border-radius:6px"></div>
+        </div>
+      </div>`;
+    };
+    document.getElementById('loc-top-areas').innerHTML = top5.length
+      ? top5.map(a=>renderAreaBar(a,'#c62828')).join('')
+      : '<p style="color:#aaa;text-align:center;padding:10px">Koi data nahi</p>';
+    document.getElementById('loc-bottom-areas').innerHTML = bottom5.length
+      ? bottom5.map(a=>renderAreaBar(a,'#1565c0')).join('')
+      : '<p style="color:#aaa;text-align:center;padding:10px">Kaafi kam areas hain abhi dikhane ke liye</p>';
+
     // Stats row
     const high = (zones.zones||[]).filter(z=>z.heat==='high').length;
     const med  = (zones.zones||[]).filter(z=>z.heat==='medium').length;
@@ -1314,10 +1378,15 @@ async function loadTransactions(){
 }
 
 // ── Rides ───────────────────────────────────────────────
+const RIDE_STATUS_COLOR={requested:'#888',pre_assigned:'#888',matched:'#1565c0',arrived:'#1565c0',started:'#e65100',completed:'#2e7d32',cancelled:'#c62828'};
 async function loadRides(){
+  const search=document.getElementById('ride-search')?.value.trim()||'';
+  const status=document.getElementById('ride-status-filter')?.value||'';
   try{
-    const d=await aJson('/api/admin/rides');
-    const rideStatusColor={completed:'#2e7d32',cancelled:'#c62828',active:'#1565c0',accepted:'#e65100',pending:'#888'};
+    let url='/api/admin/rides?limit=150';
+    if(search) url+='&search='+encodeURIComponent(search);
+    if(status) url+='&status='+status;
+    const d=await aJson(url);
     document.getElementById('rides-body').innerHTML=(d.rides||[]).map(r=>`<tr>
       <td>${fmt(r.created_at)}</td>
       <td>${r.passenger_name||'-'}<br><span style="color:#999;font-size:10px">${r.passenger_phone||''}</span></td>
@@ -1326,11 +1395,107 @@ async function loadRides(){
       <td title="${r.drop_location}">${trunc(r.drop_location,20)}</td>
       <td class="amount-green">${rupee(r.fare)}</td>
       <td><span style="font-size:10px;background:#f0f0f0;padding:2px 6px;border-radius:6px">${r.ride_type||'std'}</span></td>
-      <td><span style="color:${rideStatusColor[r.status]||'#888'};font-weight:700;font-size:11px">${r.status}</span></td>
+      <td><span style="color:${RIDE_STATUS_COLOR[r.status]||'#888'};font-weight:700;font-size:11px">${r.status}</span></td>
       <td>${r.rating?'⭐'.repeat(r.rating):'-'}</td>
-    </tr>`).join('')||'<tr><td colspan=9 class=loading>Koi ride nahi</td></tr>';
-  }catch(e){if(e.message!=='Unauthorized')document.getElementById('rides-body').innerHTML='<tr><td colspan=9 class=loading>❌ Load failed</td></tr>';}
+      <td><button class="action-btn btn-blue" onclick="viewRideDetail('${r.id}')">View</button></td>
+    </tr>`).join('')||'<tr><td colspan=10 class=loading>Koi ride nahi</td></tr>';
+  }catch(e){if(e.message!=='Unauthorized')document.getElementById('rides-body').innerHTML='<tr><td colspan=10 class=loading>❌ Load failed</td></tr>';}
 }
+
+async function viewRideDetail(id){
+  try{
+    const d=await aJson('/api/admin/rides/'+id);
+    const r=d.ride||{};
+    const mapLink=(r.pickup_lat&&r.pickup_lng)?`<a href="https://maps.google.com/?q=${r.pickup_lat},${r.pickup_lng}" target="_blank">📍 Pickup on map</a>`:'';
+    document.getElementById('cmp-modal-content').innerHTML=`
+      <h3 style="margin-bottom:12px">🛺 Ride Detail</h3>
+      <div style="background:#f8f8f8;border-radius:10px;padding:12px;margin-bottom:14px;font-size:13px">
+        <b>${r.pickup||'?'}</b> → <b>${r.drop_location||'?'}</b><br>
+        <span style="color:${RIDE_STATUS_COLOR[r.status]||'#888'};font-weight:800">${r.status}</span>
+        <span style="float:right">${mapLink}</span>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:14px;font-size:13px">
+        <div><b>Passenger:</b> ${r.passenger_name||'-'}<br><span style="color:#888">${r.passenger_phone||''}</span></div>
+        <div><b>Driver:</b> ${r.driver_name||'Not assigned'}<br><span style="color:#888">${r.driver_phone||''}</span></div>
+        <div><b>Fare:</b> <span class="amount-green">${rupee(r.fare)}</span></div>
+        <div><b>Distance:</b> ${r.distance_km?r.distance_km+' km':'-'}</div>
+        <div><b>Payment:</b> ${r.payment_method||'-'} (${r.payment_status||'-'})</div>
+        <div><b>Vehicle Type:</b> ${r.ride_type||'-'}</div>
+        <div><b>Booked:</b> ${new Date(r.created_at).toLocaleString('en-IN')}</div>
+        <div><b>Completed:</b> ${r.completed_at?new Date(r.completed_at).toLocaleString('en-IN'):'-'}</div>
+        ${r.rating?`<div><b>Rating:</b> ${'⭐'.repeat(r.rating)}</div>`:''}
+        ${r.cancelled_by?`<div><b>Cancelled by:</b> ${r.cancelled_by}</div>`:''}
+      </div>
+      ${r.cancel_reason?`<div style="background:#ffebee;border-radius:8px;padding:10px;margin-bottom:12px;font-size:12px"><b>Cancel reason:</b> ${r.cancel_reason}</div>`:''}
+      ${r.review?`<div style="background:#f8f8f8;border-radius:8px;padding:10px;font-size:12px"><b>Review:</b> "${r.review}"</div>`:''}
+    `;
+    document.getElementById('cmp-modal').classList.add('open');
+  }catch(e){alert('Error: '+e.message);}
+}
+
+async function viewDriverProfile(id){
+  try{
+    const d=await aJson('/api/admin/driver-profile/'+id);
+    const dr=d.driver||{};
+    const st=d.stats||{};
+    document.getElementById('cmp-modal-content').innerHTML=`
+      <h3 style="margin-bottom:12px">🚗 Driver Profile</h3>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:16px;font-size:13px">
+        <div><b>Name:</b> ${dr.name||'?'}</div>
+        <div><b>Phone:</b> ${dr.phone||'?'}</div>
+        <div><b>Vehicle:</b> ${dr.vehicle_type||'-'} · ${dr.vehicle_no||'-'}</div>
+        <div><b>Status:</b> <span class="chip ${dr.is_online?'online':'offline'}">${dr.is_online?'🟢 Online':'⚫ Offline'}</span> · ${dr.verification_status||'-'}</div>
+      </div>
+      <div class="stats" style="margin-bottom:16px">
+        <div class="stat-card"><div class="stat-icon">🛺</div><div class="stat-value">${st.total_rides||0}</div><div class="stat-label">Completed Rides</div></div>
+        <div class="stat-card"><div class="stat-icon">💰</div><div class="stat-value">${rupee(st.total_fare||0)}</div><div class="stat-label">Total Earned</div></div>
+        <div class="stat-card red"><div class="stat-icon">❌</div><div class="stat-value">${st.cancelled_rides||0}</div><div class="stat-label">Cancelled</div></div>
+      </div>
+      <div style="font-size:14px;font-weight:800;margin-bottom:8px">Ride History (${d.rides?.length||0})</div>
+      <div style="max-height:280px;overflow-y:auto">
+      ${(d.rides||[]).map(r=>`<div style="background:#f8f8f8;border-radius:8px;padding:10px;margin-bottom:8px;font-size:12px;cursor:pointer" onclick="viewRideDetail('${r.id}')">
+        <b>${r.pickup||'?'}</b> → <b>${r.drop_location||'?'}</b>
+        <span style="float:right;color:#2e7d32;font-weight:700">${rupee(r.fare)}</span><br>
+        <span style="color:#888">${new Date(r.created_at).toLocaleString('en-IN',{day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'})} · ${r.passenger_name||'-'}</span>
+        <span style="float:right;color:${RIDE_STATUS_COLOR[r.status]||'#888'}">${r.status}</span>
+      </div>`).join('')||'<div style="color:#aaa;text-align:center">Koi ride nahi</div>'}
+      </div>
+    `;
+    document.getElementById('cmp-modal').classList.add('open');
+  }catch(e){alert('Error: '+e.message);}
+}
+
+// ── Live Rides ──────────────────────────────────────────
+async function loadLiveRides(){
+  const body=document.getElementById('live-body');
+  try{
+    const d=await aJson('/api/admin/live-rides');
+    const rows=d.rides||[];
+    document.getElementById('live-stats-row').innerHTML=`
+      <div class="stat-card blue"><div class="stat-icon">🔴</div><div class="stat-value">${d.count||0}</div><div class="stat-label">Active Right Now</div></div>
+      <div class="stat-card"><div class="stat-icon">🤝</div><div class="stat-value">${rows.filter(r=>r.status==='matched').length}</div><div class="stat-label">Matched</div></div>
+      <div class="stat-card"><div class="stat-icon">📍</div><div class="stat-value">${rows.filter(r=>r.status==='arrived').length}</div><div class="stat-label">Arrived</div></div>
+      <div class="stat-card"><div class="stat-icon">🚗</div><div class="stat-value">${rows.filter(r=>r.status==='started').length}</div><div class="stat-label">On Trip</div></div>
+    `;
+    if(!rows.length){body.innerHTML='<tr><td colspan=8 style="text-align:center;color:#aaa;padding:20px">Abhi koi active ride nahi</td></tr>';return;}
+    body.innerHTML=rows.map(r=>{
+      const driverLoc=(r.driver_lat&&r.driver_lng)
+        ?`<a href="https://maps.google.com/?q=${r.driver_lat},${r.driver_lng}" target="_blank">📍 Live</a> <span style="font-size:10px;color:#888">(${r.driver_loc_at?fmt(r.driver_loc_at):'-'})</span>`
+        :'<span style="color:#aaa">No GPS</span>';
+      return `<tr style="cursor:pointer" onclick="viewRideDetail('${r.id}')">
+        <td>${fmt(r.created_at)}</td>
+        <td>${r.passenger_name||'-'}<br><span style="color:#999;font-size:10px">${r.passenger_phone||''}</span></td>
+        <td>${r.driver_name||'-'}<br><span style="color:#999;font-size:10px">${r.driver_phone||''}</span></td>
+        <td title="${r.pickup}">${trunc(r.pickup,18)}</td>
+        <td title="${r.drop_location}">${trunc(r.drop_location,18)}</td>
+        <td class="amount-green">${rupee(r.fare)}</td>
+        <td><span style="color:${RIDE_STATUS_COLOR[r.status]||'#888'};font-weight:700;font-size:11px">${r.status}</span></td>
+        <td onclick="event.stopPropagation()">${driverLoc}</td>
+      </tr>`;
+    }).join('');
+  }catch(e){if(e.message!=='Unauthorized')body.innerHTML='<tr><td colspan=8 class=loading>❌ Load failed</td></tr>';}
+}
+setInterval(()=>{ if(_activeSection==='liverides') loadLiveRides(); }, 15000);
 
 // ── Customers ───────────────────────────────────────────
 async function loadCustomers(){
@@ -1345,7 +1510,8 @@ async function loadCustomers(){
       <td>${u.trust_score!=null?u.trust_score+'/100':'-'}${u.is_flagged?'<span style="color:#c62828"> ⚑</span>':''}</td>
       <td style="font-size:10px">${fmt(u.created_at)}</td>
       <td>
-        <button class="action-btn btn-blue"
+        <button class="action-btn btn-blue" onclick="viewCustomerProfile('${u.id}')" style="margin-bottom:4px">👤 View</button><br>
+        <button class="action-btn"
           data-phone="${u.phone}"
           data-name="${(u.name||'').replace(/&/g,'&amp;').replace(/"/g,'&quot;')}"
           data-blocked="${!!u.is_blocked}"
@@ -1475,7 +1641,8 @@ async function loadDrivers(){
       <td class="amount-green">${rupee(dr.total_earned)}</td>
       <td>${dr.rating?parseFloat(dr.rating).toFixed(1)+'⭐':'-'}</td>
       <td>
-        <button class="action-btn btn-blue"
+        <button class="action-btn btn-blue" onclick="viewDriverProfile('${dr.id}')" style="margin-bottom:4px">👤 View</button><br>
+        <button class="action-btn"
           data-phone="${dr.phone}"
           data-name="${(dr.name||'').replace(/&/g,'&amp;').replace(/"/g,'&quot;')}"
           data-suspended="${!!dr.is_suspended}"
@@ -2736,7 +2903,7 @@ async function loadIncidents(){
         <td style="white-space:nowrap">
           ${!i.resolved&&isPaySkip?`<button class="action-btn" style="background:#e65100;color:#fff;margin-bottom:4px" onclick="compensateDriver(${i.id},'${(i.driver_name||'Driver').replace(/'/g,'\\x27')}',${fareVal})">💰 Compensate (₹${compAmt})</button><br>`:''}
           ${!i.resolved?`<button class="action-btn btn-green" onclick="resolveIncident(${i.id})">✅ Resolve</button>`:''}
-          ${i.customer_id?`<button class="action-btn btn-blue" onclick="viewCustomerProfile(${i.customer_id})">👤 Customer</button>`:''}
+          ${i.customer_id?`<button class="action-btn btn-blue" onclick="viewCustomerProfile('${i.customer_id}')">👤 Customer</button>`:''}
         </td>
       </tr>`;
     }).join('');
@@ -2832,6 +2999,7 @@ async function viewCustomerProfile(id){
   try{
     const d=await aJson('/api/admin/customer-profile/'+id);
     const u=d.user||{};
+    const rs=d.ride_stats||{};
     const trustColor=u.trust_score>=80?'#2e7d32':u.trust_score>=50?'#e65100':'#c62828';
     document.getElementById('cmp-modal-content').innerHTML=`
       <h3 style="margin-bottom:12px">👤 Customer Profile</h3>
@@ -2841,8 +3009,22 @@ async function viewCustomerProfile(id){
         <div><b>Trust Score:</b> <span style="color:${trustColor};font-weight:800">${u.trust_score||100}/100</span></div>
         <div><b>Status:</b> <span style="color:${u.booking_restricted?'#c62828':'#2e7d32'};font-weight:700">${u.booking_restricted?'🚫 RESTRICTED':'✅ Active'}</span></div>
       </div>
+      <div class="stats" style="margin-bottom:16px">
+        <div class="stat-card"><div class="stat-icon">🛺</div><div class="stat-value">${rs.total_rides||0}</div><div class="stat-label">Completed Rides</div></div>
+        <div class="stat-card"><div class="stat-icon">💰</div><div class="stat-value">${rupee(rs.total_spent||0)}</div><div class="stat-label">Total Spent</div></div>
+        <div class="stat-card red"><div class="stat-icon">❌</div><div class="stat-value">${rs.cancelled_rides||0}</div><div class="stat-label">Cancelled</div></div>
+      </div>
       ${u.booking_restricted?`<div style="background:#ffebee;border-radius:10px;padding:12px;margin-bottom:14px;font-size:13px"><b>Restriction Reason:</b> ${u.booking_restricted_reason||'—'}<br><br>
-        <button class="action-btn btn-green" onclick="unrestrictCustomer(${id})">✅ Unrestrict Account</button></div>`:''}
+        <button class="action-btn btn-green" onclick="unrestrictCustomer('${id}')">✅ Unrestrict Account</button></div>`:''}
+      <div style="font-size:14px;font-weight:800;margin-bottom:8px">Ride History (${d.rides?.length||0})</div>
+      <div style="max-height:220px;overflow-y:auto;margin-bottom:16px">
+      ${(d.rides||[]).map(r=>`<div style="background:#f8f8f8;border-radius:8px;padding:10px;margin-bottom:8px;font-size:12px;cursor:pointer" onclick="viewRideDetail('${r.id}')">
+        <b>${r.pickup||'?'}</b> → <b>${r.drop_location||'?'}</b>
+        <span style="float:right;color:#2e7d32;font-weight:700">${rupee(r.fare)}</span><br>
+        <span style="color:#888">${new Date(r.created_at).toLocaleString('en-IN',{day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'})} · ${r.driver_name||'No driver'}</span>
+        <span style="float:right;color:${r.status==='completed'?'#2e7d32':r.status==='cancelled'?'#c62828':'#1565C0'}">${r.status}</span>
+      </div>`).join('')||'<div style="color:#aaa;text-align:center">Koi ride nahi</div>'}
+      </div>
       <div style="font-size:14px;font-weight:800;margin-bottom:8px">Recent Incidents (${d.incidents?.length||0})</div>
       ${(d.incidents||[]).map(i=>`<div style="background:#f8f8f8;border-radius:8px;padding:10px;margin-bottom:8px;font-size:12px">
         <span class="chip" style="background:${INC_COLOR[i.incident_type]||'#999'};color:#fff">${INC_LABEL[i.incident_type]||i.incident_type}</span>

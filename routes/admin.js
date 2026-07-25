@@ -33,16 +33,64 @@ router.get('/stats', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// GET /api/admin/rides
+// GET /api/admin/rides — supports optional status filter + phone/ride-id search
 router.get('/rides', async (req, res) => {
+  const { status, search, limit = 100 } = req.query;
   try {
+    let where = 'WHERE 1=1';
+    const params = [];
+    if (status) { where += ` AND r.status=$${params.length+1}`; params.push(status); }
+    if (search) {
+      where += ` AND (p.phone ILIKE $${params.length+1} OR d.phone ILIKE $${params.length+1} OR r.id::text ILIKE $${params.length+1})`;
+      params.push(`%${search}%`);
+    }
     const result = await db.query(
       `SELECT r.id, r.pickup, r.drop_location, r.fare, r.ride_type, r.status, r.created_at, r.rating, r.review,
-              p.name AS passenger_name, p.phone AS passenger_phone, d.name AS driver_name
+              p.name AS passenger_name, p.phone AS passenger_phone, d.name AS driver_name, d.phone AS driver_phone
        FROM rides r LEFT JOIN users p ON r.passenger_id = p.id LEFT JOIN users d ON r.driver_id = d.id
-       ORDER BY r.created_at DESC LIMIT 100`
+       ${where}
+       ORDER BY r.created_at DESC LIMIT $${params.length+1}`,
+      [...params, limit]
     );
     res.json({ rides: result.rows });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// GET /api/admin/rides/:id — full single-ride detail
+router.get('/rides/:id', async (req, res) => {
+  try {
+    const r = await db.query(
+      `SELECT r.*,
+              p.name AS passenger_name, p.phone AS passenger_phone,
+              d.name AS driver_name, d.phone AS driver_phone
+       FROM rides r
+       LEFT JOIN users p ON r.passenger_id = p.id
+       LEFT JOIN users d ON r.driver_id = d.id
+       WHERE r.id = $1`,
+      [req.params.id]
+    );
+    if (!r.rows.length) return res.status(404).json({ error: 'Not found' });
+    res.json({ ride: r.rows[0] });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// GET /api/admin/live-rides — currently active rides (matched/arrived/started)
+router.get('/live-rides', async (req, res) => {
+  try {
+    const r = await db.query(
+      `SELECT r.id, r.pickup, r.drop_location, r.fare, r.ride_type, r.status, r.created_at,
+              r.pickup_lat, r.pickup_lng, r.drop_lat, r.drop_lng,
+              p.name AS passenger_name, p.phone AS passenger_phone,
+              d.name AS driver_name, d.phone AS driver_phone,
+              dl.lat AS driver_lat, dl.lng AS driver_lng, dl.updated_at AS driver_loc_at
+       FROM rides r
+       LEFT JOIN users p ON r.passenger_id = p.id
+       LEFT JOIN users d ON r.driver_id = d.id
+       LEFT JOIN driver_locations dl ON dl.phone = d.phone
+       WHERE r.status IN ('matched','arrived','started')
+       ORDER BY r.created_at DESC`
+    );
+    res.json({ rides: r.rows, count: r.rows.length });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
@@ -50,11 +98,40 @@ router.get('/rides', async (req, res) => {
 router.get('/drivers', async (req, res) => {
   try {
     const result = await db.query(
-      `SELECT u.name, u.phone, d.vehicle_type, d.vehicle_no, d.is_online, d.rating,
+      `SELECT u.id, u.name, u.phone, d.vehicle_type, d.vehicle_no, d.is_online, d.rating,
               COALESCE(w.balance, 0) AS balance, COALESCE(w.total_earned, 0) AS total_earned
        FROM drivers d JOIN users u ON d.id = u.id LEFT JOIN driver_wallet w ON d.id = w.driver_id ORDER BY u.name`
     );
     res.json({ drivers: result.rows });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// GET /api/admin/driver-profile/:id — driver info + ride history
+router.get('/driver-profile/:id', async (req, res) => {
+  try {
+    const [user, rides, stats] = await Promise.all([
+      db.query(
+        `SELECT u.id, u.name, u.phone, d.vehicle_type, d.vehicle_no, d.rating, d.is_online, d.verification_status
+         FROM users u LEFT JOIN drivers d ON d.id = u.id WHERE u.id=$1`,
+        [req.params.id]
+      ),
+      db.query(
+        `SELECT r.id, r.pickup, r.drop_location, r.fare, r.status, r.created_at, r.rating,
+                p.name AS passenger_name, p.phone AS passenger_phone
+         FROM rides r LEFT JOIN users p ON r.passenger_id = p.id
+         WHERE r.driver_id=$1 ORDER BY r.created_at DESC LIMIT 15`,
+        [req.params.id]
+      ),
+      db.query(
+        `SELECT COUNT(*) FILTER (WHERE status='completed') AS total_rides,
+                COALESCE(SUM(fare) FILTER (WHERE status='completed'),0) AS total_fare,
+                COUNT(*) FILTER (WHERE status='cancelled') AS cancelled_rides
+         FROM rides WHERE driver_id=$1`,
+        [req.params.id]
+      ),
+    ]);
+    if (!user.rows.length) return res.status(404).json({ error: 'Not found' });
+    res.json({ driver: user.rows[0], rides: rides.rows, stats: stats.rows[0] });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
@@ -1026,15 +1103,35 @@ router.put('/sos-alerts/:id/resolve', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// ── GET /api/admin/customer-profile/:id — trust score + incidents + restrictions ──
+// ── GET /api/admin/customer-profile/:id — trust score + incidents + restrictions + ride history ──
 router.get('/customer-profile/:id', async (req, res) => {
   try {
-    const [user, incidents, restrictions] = await Promise.all([
+    const [user, incidents, openIncidents, rides, rideStats] = await Promise.all([
       db.query('SELECT id,name,phone,trust_score,booking_restricted,booking_restricted_reason FROM users WHERE id=$1', [req.params.id]),
       db.query('SELECT * FROM ride_incidents WHERE customer_id=$1 ORDER BY created_at DESC LIMIT 10', [req.params.id]),
       db.query("SELECT COUNT(*) FROM ride_incidents WHERE customer_id=$1 AND resolved=false", [req.params.id]),
+      db.query(
+        `SELECT r.id, r.pickup, r.drop_location, r.fare, r.status, r.created_at, r.rating,
+                d.name AS driver_name, d.phone AS driver_phone
+         FROM rides r LEFT JOIN users d ON r.driver_id = d.id
+         WHERE r.passenger_id=$1 ORDER BY r.created_at DESC LIMIT 15`,
+        [req.params.id]
+      ),
+      db.query(
+        `SELECT COUNT(*) FILTER (WHERE status='completed') AS total_rides,
+                COALESCE(SUM(fare) FILTER (WHERE status='completed'),0) AS total_spent,
+                COUNT(*) FILTER (WHERE status='cancelled') AS cancelled_rides
+         FROM rides WHERE passenger_id=$1`,
+        [req.params.id]
+      ),
     ]);
-    res.json({ user: user.rows[0], incidents: incidents.rows, open_incidents: parseInt(restrictions.rows[0]?.count || 0) });
+    res.json({
+      user: user.rows[0],
+      incidents: incidents.rows,
+      open_incidents: parseInt(openIncidents.rows[0]?.count || 0),
+      rides: rides.rows,
+      ride_stats: rideStats.rows[0],
+    });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
