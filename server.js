@@ -1436,6 +1436,22 @@ setInterval(async () => {
   } catch (_e) {}
 }, 60_000);
 
+// ── Cron: flip time-lapsed driver subscriptions to 'expired' (every 5 min) ──
+// The ride-consumption path already re-checks expires_at>NOW() independently on every
+// use, so this never affected what benefit a driver actually got — but without this,
+// a subscription that expires with rides still unused sits at status='active' forever
+// (nothing else ever writes to it again), which made admin's subscriber list lie.
+setInterval(async () => {
+  try {
+    const r = await db.query(
+      `UPDATE driver_subscriptions SET status='expired'
+       WHERE status='active' AND expires_at < NOW()
+       RETURNING id`
+    );
+    if (r.rows.length) console.log(`🧹 Marked ${r.rows.length} time-lapsed subscription(s) as expired`);
+  } catch (_e) {}
+}, 5 * 60_000);
+
 // ── Cron: cleanup stale in-memory driver locations (every 5 min) ──
 setInterval(() => {
   const cutoff = Date.now() - 5 * 60 * 1000;

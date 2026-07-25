@@ -217,7 +217,7 @@ router.get('/admin/subscribers', adminAuth, async (req, res) => {
        LEFT JOIN (
          SELECT subscription_id, SUM(commission_saved) AS saved FROM subscription_ride_log GROUP BY subscription_id
        ) srl ON srl.subscription_id=ds.id
-       WHERE ds.status IN ('active','queued')
+       WHERE (ds.status='active' AND ds.expires_at > NOW()) OR ds.status='queued'
        ORDER BY ds.created_at DESC`
     );
     const revenue = await db.query(
