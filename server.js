@@ -807,6 +807,11 @@ setTimeout(async () => {
   await db.query(`ALTER TABLE driver_metrics ADD COLUMN IF NOT EXISTS last_cancel_date DATE`).catch(() => {});
   await db.query(`ALTER TABLE rides ADD COLUMN IF NOT EXISTS customer_rating INT`).catch(() => {});
   await db.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS customer_rating NUMERIC(3,1)`).catch(() => {});
+  // rides.rating/review (customer → driver rating) — referenced by /api/rides/rate and
+  // the admin rides views since day one, but never actually had a migration creating
+  // them, so every post-ride rating submission has been silently failing.
+  await db.query(`ALTER TABLE rides ADD COLUMN IF NOT EXISTS rating INT`).catch(() => {});
+  await db.query(`ALTER TABLE rides ADD COLUMN IF NOT EXISTS review TEXT`).catch(() => {});
   // Early completion + payment skip tracking columns
   await db.query(`ALTER TABLE rides ADD COLUMN IF NOT EXISTS early_completion BOOLEAN DEFAULT FALSE`).catch(() => {});
   await db.query(`ALTER TABLE rides ADD COLUMN IF NOT EXISTS driver_lat_at_complete FLOAT`).catch(() => {});
