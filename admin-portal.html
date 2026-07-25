@@ -1403,9 +1403,12 @@ async function loadRides(){
 }
 
 async function viewRideDetail(id){
+  document.getElementById('cmp-modal-content').innerHTML='<div class=loading>Loading...</div>';
+  document.getElementById('cmp-modal').classList.add('open');
   try{
     const d=await aJson('/api/admin/rides/'+id);
-    const r=d.ride||{};
+    if(d.error||!d.ride){document.getElementById('cmp-modal-content').innerHTML=`<div style="color:#c62828;padding:20px">❌ Error: ${d.error||'Ride not found'}</div>`;return;}
+    const r=d.ride;
     const mapLink=(r.pickup_lat&&r.pickup_lng)?`<a href="https://maps.google.com/?q=${r.pickup_lat},${r.pickup_lng}" target="_blank">📍 Pickup on map</a>`:'';
     document.getElementById('cmp-modal-content').innerHTML=`
       <h3 style="margin-bottom:12px">🛺 Ride Detail</h3>
@@ -1429,14 +1432,16 @@ async function viewRideDetail(id){
       ${r.cancel_reason?`<div style="background:#ffebee;border-radius:8px;padding:10px;margin-bottom:12px;font-size:12px"><b>Cancel reason:</b> ${r.cancel_reason}</div>`:''}
       ${r.review?`<div style="background:#f8f8f8;border-radius:8px;padding:10px;font-size:12px"><b>Review:</b> "${r.review}"</div>`:''}
     `;
-    document.getElementById('cmp-modal').classList.add('open');
-  }catch(e){alert('Error: '+e.message);}
+  }catch(e){document.getElementById('cmp-modal-content').innerHTML=`<div style="color:#c62828;padding:20px">❌ Error: ${e.message}</div>`;}
 }
 
 async function viewDriverProfile(id){
+  document.getElementById('cmp-modal-content').innerHTML='<div class=loading>Loading...</div>';
+  document.getElementById('cmp-modal').classList.add('open');
   try{
     const d=await aJson('/api/admin/driver-profile/'+id);
-    const dr=d.driver||{};
+    if(d.error||!d.driver){document.getElementById('cmp-modal-content').innerHTML=`<div style="color:#c62828;padding:20px">❌ Error: ${d.error||'Driver not found'}</div>`;return;}
+    const dr=d.driver;
     const st=d.stats||{};
     document.getElementById('cmp-modal-content').innerHTML=`
       <h3 style="margin-bottom:12px">🚗 Driver Profile</h3>
@@ -1461,8 +1466,7 @@ async function viewDriverProfile(id){
       </div>`).join('')||'<div style="color:#aaa;text-align:center">Koi ride nahi</div>'}
       </div>
     `;
-    document.getElementById('cmp-modal').classList.add('open');
-  }catch(e){alert('Error: '+e.message);}
+  }catch(e){document.getElementById('cmp-modal-content').innerHTML=`<div style="color:#c62828;padding:20px">❌ Error: ${e.message}</div>`;}
 }
 
 // ── Live Rides ──────────────────────────────────────────
@@ -2996,9 +3000,12 @@ async function submitCreateIncident(){
 }
 
 async function viewCustomerProfile(id){
+  document.getElementById('cmp-modal-content').innerHTML='<div class=loading>Loading...</div>';
+  document.getElementById('cmp-modal').classList.add('open');
   try{
     const d=await aJson('/api/admin/customer-profile/'+id);
-    const u=d.user||{};
+    if(d.error||!d.user){document.getElementById('cmp-modal-content').innerHTML=`<div style="color:#c62828;padding:20px">❌ Error: ${d.error||'Customer not found (id: '+id+')'}</div>`;return;}
+    const u=d.user;
     const rs=d.ride_stats||{};
     const trustColor=u.trust_score>=80?'#2e7d32':u.trust_score>=50?'#e65100':'#c62828';
     document.getElementById('cmp-modal-content').innerHTML=`
@@ -3032,8 +3039,7 @@ async function viewCustomerProfile(id){
         <span style="float:right;color:${i.resolved?'#2e7d32':'#c62828'}">${i.resolved?'Resolved':'Open'}</span>
       </div>`).join('')||'<div style="color:#aaa;text-align:center">Koi incident nahi</div>'}
     `;
-    document.getElementById('cmp-modal').classList.add('open');
-  }catch(e){alert('Error: '+e.message);}
+  }catch(e){document.getElementById('cmp-modal-content').innerHTML=`<div style="color:#c62828;padding:20px">❌ Error: ${e.message}</div>`;}
 }
 
 async function unrestrictCustomer(id){
