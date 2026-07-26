@@ -178,11 +178,16 @@ router.post('/accept', async (req, res) => {
   } catch (err) { console.error('[hourly]', err.message); res.status(500).json({ error: 'Something went wrong — please try again' }); }
 });
 
-// POST /api/hourly/driver-cancel  — driver backs out after accepting (before OTP)
+// POST /api/hourly/driver-cancel — driver backs out after accepting, either
+// before or after marking arrival (before OTP/trip start). The app shows the
+// Cancel button in both 'matched' and 'arrived' states, so this must accept
+// both — it previously only matched 'matched', permanently 404ing any driver
+// who'd already tapped "I've Arrived" and leaving the booking stuck forever
+// since there was no other way for the driver to back out of it.
 router.post('/driver-cancel', async (req, res) => {
   const { booking_id, driver_phone } = req.body;
   try {
-    const r = await db.query(`SELECT * FROM hourly_bookings WHERE id=$1 AND driver_phone=$2 AND status='matched'`, [booking_id, driver_phone]);
+    const r = await db.query(`SELECT * FROM hourly_bookings WHERE id=$1 AND driver_phone=$2 AND status IN ('matched','arrived')`, [booking_id, driver_phone]);
     if (!r.rows[0]) return res.status(404).json({ error: 'Booking not found or already started' });
     const booking = r.rows[0];
     // Reset to pending AND record this driver so they are not re-offered the same booking
