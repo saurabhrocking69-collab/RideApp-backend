@@ -1118,7 +1118,7 @@ router.post('/cash-confirm', async (req, res) => {
     // payment_status directly) is the durable fallback if this socket event
     // is missed, so no OS-level push is needed here.
     emitToRoom('ride_' + ride_id, 'paymentConfirmed', { ride_id, status: 'completed', payment_method: method, cashbacks });
-    res.json({ success: true, message: 'Payment confirmed!', pending_commission: totalPending, cashbacks });
+    res.json({ success: true, message: 'Payment confirmed!', pending_commission: totalPending, cashbacks, fare, commission_amount: commission });
     // Activate any pre-assigned ride this driver has queued (fire-and-forget)
     activateQueuedRide(phone).catch(() => {});
   } catch (err) { console.error('[rides]', err.message); res.status(500).json({ error: 'Something went wrong — please try again' }); }
@@ -1337,7 +1337,7 @@ router.get('/history', async (req, res) => {
 // GET /api/rides/payment-status/:rideId
 router.get('/payment-status/:rideId', async (req, res) => {
   try {
-    const result = await db.query(`SELECT payment_status, payment_method, fare, discount FROM rides WHERE id = $1`, [req.params.rideId]);
+    const result = await db.query(`SELECT payment_status, payment_method, fare, discount, commission_amount FROM rides WHERE id = $1`, [req.params.rideId]);
     if (result.rows.length === 0) return res.json({ status: 'not_found' });
     const row = result.rows[0];
     row.net_fare = Math.max(0, parseFloat(row.fare || 0) - parseFloat(row.discount || 0));

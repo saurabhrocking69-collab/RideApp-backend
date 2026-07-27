@@ -425,7 +425,7 @@ router.get('/order-history', async (req, res) => {
     const fromDate = from || new Date().toISOString().slice(0, 10);
     const toDate = to || fromDate;
     const ridesRes = await db.query(`
-      SELECT r.id, r.pickup, r.drop_location, r.fare, r.ride_type, r.status, r.created_at, r.payment_method,
+      SELECT r.id, r.pickup, r.drop_location, r.fare, r.commission_amount, r.ride_type, r.status, r.created_at, r.payment_method,
              COALESCE(NULLIF(r.rider_name,''), u.name) AS passenger_name, can.cancelled_by
       FROM rides r
       JOIN users u ON r.passenger_id = u.id
@@ -440,7 +440,10 @@ router.get('/order-history', async (req, res) => {
     const rides = ridesRes.rows;
     const completed = rides.filter(r => r.status === 'completed');
     const cancelled = rides.filter(r => r.status === 'cancelled');
-    const earnings = completed.reduce((s, r) => s + parseFloat(r.fare || 0), 0);
+    // Net earning (fare minus platform commission) — was previously summing
+    // raw fare, which overstated what the driver actually took home by their
+    // commission % on every ride, shown to them directly as "Earned".
+    const earnings = completed.reduce((s, r) => s + Math.max(0, parseFloat(r.fare || 0) - parseFloat(r.commission_amount || 0)), 0);
     res.json({
       rides,
       summary: { total: rides.length, completed: completed.length, cancelled: cancelled.length, earnings: Math.round(earnings) }
@@ -629,12 +632,19 @@ router.get('/earnings-analytics/:phone', async (req, res) => {
     if (!user.rows[0]) return res.status(404).json({ error: 'Driver not found' });
     const driverId = user.rows[0].id;
 
+    // Net earning = fare minus this ride's actual stored commission — NOT a
+    // flat 0.85 multiplier, which was wrong for subscription drivers (0%
+    // commission) and intercity rides (10% not 15%), understating what they
+    // actually kept in both cases.
+    const NET_EARNED = `COALESCE(SUM(GREATEST(COALESCE(fare, 0) - COALESCE(commission_amount, 0), 0)), 0)`;
+    const NET_EARNED_AVG = `COALESCE(AVG(GREATEST(COALESCE(fare, 0) - COALESCE(commission_amount, 0), 0)), 0)`;
+
     // 7-day daily earnings
     const daily = await db.query(`
       SELECT
         DATE(created_at AT TIME ZONE 'Asia/Kolkata') AS day,
         COUNT(*) AS rides,
-        COALESCE(SUM(COALESCE(fare, 0) * 0.85), 0) AS earned
+        ${NET_EARNED} AS earned
       FROM rides
       WHERE driver_id = $1
         AND payment_status = 'completed'
@@ -648,7 +658,7 @@ router.get('/earnings-analytics/:phone', async (req, res) => {
       SELECT
         EXTRACT(HOUR FROM created_at AT TIME ZONE 'Asia/Kolkata') AS hour,
         COUNT(*) AS rides,
-        COALESCE(AVG(COALESCE(fare, 0) * 0.85), 0) AS avg_earned
+        ${NET_EARNED_AVG} AS avg_earned
       FROM rides
       WHERE driver_id = $1
         AND payment_status = 'completed'
@@ -662,7 +672,7 @@ router.get('/earnings-analytics/:phone', async (req, res) => {
       SELECT
         CASE WHEN created_at >= date_trunc('week', NOW() AT TIME ZONE 'Asia/Kolkata') THEN 'this' ELSE 'last' END AS week,
         COUNT(*) AS rides,
-        COALESCE(SUM(COALESCE(fare, 0) * 0.85), 0) AS earned
+        ${NET_EARNED} AS earned
       FROM rides
       WHERE driver_id = $1
         AND payment_status = 'completed'

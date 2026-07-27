@@ -201,7 +201,7 @@ router.get('/driver/detail', async (req, res) => {
        FROM hourly_bookings WHERE driver_phone=$1 AND status='completed' ORDER BY created_at DESC LIMIT 30`, [phone]
     );
     const payouts = await db.query(
-      `SELECT amount, created_at FROM driver_commissions WHERE driver_phone=$1 ORDER BY created_at DESC LIMIT 20`, [phone]
+      `SELECT amount, status, method, requested_at AS created_at, settled_at FROM driver_payouts WHERE driver_phone=$1 ORDER BY requested_at DESC LIMIT 20`, [phone]
     ).catch(() => ({ rows: [] }));
     res.json({
       name: user.rows[0].name, vehicle_type: user.rows[0].vehicle_type, vehicle_no: user.rows[0].vehicle_no,
