@@ -16,6 +16,7 @@ const { getSurgeMultiplier } = require('../services/locationIntelligence');
 const { calculateFare, getISTHour } = require('../services/pricing');
 const { useSubscriptionIfActive } = require('../services/subscription');
 const { requiresAdvance, verifyAdvancePayment, refundToWallet } = require('../services/advance');
+const userAuth = require('../middleware/userAuth');
 
 function emitRideUpdate(rideId, data) {
   emitToRoom('ride_' + rideId, 'rideUpdate', { rideId, ...data });
@@ -139,10 +140,11 @@ async function processCashback(userId, phone, rideId, fare, paymentMethod) {
 }
 
 // POST /api/rides/book
-router.post('/book', async (req, res) => {
+router.post('/book', userAuth, async (req, res) => {
   const { passenger_phone, pickup, drop_location, ride_type, pickup_lat, pickup_lng, drop_lat, drop_lng, discount, promo_code, route_polyline, route_type, rider_name, rider_phone } = req.body;
   console.log(`[rides] 📥 book request: phone=${passenger_phone} type=${ride_type}`);
   if (!passenger_phone || String(passenger_phone).length !== 10) return res.status(400).json({ error: 'Valid phone do' });
+  if (req.user.phone !== String(passenger_phone)) return res.status(403).json({ error: 'You can only book rides for your own account' });
   if (!pickup || !drop_location) return res.status(400).json({ error: 'Pickup and drop location required' });
   if (!['auto', 'bike', 'car', 'eriksha', 'luxury', 'green_bike', 'electric_auto'].includes(ride_type)) return res.status(400).json({ error: 'Invalid ride type' });
   try {
@@ -281,9 +283,10 @@ router.get('/status/:rideId', async (req, res) => {
 });
 
 // POST /api/rides/accept
-router.post('/accept', async (req, res) => {
+router.post('/accept', userAuth, async (req, res) => {
   const { ride_id, driver_phone } = req.body;
   if (!ride_id || !driver_phone) return res.status(400).json({ success: false, message: 'ride_id and driver_phone required' });
+  if (req.user.phone !== String(driver_phone)) return res.status(403).json({ success: false, message: 'You can only accept rides as yourself' });
   try {
     const driver = await db.query('SELECT id FROM users WHERE phone=$1', [driver_phone]);
     if (!driver.rows[0]) return res.status(404).json({ success: false, message: 'Driver not found' });
@@ -390,8 +393,9 @@ router.post('/accept', async (req, res) => {
 // POST /api/rides/reject-offer
 // In broadcast system: driver dismisses the popup. Broadcast window keeps running for other drivers.
 // Just track the rejection so this driver won't see the ride again.
-router.post('/reject-offer', async (req, res) => {
+router.post('/reject-offer', userAuth, async (req, res) => {
   const { ride_id, driver_phone } = req.body;
+  if (driver_phone && req.user.phone !== String(driver_phone)) return res.status(403).json({ error: 'You can only act as yourself' });
   try {
     // Add to rejected_phones so pending-ride won't show it again to this driver
     await db.query(
@@ -426,9 +430,10 @@ router.post('/reject-offer', async (req, res) => {
 });
 
 // POST /api/rides/arrived
-router.post('/arrived', async (req, res) => {
+router.post('/arrived', userAuth, async (req, res) => {
   const { ride_id, driver_phone } = req.body;
   if (!driver_phone) return res.status(400).json({ error: 'driver_phone required' });
+  if (req.user.phone !== String(driver_phone)) return res.status(403).json({ error: 'You can only act as yourself' });
   try {
     const owner = await db.query(
       `SELECT 1 FROM rides r JOIN users u ON r.driver_id=u.id WHERE r.id=$1 AND u.phone=$2`, [ride_id, driver_phone]
@@ -475,9 +480,10 @@ router.post('/arrived', async (req, res) => {
 });
 
 // POST /api/rides/start
-router.post('/start', async (req, res) => {
+router.post('/start', userAuth, async (req, res) => {
   const { ride_id, otp, driver_phone } = req.body;
   if (!driver_phone) return res.status(400).json({ success: false, message: 'driver_phone required' });
+  if (req.user.phone !== String(driver_phone)) return res.status(403).json({ success: false, message: 'You can only act as yourself' });
   try {
     const check = await db.query(`SELECT r.start_otp, u.phone as dr_phone FROM rides r LEFT JOIN users u ON r.driver_id=u.id WHERE r.id=$1`, [ride_id]);
     if (!check.rows[0]) return res.status(404).json({ success: false, message: 'Ride not found' });
@@ -498,10 +504,11 @@ router.post('/start', async (req, res) => {
 });
 
 // POST /api/rides/cancel (legacy — prefer cancel-smart)
-router.post('/cancel', async (req, res) => {
+router.post('/cancel', userAuth, async (req, res) => {
   const { ride_id, reason, driver_phone } = req.body;
   try {
     if (driver_phone) {
+      if (req.user.phone !== String(driver_phone)) return res.status(403).json({ error: 'You can only act as yourself' });
       const owner = await db.query(`SELECT 1 FROM rides r JOIN users u ON r.driver_id=u.id WHERE r.id=$1 AND u.phone=$2`, [ride_id, driver_phone]);
       if (!owner.rows[0]) return res.status(403).json({ error: 'This ride does not belong to you' });
     }
@@ -589,7 +596,7 @@ router.get('/cancel-info/:ride_id', async (req, res) => {
 });
 
 // POST /api/rides/cancel-smart
-router.post('/cancel-smart', async (req, res) => {
+router.post('/cancel-smart', userAuth, async (req, res) => {
   const { ride_id, cancelled_by, reason, phone } = req.body;
   try {
     const cs = await getCancelSettings();
@@ -605,6 +612,13 @@ router.post('/cancel-smart', async (req, res) => {
     );
     if (rideRes.rows.length === 0) return res.json({ success: false, message: 'Ride not found' });
     const ride = rideRes.rows[0];
+    // Verify against the ride's actual passenger/driver, not just whatever
+    // `phone` the request happens to include (some call sites omit it) —
+    // this is the one check that can't be spoofed by a bad request body.
+    const expectedPhone = cancelled_by === 'driver' ? ride.driver_phone : ride.passenger_phone;
+    if (expectedPhone && req.user.phone !== expectedPhone) {
+      return res.json({ success: false, message: 'You can only cancel your own ride' });
+    }
     const secondsAfterBook = Math.round(ride.seconds_since_book || 0);
     const secDriverWaited  = ride.arrived_at ? Math.max(0, Math.round(ride.seconds_driver_waited || 0)) : 0;
     let penalty = 0;
@@ -759,7 +773,7 @@ router.post('/cancel-smart', async (req, res) => {
 // The trip ends immediately, but the money (advance) is HELD, not auto-refunded:
 // admin decides the penalty/refund within 2 days (a mid-trip cancel could be a
 // genuine emergency or an abuse, so a human adjudicates).
-router.post('/report-cancel', async (req, res) => {
+router.post('/report-cancel', userAuth, async (req, res) => {
   const { ride_id, phone, reason } = req.body;
   try {
     const r = await db.query(
@@ -769,7 +783,7 @@ router.post('/report-cancel', async (req, res) => {
     );
     if (!r.rows[0]) return res.status(404).json({ error: 'Ride not found' });
     const ride = r.rows[0];
-    if (ride.passenger_phone !== phone) return res.status(403).json({ error: 'This ride is not yours' });
+    if (ride.passenger_phone !== req.user.phone) return res.status(403).json({ error: 'This ride is not yours' });
     if (ride.status !== 'started') return res.status(400).json({ error: 'Only an in-progress trip can be reported for emergency cancel' });
 
     const heldAdvance = parseFloat(ride.advance_amount || 0);
@@ -795,8 +809,9 @@ router.post('/report-cancel', async (req, res) => {
 // POST /api/rides/complete
 // Accepts optional driver_lat/driver_lng for early-completion detection.
 // If driver is >800m from drop point, marks early_completion=true and logs an incident.
-router.post('/complete', async (req, res) => {
+router.post('/complete', userAuth, async (req, res) => {
   const { ride_id, driver_phone, driver_lat, driver_lng, delivery_otp } = req.body;
+  if (driver_phone && req.user.phone !== String(driver_phone)) return res.status(403).json({ error: 'You can only act as yourself' });
   try {
     const rideRow = await db.query(
       `SELECT r.*, u.phone AS passenger_phone, d.phone AS dphone,
@@ -1440,16 +1455,19 @@ router.get('/driver-location/:rideId', async (req, res) => {
 });
 
 // POST /api/rides/switch-vehicle — customer switches vehicle type while searching
-router.post('/switch-vehicle', async (req, res) => {
+router.post('/switch-vehicle', userAuth, async (req, res) => {
   const { ride_id, new_vehicle_type } = req.body;
   if (!['auto', 'bike', 'car', 'eriksha', 'luxury', 'green_bike', 'electric_auto'].includes(new_vehicle_type))
     return res.status(400).json({ error: 'Invalid vehicle type' });
   try {
     const r = await db.query(
-      `SELECT pickup_lat, pickup_lng, distance, is_intercity FROM rides WHERE id=$1 AND status='requested' AND driver_id IS NULL`,
+      `SELECT r.pickup_lat, r.pickup_lng, r.distance, r.is_intercity, p.phone AS passenger_phone
+       FROM rides r JOIN users p ON r.passenger_id = p.id
+       WHERE r.id=$1 AND r.status='requested' AND r.driver_id IS NULL`,
       [ride_id]
     );
     if (!r.rows[0]) return res.json({ success: false, message: 'Ride not found or already assigned' });
+    if (r.rows[0].passenger_phone !== req.user.phone) return res.json({ success: false, message: 'This ride is not yours' });
     // Intercity fares use their own long-distance model — a city-rate recalc here would misprice a 300km trip
     if (r.rows[0].is_intercity) return res.json({ success: false, message: 'Vehicle switch is not available for intercity trips' });
     const { pickup_lat, pickup_lng, distance } = r.rows[0];
@@ -1719,9 +1737,10 @@ router.get('/track-info/:rideId', async (req, res) => {
 });
 
 // POST /api/rides/pre-accept — driver accepts a pre-assignment offer
-router.post('/pre-accept', async (req, res) => {
+router.post('/pre-accept', userAuth, async (req, res) => {
   const { ride_id, phone } = req.body;
   if (!ride_id || !phone) return res.status(400).json({ error: 'ride_id and phone required' });
+  if (req.user.phone !== String(phone)) return res.status(403).json({ error: 'You can only act as yourself' });
   try {
     const r = await db.query(
       `SELECT r.id, r.pickup, r.fare
@@ -1741,9 +1760,10 @@ router.post('/pre-accept', async (req, res) => {
 });
 
 // POST /api/rides/pre-decline — driver declines a pre-assignment offer
-router.post('/pre-decline', async (req, res) => {
+router.post('/pre-decline', userAuth, async (req, res) => {
   const { ride_id, phone } = req.body;
   if (!ride_id || !phone) return res.status(400).json({ error: 'ride_id and phone required' });
+  if (req.user.phone !== String(phone)) return res.status(403).json({ error: 'You can only act as yourself' });
   try {
     const r = await db.query(
       `UPDATE rides SET status='requested', pre_accepted_driver_phone=NULL, pre_accepted_at=NULL
