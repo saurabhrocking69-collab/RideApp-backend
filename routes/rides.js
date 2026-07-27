@@ -856,50 +856,52 @@ router.post('/complete', async (req, res) => {
   } catch (err) { console.error('[rides]', err.message); res.status(500).json({ error: 'Something went wrong — please try again' }); }
 });
 
-// POST /api/rides/payment-complete
-router.post('/payment-complete', async (req, res) => {
-  const { ride_id, payment_method, phone } = req.body;
-  try {
-    const rideRes = await db.query(
-      `SELECT r.*, fs.commission_rate, fs.intercity_commission_rate, u.phone AS driver_phone FROM rides r
-       LEFT JOIN fare_settings fs ON fs.vehicle_type = r.ride_type
-       LEFT JOIN users u ON u.id = r.driver_id
-       WHERE r.id = $1`, [ride_id]
+// Core payment-completion logic (commission, driver crediting, socket notify,
+// cashback) — extracted so wallet.js's /pay can call it directly and
+// synchronously right after deducting the customer's wallet, instead of
+// relying on the customer app to make a separate best-effort follow-up call
+// that can be silently lost if the app backgrounds right after paying.
+async function completeRidePayment({ ride_id, payment_method, phone }) {
+  const rideRes = await db.query(
+    `SELECT r.*, fs.commission_rate, fs.intercity_commission_rate, u.phone AS driver_phone FROM rides r
+     LEFT JOIN fare_settings fs ON fs.vehicle_type = r.ride_type
+     LEFT JOIN users u ON u.id = r.driver_id
+     WHERE r.id = $1`, [ride_id]
+  );
+  if (rideRes.rows.length === 0) return { success: false, message: 'Ride not found' };
+  const ride = rideRes.rows[0];
+  const fare = Math.max(0, parseFloat(ride.fare) - parseFloat(ride.discount || 0));
+  // Intercity fares are large (₹5k+) — lower commission % keeps drivers motivated
+  const commRate = ride.is_intercity
+    ? parseFloat(ride.intercity_commission_rate || 10) / 100
+    : parseFloat(ride.commission_rate || 15) / 100;
+  const normalCommission = Math.round(fare * commRate * 100) / 100;
+
+  // Idempotency: if already completed, just re-emit the socket so the driver gets notified
+  if (ride.payment_status === 'completed') {
+    emitToRoom('ride_' + ride_id, 'paymentConfirmed', { ride_id, status: 'completed', payment_method: ride.payment_method, cashbacks: [] });
+    return { success: true, status: 'completed', already_done: true };
+  }
+
+  // Subscription check — commission = 0 if driver has an active ride pack
+  const { commission } = await useSubscriptionIfActive(ride.driver_phone, ride_id, 'standard', normalCommission);
+
+  if (payment_method === 'cash') {
+    await db.query(`UPDATE rides SET payment_method = 'cash', payment_status = 'cash_pending' WHERE id = $1`, [ride_id]);
+    await db.query(
+      `INSERT INTO driver_commissions (driver_phone, ride_id, fare, commission, payment_method, status)
+       SELECT u.phone, $1, $2, $3, 'cash', 'pending'
+       FROM rides r JOIN users u ON r.driver_id = u.id WHERE r.id = $1
+       ON CONFLICT (ride_id) DO NOTHING`,
+      [ride_id, fare, commission]
     );
-    if (rideRes.rows.length === 0) return res.json({ success: false, message: 'Ride not found' });
-    const ride = rideRes.rows[0];
-    const fare = Math.max(0, parseFloat(ride.fare) - parseFloat(ride.discount || 0));
-    // Intercity fares are large (₹5k+) — lower commission % keeps drivers motivated
-    const commRate = ride.is_intercity
-      ? parseFloat(ride.intercity_commission_rate || 10) / 100
-      : parseFloat(ride.commission_rate || 15) / 100;
-    const normalCommission = Math.round(fare * commRate * 100) / 100;
+    // Customer gets a socket ping to show "give cash to driver" UI
+    emitToRoom('ride_' + ride_id, 'paymentConfirmed', { ride_id, status: 'cash_pending', payment_method: 'cash' });
+    return { success: true, status: 'cash_pending', message: 'Driver ko cash do!' };
+  }
 
-    // Idempotency: if already completed, just re-emit the socket so the driver gets notified
-    if (ride.payment_status === 'completed') {
-      emitToRoom('ride_' + ride_id, 'paymentConfirmed', { ride_id, status: 'completed', payment_method: ride.payment_method, cashbacks: [] });
-      return res.json({ success: true, status: 'completed', already_done: true });
-    }
-
-    // Subscription check — commission = 0 if driver has an active ride pack
-    const { commission } = await useSubscriptionIfActive(ride.driver_phone, ride_id, 'standard', normalCommission);
-
-    if (payment_method === 'cash') {
-      await db.query(`UPDATE rides SET payment_method = 'cash', payment_status = 'cash_pending' WHERE id = $1`, [ride_id]);
-      await db.query(
-        `INSERT INTO driver_commissions (driver_phone, ride_id, fare, commission, payment_method, status)
-         SELECT u.phone, $1, $2, $3, 'cash', 'pending'
-         FROM rides r JOIN users u ON r.driver_id = u.id WHERE r.id = $1
-         ON CONFLICT (ride_id) DO NOTHING`,
-        [ride_id, fare, commission]
-      );
-      // Customer gets a socket ping to show "give cash to driver" UI
-      emitToRoom('ride_' + ride_id, 'paymentConfirmed', { ride_id, status: 'cash_pending', payment_method: 'cash' });
-      return res.json({ success: true, status: 'cash_pending', message: 'Driver ko cash do!' });
-    }
-
-    const payClient = await db.connect();
-    let drPhone = null;
+  const payClient = await db.connect();
+  let drPhone = null;
     let driverEarning = 0, autoDeduct = 0, actualCredit = 0;
     try {
       await payClient.query('BEGIN');
@@ -927,7 +929,7 @@ router.post('/payment-complete', async (req, res) => {
         await payClient.query('ROLLBACK');
         payClient.release();
         emitToRoom('ride_' + ride_id, 'paymentConfirmed', { ride_id, status: 'completed', payment_method, cashbacks: [] });
-        return res.json({ success: true, status: 'completed', already_done: true });
+        return { success: true, status: 'completed', already_done: true };
       }
       const commRow = await payClient.query(
         `INSERT INTO driver_commissions (driver_phone, ride_id, fare, commission, payment_method, status)
@@ -990,11 +992,18 @@ router.post('/payment-complete', async (req, res) => {
       }
     } catch (_e) {}
 
-    // Socket: customer's payment screen listens for this instead of polling
-    emitToRoom('ride_' + ride_id, 'paymentConfirmed', { ride_id, status: 'completed', payment_method, cashbacks });
-    res.json({ success: true, status: 'completed', message: 'Payment complete!', cashbacks });
-    // Activate any pre-assigned ride this driver has queued (fire-and-forget)
-    if (drPhone) activateQueuedRide(drPhone).catch(() => {});
+  // Socket: customer's payment screen listens for this instead of polling
+  emitToRoom('ride_' + ride_id, 'paymentConfirmed', { ride_id, status: 'completed', payment_method, cashbacks });
+  // Activate any pre-assigned ride this driver has queued (fire-and-forget)
+  if (drPhone) activateQueuedRide(drPhone).catch(() => {});
+  return { success: true, status: 'completed', message: 'Payment complete!', cashbacks };
+}
+
+// POST /api/rides/payment-complete
+router.post('/payment-complete', async (req, res) => {
+  try {
+    const result = await completeRidePayment(req.body);
+    res.json(result);
   } catch (err) { console.error('[rides]', err.message); res.status(500).json({ error: 'Something went wrong — please try again' }); }
 });
 
@@ -1754,3 +1763,4 @@ router.get('/customer-analytics', async (req, res) => {
 });
 
 module.exports = router;
+module.exports.completeRidePayment = completeRidePayment;

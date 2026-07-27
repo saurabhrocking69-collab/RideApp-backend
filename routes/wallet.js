@@ -4,6 +4,7 @@ const crypto = require('crypto');
 const db = require('../config/db');
 const razorpay = require('../config/razorpay');
 const { sendFCM } = require('../config/firebase');
+const { completeRidePayment } = require('./rides');
 
 // GET /api/wallet/balance
 router.get('/balance', async (req, res) => {
@@ -70,6 +71,19 @@ router.post('/pay', async (req, res) => {
     );
     await client.query('COMMIT');
     res.json({ success: true, balance: parseFloat(result.rows[0].balance) });
+    // Complete the ride's payment (commission, driver crediting, socket
+    // notify to the driver) synchronously here on the server, right after the
+    // wallet debit — instead of relying only on the customer app's own
+    // best-effort follow-up call to /api/rides/payment-complete, which can be
+    // silently lost if the customer backgrounds/closes the app right after
+    // paying. The wallet debit above already happened and stays committed
+    // regardless of whether this succeeds; the client's own follow-up call
+    // is still a harmless no-op backup thanks to completeRidePayment's
+    // idempotency check.
+    if (ride_id) {
+      completeRidePayment({ ride_id, payment_method: 'wallet', phone }).catch(e => console.error('[wallet/pay] completeRidePayment failed:', e.message));
+    }
+    return;
   } catch (err) {
     await client.query('ROLLBACK').catch(() => {});
     res.status(500).json({ error: err.message });
