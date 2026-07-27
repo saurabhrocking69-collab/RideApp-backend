@@ -654,6 +654,14 @@ app.get('/admin', (_req, res) =>
   res.sendFile(__dirname + '/admin-portal.html')
 );
 
+// Public legal pages — required for Play Store / App Store listings
+app.get('/privacy', (_req, res) =>
+  res.sendFile(__dirname + '/privacy-policy.html')
+);
+app.get('/terms', (_req, res) =>
+  res.sendFile(__dirname + '/terms.html')
+);
+
 // Global JSON error handler — overrides Express default HTML error page
 // Must be AFTER all routes so it only catches unhandled next(err) calls
 app.use((err, req, res, _next) => {
