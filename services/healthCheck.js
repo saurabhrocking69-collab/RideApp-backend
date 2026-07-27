@@ -119,6 +119,36 @@ async function checkScheduledRidesNotStuck() {
   if (count > 0) throw new Error(`${count} scheduled rides missed dispatch window (past due, no ride_id)`);
 }
 
+async function checkRequestedRidesNotStuck() {
+  // The radius-broadcast chain schedules its next step either via a raw
+  // setTimeout (not durable across a deploy/restart) or via a BullMQ delayed
+  // job (already known to silently drop on this Railway single-instance
+  // setup — see comments in rideWorker.js). If either link in that chain is
+  // lost, a ride sits in 'requested' forever with no further escalation and
+  // no way for the customer to ever see "no driver found" — the exact same
+  // class of problem checkScheduledRidesNotStuck already recovers from for
+  // scheduled rides, just for the live real-time broadcast instead.
+  const stuck = await db.query(`
+    SELECT id, pickup_lat, pickup_lng, ride_type
+    FROM rides
+    WHERE status = 'requested' AND driver_id IS NULL
+      AND (assignment_expires_at IS NULL OR assignment_expires_at < NOW() - INTERVAL '2 minutes')
+      AND created_at < NOW() - INTERVAL '15 minutes'
+      AND created_at > NOW() - INTERVAL '24 hours'
+  `);
+
+  for (const row of stuck.rows) {
+    console.warn(`[HEALTH] Re-queuing stranded broadcast for ride=${row.id}`);
+    const { rideQueue } = require('../workers/rideWorker');
+    await rideQueue.add('ride-assignment', {
+      type: 'assign-next', rideId: row.id,
+      pickupLat: row.pickup_lat, pickupLng: row.pickup_lng, rideType: row.ride_type,
+    }).catch(() => {});
+  }
+
+  if (stuck.rows.length > 0) throw new Error(`${stuck.rows.length} ride(s) stranded in 'requested' with no active broadcast window — re-queued`);
+}
+
 // ─── Alert Helpers ────────────────────────────────────────────────────────────
 
 function alert(title, body, data = {}) {
@@ -134,6 +164,7 @@ const CHECKS = [
   { id: 'fare_calc',      label: 'Bike Fare Calculation',       fn: checkBikeFareCalculation },
   { id: 'upi_column',     label: 'Driver UPI Column',           fn: checkDriverUpiColumn },
   { id: 'stuck_rides',    label: 'Stuck Rides',                 fn: checkStuckRides },
+  { id: 'requested_stuck', label: 'Stranded Broadcast Recovery', fn: checkRequestedRidesNotStuck },
   { id: 'scheduled',      label: 'Scheduled Ride Dispatch',     fn: checkScheduledRidesNotStuck },
 ];
 

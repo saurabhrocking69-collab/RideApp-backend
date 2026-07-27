@@ -1,3 +1,16 @@
+// Log-and-continue, don't crash — this is a single-instance server with
+// every active ride's socket connections living in this one process. Node's
+// default for an unhandled rejection is to crash the whole process, which
+// would drop every live ride/socket over one bug in an unrelated request or
+// background job, not just fail that one thing. A crash here is strictly
+// worse than one bad request failing, so we log loudly and keep serving.
+process.on('unhandledRejection', (reason) => {
+  console.error('❌ UNHANDLED REJECTION:', reason?.stack || reason);
+});
+process.on('uncaughtException', (err) => {
+  console.error('❌ UNCAUGHT EXCEPTION:', err?.stack || err);
+});
+
 const express      = require('express');
 const cors         = require('cors');
 const compression  = require('compression');
