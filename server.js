@@ -725,8 +725,31 @@ io.on('connection', (socket) => {
     } catch (_e) {}
   }
 
-  socket.on('driverJoin',   async ({ phone })            => { socket.join('driver_' + phone); await _redeliverIfPending(phone); });
-  socket.on('driverOnline', async ({ driverId, phone })  => { const p = phone || driverId; socket.join('driver_' + p); await _redeliverIfPending(p); });
+  // The live 'rideTaken' broadcast (emitted once, at the moment another driver
+  // accepts) is missed entirely if this driver's socket happened to be
+  // disconnected/reconnecting at that exact instant (weak signal, backgrounded
+  // app) — their accept card + countdown then keeps showing an offer that's
+  // actually already gone until their own local countdown times out. Since the
+  // client tells us which ride it's still showing a pending offer for on every
+  // (re)connect, we can check it against the DB immediately and correct it
+  // right away instead of waiting for the client-side timer.
+  async function _correctStaleOffer(phone, pendingRideId) {
+    if (!phone || !pendingRideId) return;
+    try {
+      const r = await db.query(
+        `SELECT 1 FROM rides
+         WHERE id=$1 AND $2 = ANY(COALESCE(offered_phones, '{}'))
+           AND NOT ($2 = ANY(COALESCE(rejected_phones, '{}')))
+           AND status='requested' AND driver_id IS NULL
+           AND assignment_expires_at > NOW()`,
+        [pendingRideId, phone]
+      );
+      if (!r.rows[0]) socket.emit('rideTaken', { rideId: pendingRideId, message: 'Ride was taken by another driver' });
+    } catch (_e) {}
+  }
+
+  socket.on('driverJoin',   async ({ phone, pendingRideId })            => { socket.join('driver_' + phone); await _redeliverIfPending(phone); await _correctStaleOffer(phone, pendingRideId); });
+  socket.on('driverOnline', async ({ driverId, phone, pendingRideId })  => { const p = phone || driverId; socket.join('driver_' + p); await _redeliverIfPending(p); await _correctStaleOffer(p, pendingRideId); });
 
   socket.on('locationUpdate', ({ driverId, lat, lng, rideId }) => {
     if (rideId) {
