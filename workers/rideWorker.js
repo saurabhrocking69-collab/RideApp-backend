@@ -520,6 +520,20 @@ async function _escalate(rideId, rideType, afterSurge, pickupLat, pickupLng, ski
       ).catch(() => {});
     }
   } else {
+    // Guard: a driver may have claimed this ride (via /accept) while the radius
+    // broadcast was still running — broadcastToRadius/_bmqBroadcastAdvance only
+    // check status at their OWN start, so by the time all radii are exhausted
+    // and we reach here, the ride can already be 'matched'. Without this check,
+    // this branch would still compute and emit a stale 'surge_offer' straight
+    // over the customer's already-matched screen (rideData.driver gets wiped
+    // to null client-side), even though the driver's own app is correctly
+    // showing the ride as active — exactly the desync this guard prevents.
+    const statusRow = await db.query(`SELECT status FROM rides WHERE id=$1`, [rideId]);
+    if (!statusRow.rows[0] || statusRow.rows[0].status !== 'requested') {
+      console.log(`[ESCALATE] ride=${rideId} already ${statusRow.rows[0]?.status || 'gone'} — skipping stale surge offer`);
+      return;
+    }
+
     // Scheduled rides skip surge — go straight to no_driver_final so the customer
     // isn't waiting on an offer they can't interact with at pickup time.
     const schedCheck = await db.query(
