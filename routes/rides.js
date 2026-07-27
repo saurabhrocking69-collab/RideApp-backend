@@ -609,6 +609,28 @@ router.post('/cancel-smart', async (req, res) => {
         message = penalty > 0 ? `Cancel fee ₹${penalty}` : 'Free cancellation';
       }
 
+      // Actually charge the cancellation fee to the customer's wallet and log
+      // it in their transaction history — previously this `penalty` was only
+      // ever calculated and shown in the response/cancellations table, never
+      // collected. Advance-paid rides skip this: they already apply their own
+      // (usually larger) penalty by reducing the advance refund further down,
+      // so charging both here would double-penalize the same cancellation.
+      // Wallet balance is allowed to go negative — this is money they owe for
+      // cancelling, not a purchase gated on having funds; it nets out against
+      // their next top-up or ride payment.
+      const isAdvancePaidRide = parseFloat(ride.advance_amount || 0) > 0 && ride.advance_status === 'paid';
+      if (penalty > 0 && !isAdvancePaidRide && ride.passenger_id) {
+        await db.query(
+          `INSERT INTO customer_wallet (user_id, balance) VALUES ($1, $2)
+           ON CONFLICT (user_id) DO UPDATE SET balance = customer_wallet.balance - $3, updated_at = NOW()`,
+          [ride.passenger_id, -penalty, penalty]
+        ).catch(e => console.error('[cancel-smart] wallet charge failed:', e.message));
+        await db.query(
+          `INSERT INTO transactions (user_id, type, amount, description) VALUES ($1, 'debit', $2, $3)`,
+          [ride.passenger_id, penalty, `Cancellation charge`]
+        ).catch(e => console.error('[cancel-smart] transaction log failed:', e.message));
+      }
+
       const newTrust = Math.max(0, (metrics.trust_score || 100) - (penalty > 0 ? 5 : 2));
       await db.query(
         `UPDATE customer_metrics SET total_cancels = total_cancels + 1, cancels_today = $1, last_cancel_date = $2, trust_score = $3, is_flagged = $4 WHERE phone = $5`,
