@@ -319,8 +319,11 @@ router.post('/accept', async (req, res) => {
 
     // Parcel deliveries need a second OTP for the drop — the sender's
     // start_otp above only proves the driver picked up from the right
-    // person; delivery_otp (texted to the receiver, who isn't an app user)
-    // proves the package reached the right person too.
+    // person; delivery_otp proves the package reached the right person too.
+    // Shown to the sender in-app (MatchingScreen/InRideScreen) with a share
+    // button — deliberately not auto-SMS'd to the receiver: that depended on
+    // Fast2SMS actually delivering, for no real benefit since the sender is
+    // already right here and can share it however they prefer.
     const isParcelRide = !!rideForEta.rows[0]?.is_parcel;
     const deliveryOtp = isParcelRide ? Math.floor(1000 + Math.random() * 9000).toString() : null;
 
@@ -333,14 +336,6 @@ router.post('/accept', async (req, res) => {
         ? { start_otp: otp, delivery_otp: deliveryOtp, driver: driverCard }
         : { start_otp: otp, driver: driverCard },
     });
-
-    if (isParcelRide && rideForEta.rows[0].receiver_phone && process.env.FAST2SMS_API_KEY) {
-      fetch('https://www.fast2sms.com/dev/bulkV2', {
-        method: 'POST',
-        headers: { authorization: process.env.FAST2SMS_API_KEY },
-        body: new URLSearchParams({ route: 'otp', variables_values: deliveryOtp, flash: '0', numbers: rideForEta.rows[0].receiver_phone }),
-      }).catch(e => console.log('[parcel] delivery OTP SMS failed:', e.message));
-    }
 
     // Record match time + estimated ETA for dynamic ETA correction
     await db.query(
