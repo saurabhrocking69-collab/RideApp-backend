@@ -112,7 +112,7 @@ router.post('/book', async (req, res) => {
     const passengerRes = await db.query('SELECT * FROM users WHERE phone=$1', [passenger_phone]);
     if (!passengerRes.rows[0]) return res.status(404).json({ error: 'Passenger not found' });
     if (passengerRes.rows[0].booking_restricted)
-      return res.status(403).json({ error: '🚫 Account on hold. Contact support: help@sppero.in', restricted: true });
+      return res.status(403).json({ error: '🚫 Account on hold. Contact support: help@sppero.com', restricted: true });
     const passenger = passengerRes.rows[0];
 
     // Fare is always computed server-side — never trust a client-sent amount

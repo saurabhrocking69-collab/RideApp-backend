@@ -134,7 +134,7 @@ router.post('/book', async (req, res) => {
     if (!cu.rows[0]) return res.status(404).json({ error: 'Account not found — please log in again' });
     const customer = cu.rows[0];
     if (customer.booking_restricted)
-      return res.status(403).json({ error: '🚫 Your account is on hold. Please contact help@sppero.in', restricted: true });
+      return res.status(403).json({ error: '🚫 Your account is on hold. Please contact help@sppero.com', restricted: true });
 
     const buddy = await getBuddy(customer.id);
     if (!buddy) return res.status(400).json({ error: 'No favourite buddy set' });
