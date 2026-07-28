@@ -35,7 +35,7 @@ router.get('/stats', async (req, res) => {
 
 // GET /api/admin/rides — supports optional status filter + phone/ride-id search
 router.get('/rides', async (req, res) => {
-  const { status, search, limit = 100 } = req.query;
+  const { status, search, limit = 50, offset = 0 } = req.query;
   try {
     let where = 'WHERE 1=1';
     const params = [];
@@ -49,10 +49,13 @@ router.get('/rides', async (req, res) => {
               p.name AS passenger_name, p.phone AS passenger_phone, d.name AS driver_name, d.phone AS driver_phone
        FROM rides r LEFT JOIN users p ON r.passenger_id = p.id LEFT JOIN users d ON r.driver_id = d.id
        ${where}
-       ORDER BY r.created_at DESC LIMIT $${params.length+1}`,
-      [...params, limit]
+       ORDER BY r.created_at DESC LIMIT $${params.length+1} OFFSET $${params.length+2}`,
+      [...params, limit, offset]
     );
-    res.json({ rides: result.rows });
+    // has_more: a full page came back, so there's likely another page beyond it —
+    // cheap heuristic (no extra COUNT query) that's right except on the exact
+    // boundary, where one extra empty "See More" click just shows nothing new.
+    res.json({ rides: result.rows, has_more: result.rows.length === parseInt(limit) });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 

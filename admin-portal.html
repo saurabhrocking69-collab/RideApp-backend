@@ -306,6 +306,9 @@ input,select,textarea{outline:none}
       </div>
       <div style="overflow-x:auto"><table><thead><tr><th>Date</th><th>Passenger</th><th>Driver</th><th>Pickup</th><th>Drop</th><th>Fare</th><th>Type</th><th>Status</th><th>Rating</th><th></th></tr></thead>
       <tbody id="rides-body"><tr><td colspan=10 class=loading>Loading...</td></tr></tbody></table></div>
+      <div style="text-align:center;margin-top:14px">
+        <button id="rides-more-btn" class="refresh-btn" style="display:none" onclick="loadMoreRides()">See More Rides</button>
+      </div>
     </div>
   </div>
 
@@ -1379,15 +1382,11 @@ async function loadTransactions(){
 
 // ── Rides ───────────────────────────────────────────────
 const RIDE_STATUS_COLOR={requested:'#888',pre_assigned:'#888',matched:'#1565c0',arrived:'#1565c0',started:'#e65100',completed:'#2e7d32',cancelled:'#c62828'};
-async function loadRides(){
-  const search=document.getElementById('ride-search')?.value.trim()||'';
-  const status=document.getElementById('ride-status-filter')?.value||'';
-  try{
-    let url='/api/admin/rides?limit=150';
-    if(search) url+='&search='+encodeURIComponent(search);
-    if(status) url+='&status='+status;
-    const d=await aJson(url);
-    document.getElementById('rides-body').innerHTML=(d.rides||[]).map(r=>`<tr>
+const RIDES_PAGE_SIZE=50;
+let ridesOffset=0;
+
+function rideRowHtml(r){
+  return `<tr>
       <td>${fmt(r.created_at)}</td>
       <td>${r.passenger_name||'-'}<br><span style="color:#999;font-size:10px">${r.passenger_phone||''}</span></td>
       <td>${r.driver_name||'—'}</td>
@@ -1398,8 +1397,44 @@ async function loadRides(){
       <td><span style="color:${RIDE_STATUS_COLOR[r.status]||'#888'};font-weight:700;font-size:11px">${r.status}</span></td>
       <td>${r.rating?'⭐'.repeat(r.rating):'-'}</td>
       <td><button class="action-btn btn-blue" onclick="viewRideDetail('${r.id}')">View</button></td>
-    </tr>`).join('')||'<tr><td colspan=10 class=loading>Koi ride nahi</td></tr>';
+    </tr>`;
+}
+
+function ridesQueryUrl(offset){
+  const search=document.getElementById('ride-search')?.value.trim()||'';
+  const status=document.getElementById('ride-status-filter')?.value||'';
+  let url='/api/admin/rides?limit='+RIDES_PAGE_SIZE+'&offset='+offset;
+  if(search) url+='&search='+encodeURIComponent(search);
+  if(status) url+='&status='+status;
+  return url;
+}
+
+// Reload/search/filter/tab-open — always starts fresh from the first page.
+async function loadRides(){
+  ridesOffset=0;
+  const moreBtn=document.getElementById('rides-more-btn');
+  if(moreBtn) moreBtn.style.display='none';
+  try{
+    const d=await aJson(ridesQueryUrl(0));
+    document.getElementById('rides-body').innerHTML=(d.rides||[]).map(rideRowHtml).join('')||'<tr><td colspan=10 class=loading>Koi ride nahi</td></tr>';
+    ridesOffset=(d.rides||[]).length;
+    if(moreBtn) moreBtn.style.display=d.has_more?'inline-block':'none';
   }catch(e){if(e.message!=='Unauthorized')document.getElementById('rides-body').innerHTML='<tr><td colspan=10 class=loading>❌ Load failed</td></tr>';}
+}
+
+// "See More Rides" — appends the next page instead of replacing the table.
+async function loadMoreRides(){
+  const moreBtn=document.getElementById('rides-more-btn');
+  if(moreBtn){moreBtn.disabled=true;moreBtn.textContent='Loading...';}
+  try{
+    const d=await aJson(ridesQueryUrl(ridesOffset));
+    document.getElementById('rides-body').insertAdjacentHTML('beforeend',(d.rides||[]).map(rideRowHtml).join(''));
+    ridesOffset+=(d.rides||[]).length;
+    if(moreBtn){
+      moreBtn.disabled=false;moreBtn.textContent='See More Rides';
+      moreBtn.style.display=d.has_more?'inline-block':'none';
+    }
+  }catch(e){if(moreBtn){moreBtn.disabled=false;moreBtn.textContent='See More Rides';}}
 }
 
 async function viewRideDetail(id){
