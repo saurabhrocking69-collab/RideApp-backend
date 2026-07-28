@@ -593,6 +593,12 @@ input,select,textarea{outline:none}
       <p style="font-size:12px;color:#6B7280;margin-bottom:10px">One-way ₹/km (driver returns empty) · Round ₹/km (2× distance billed) · Allowance per day · Night halt per overnight · Min billed km · Commission %. Changes apply instantly aur restart ke baad bhi rahenge.</p>
       <div id="intercity-fares-container"><div class="loading">Loading...</div></div>
     </div>
+    <!-- Parcel Fares Editor -->
+    <div class="card" style="margin-top:14px">
+      <div class="card-title">📦 Parcel Fares <button class="refresh-btn" onclick="loadParcelFares()">⟳ Reload</button></div>
+      <p style="font-size:12px;color:#6B7280;margin-bottom:10px">Base fare + ₹/km per vehicle, min fare floor, and a handling surcharge per package size (added on top of the vehicle fare, same for every vehicle). Changes apply instantly aur restart ke baad bhi rahenge.</p>
+      <div id="parcel-fares-container"><div class="loading">Loading...</div></div>
+    </div>
     <!-- Emergency Ride Disputes -->
     <div class="card" style="margin-top:14px">
       <div class="card-title">🚨 Emergency Ride Disputes <button class="refresh-btn" onclick="loadRideDisputes()">⟳ Reload</button></div>
@@ -1116,7 +1122,7 @@ function showSection(id,btn){
   if(id==='rides') loadRides();
   if(id==='topups') loadTopups();
   if(id==='verify') loadVerifications();
-  if(id==='settings'){loadFares();loadStdFares();loadCancelSettings();loadCommRates();loadIntercityFares();loadRideDisputes();}
+  if(id==='settings'){loadFares();loadStdFares();loadCancelSettings();loadCommRates();loadIntercityFares();loadParcelFares();loadRideDisputes();}
   if(id==='marketing'){loadCampaigns();loadPromos();loadReferrals();}
   if(id==='payouts'){loadPayouts('pending');}
   if(id==='complaints'){loadComplaints();}
@@ -2194,6 +2200,60 @@ async function saveIntercityFare(v){
   if(d.success) setTimeout(loadIntercityFares,800);
 }
 
+// ── Parcel Fares ─────────────────────────────────
+var _pcLabels={bike:'🏍️ Bike',green_bike:'⚡ Green Bike',auto:'🛺 Auto',eriksha:'🛵 E-Rickshaw',electric_auto:'🌿 E-Auto',car:'🚗 Car'};
+var _pcSizeLabels={small:'👜 Small',medium:'📦 Medium',large:'🗄️ Large'};
+async function loadParcelFares(){
+  var el=document.getElementById('parcel-fares-container');
+  if(el) el.innerHTML='<div class="loading">Loading...</div>';
+  try{
+    const d=await aJson('/api/admin/parcel-fares');
+    if(d.error) throw new Error(d.error);
+    var html='<div style="overflow-x:auto"><table style="font-size:12px"><thead><tr><th>Vehicle</th><th>Base ₹</th><th>₹/km</th><th>Min fare ₹</th><th></th></tr></thead><tbody>';
+    Object.keys(_pcLabels).forEach(function(v){
+      var f=(d.fares||{})[v]||{};
+      html+='<tr><td style="font-weight:700;white-space:nowrap">'+_pcLabels[v]+'</td>'
+        +'<td><input id="pc-'+v+'-base" type="number" value="'+(f.base_fare||0)+'" style="width:64px" class="input-sm"></td>'
+        +'<td><input id="pc-'+v+'-pkr" type="number" step="0.5" value="'+(f.per_km_rate||0)+'" style="width:64px" class="input-sm"></td>'
+        +'<td><input id="pc-'+v+'-min" type="number" value="'+(f.min_fare||0)+'" style="width:64px" class="input-sm"></td>'
+        +'<td><button class="refresh-btn" style="background:#1a1a2e;color:#fff;font-size:11px" onclick="saveParcelFare(\''+v+'\')">💾 Save</button></td></tr>';
+    });
+    html+='</tbody></table></div>'
+      +'<div style="font-weight:700;font-size:12px;margin-top:14px;margin-bottom:6px">Package size handling surcharge</div>'
+      +'<div style="overflow-x:auto"><table style="font-size:12px"><thead><tr><th>Size</th><th>Surcharge ₹</th><th></th></tr></thead><tbody>';
+    Object.keys(_pcSizeLabels).forEach(function(s){
+      var surcharge=(d.size_surcharge||{})[s]||0;
+      html+='<tr><td style="font-weight:700;white-space:nowrap">'+_pcSizeLabels[s]+'</td>'
+        +'<td><input id="pc-size-'+s+'" type="number" value="'+surcharge+'" style="width:64px" class="input-sm"></td>'
+        +'<td><button class="refresh-btn" style="background:#1a1a2e;color:#fff;font-size:11px" onclick="saveParcelSizeSurcharge(\''+s+'\')">💾 Save</button></td></tr>';
+    });
+    html+='</tbody></table></div><div id="pc-fare-status" style="font-size:12px;margin-top:8px"></div>';
+    if(el) el.innerHTML=html;
+  }catch(e){if(el) el.innerHTML='<div style="color:#c62828;font-size:12px">❌ Error: '+e.message+'</div>';}
+}
+async function saveParcelFare(v){
+  var g=function(id){return parseFloat(document.getElementById('pc-'+v+'-'+id).value);};
+  const d=await aJson('/api/admin/parcel-fares',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({
+    vehicle_type:v, base_fare:g('base'), per_km_rate:g('pkr'), min_fare:g('min')
+  })});
+  var el=document.getElementById('pc-fare-status');
+  if(el){
+    el.textContent=d.success?'✅ '+(_pcLabels[v]||v)+' rates saved':'❌ '+(d.error||'Failed');
+    el.style.color=d.success?'#2e7d32':'#c62828';
+  }
+  if(d.success) setTimeout(loadParcelFares,800);
+}
+async function saveParcelSizeSurcharge(s){
+  var surcharge=parseFloat(document.getElementById('pc-size-'+s).value);
+  const d=await aJson('/api/admin/parcel-size-surcharge',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({size:s,surcharge:surcharge})});
+  var el=document.getElementById('pc-fare-status');
+  if(el){
+    el.textContent=d.success?'✅ '+(_pcSizeLabels[s]||s)+' surcharge saved':'❌ '+(d.error||'Failed');
+    el.style.color=d.success?'#2e7d32':'#c62828';
+  }
+  if(d.success) setTimeout(loadParcelFares,800);
+}
+
 // ── Standard Ride Fares ─────────────────────────────────
 var stdFaresCache={};
 var hourlyFaresCache={};
@@ -3203,7 +3263,7 @@ function refreshActive(){
     transactions:loadTransactions, rides:loadRides, customers:loadCustomers,
     drivers:loadDrivers, verify:loadVerifications, topups:loadTopups,
     marketing:()=>{loadCampaigns();loadPromos();loadReferrals();},
-    settings:()=>{loadFares();loadStdFares();loadCancelSettings();loadCommRates();loadIntercityFares();loadRideDisputes();},
+    settings:()=>{loadFares();loadStdFares();loadCancelSettings();loadCommRates();loadIntercityFares();loadParcelFares();loadRideDisputes();},
     payouts:()=>loadPayouts('pending'), complaints:loadComplaints,
     incidents:loadIncidents, rewards:loadRewardSettings,
     location:loadLocationIntel, support:loadSupport

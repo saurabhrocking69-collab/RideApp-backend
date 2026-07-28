@@ -3,7 +3,7 @@ const router = express.Router();
 const path = require('path');
 const db = require('../config/db');
 const { sendFCM } = require('../config/firebase');
-const { HOURLY_FARES, INTERCITY_FARES, setSurge, getSurge } = require('../services/pricing');
+const { HOURLY_FARES, INTERCITY_FARES, PARCEL_FARES, PARCEL_SIZE_SURCHARGE, setSurge, getSurge } = require('../services/pricing');
 const { refundToWallet, creditDriverWallet } = require('../services/advance');
 const { getIO } = require('../config/socket');
 
@@ -784,6 +784,54 @@ router.post('/intercity-fares', async (req, res) => {
       await db.query('UPDATE fare_settings SET intercity_commission_rate=$1 WHERE vehicle_type=$2', [cr, vehicle_type]);
     }
     res.json({ success: true, updated: { vehicle_type, ...cfg } });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// GET /api/admin/parcel-fares — current parcel rates per vehicle + size surcharges
+router.get('/parcel-fares', async (req, res) => {
+  try {
+    res.json({ fares: PARCEL_FARES, size_surcharge: PARCEL_SIZE_SURCHARGE });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// POST /api/admin/parcel-fares — update rates for one vehicle type
+// Mutates the shared PARCEL_FARES singleton (instant effect) AND persists to
+// parcel_settings so rates survive restarts (same pattern as intercity).
+router.post('/parcel-fares', async (req, res) => {
+  const { vehicle_type, base_fare, per_km_rate, min_fare } = req.body || {};
+  const cfg = PARCEL_FARES[vehicle_type];
+  if (!cfg) return res.status(400).json({ error: 'Invalid vehicle type' });
+  try {
+    const fields = { base_fare, per_km_rate, min_fare };
+    for (const [k, v] of Object.entries(fields)) {
+      const n = parseFloat(v);
+      if (v != null && !isNaN(n) && n >= 0) cfg[k] = n;
+    }
+    await db.query(
+      `INSERT INTO parcel_settings (vehicle_type, base_fare, per_km_rate, min_fare, updated_at)
+       VALUES ($1,$2,$3,$4,NOW())
+       ON CONFLICT (vehicle_type) DO UPDATE SET
+         base_fare=$2, per_km_rate=$3, min_fare=$4, updated_at=NOW()`,
+      [vehicle_type, cfg.base_fare, cfg.per_km_rate, cfg.min_fare]
+    );
+    res.json({ success: true, updated: { vehicle_type, ...cfg } });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// POST /api/admin/parcel-size-surcharge — update the handling surcharge for one package size
+router.post('/parcel-size-surcharge', async (req, res) => {
+  const { size, surcharge } = req.body || {};
+  if (!(size in PARCEL_SIZE_SURCHARGE)) return res.status(400).json({ error: 'Invalid package size' });
+  const n = parseFloat(surcharge);
+  if (isNaN(n) || n < 0) return res.status(400).json({ error: 'Invalid surcharge amount' });
+  try {
+    PARCEL_SIZE_SURCHARGE[size] = n;
+    await db.query(
+      `INSERT INTO parcel_size_settings (size, surcharge, updated_at) VALUES ($1,$2,NOW())
+       ON CONFLICT (size) DO UPDATE SET surcharge=$2, updated_at=NOW()`,
+      [size, n]
+    );
+    res.json({ success: true, size, surcharge: n });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 

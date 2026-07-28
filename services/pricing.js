@@ -166,4 +166,4 @@ function calculateFare(f, distKm, durationMin = 0, isNight = false) {
   };
 }
 
-module.exports = { HOURLY_FARES, INTERCITY_FARES, PARCEL_FARES, getSurge: () => SURGE_MULTIPLIER, setSurge: (v) => { SURGE_MULTIPLIER = v; }, calculateFare, calculateIntercityFare, calculateParcelFare, getISTHour };
+module.exports = { HOURLY_FARES, INTERCITY_FARES, PARCEL_FARES, PARCEL_SIZE_SURCHARGE, getSurge: () => SURGE_MULTIPLIER, setSurge: (v) => { SURGE_MULTIPLIER = v; }, calculateFare, calculateIntercityFare, calculateParcelFare, getISTHour };

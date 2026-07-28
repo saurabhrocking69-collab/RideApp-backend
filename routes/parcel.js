@@ -2,7 +2,7 @@
 const express = require('express');
 const router  = express.Router();
 const db      = require('../config/db');
-const { PARCEL_FARES, calculateParcelFare } = require('../services/pricing');
+const { PARCEL_FARES, PARCEL_SIZE_SURCHARGE, calculateParcelFare } = require('../services/pricing');
 const { assignRideToNextDriver } = require('../workers/rideWorker');
 const userAuth = require('../middleware/userAuth');
 
@@ -14,6 +14,45 @@ const SIZE_VEHICLES = {
   medium: ['auto', 'eriksha', 'electric_auto', 'car'],
   large:  ['car'],
 };
+
+// Admin-editable parcel rates — persisted here, hydrated into the in-memory
+// PARCEL_FARES/PARCEL_SIZE_SURCHARGE singletons on boot (module cache shares
+// the reference with admin.js), same pattern as intercity_settings.
+db.query(`
+  CREATE TABLE IF NOT EXISTS parcel_settings (
+    vehicle_type TEXT PRIMARY KEY,
+    base_fare NUMERIC, per_km_rate NUMERIC, min_fare NUMERIC,
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+  )
+`).then(() => db.query('SELECT * FROM parcel_settings'))
+  .then(r => {
+    for (const row of (r.rows || [])) {
+      const cfg = PARCEL_FARES[row.vehicle_type];
+      if (!cfg) continue;
+      for (const k of ['base_fare', 'per_km_rate', 'min_fare']) {
+        if (row[k] != null) cfg[k] = parseFloat(row[k]);
+      }
+    }
+    if (r.rows?.length) console.log(`[parcel] hydrated ${r.rows.length} fare config(s) from DB`);
+  })
+  .catch(() => {});
+
+db.query(`
+  CREATE TABLE IF NOT EXISTS parcel_size_settings (
+    size TEXT PRIMARY KEY,
+    surcharge NUMERIC,
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+  )
+`).then(() => db.query('SELECT * FROM parcel_size_settings'))
+  .then(r => {
+    for (const row of (r.rows || [])) {
+      if (row.surcharge != null && row.size in PARCEL_SIZE_SURCHARGE) {
+        PARCEL_SIZE_SURCHARGE[row.size] = parseFloat(row.surcharge);
+      }
+    }
+    if (r.rows?.length) console.log(`[parcel] hydrated ${r.rows.length} size surcharge(s) from DB`);
+  })
+  .catch(() => {});
 
 // ── POST /api/parcel/estimate — fare options for every vehicle type the
 //    chosen package size allows ──────────────────────────────────────────────
