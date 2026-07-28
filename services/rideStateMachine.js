@@ -30,6 +30,26 @@ const FCM_MAP = {
   },
 };
 
+// Same transitions, parcel-flavored copy — picked instead of FCM_MAP when
+// the ride's is_parcel is true, so notifications read "package"/"delivery
+// partner" instead of leftover passenger-ride language.
+const PARCEL_FCM_MAP = {
+  matched:   { customer: ['📦 Delivery Partner Found!',    'Your delivery partner is on the way to collect your package — get your OTP ready!', 'ride_matched'] },
+  arrived:   { customer: ['📍 Delivery Partner Has Arrived!', 'They\'ve reached the pickup point — share the OTP to hand over your package.', 'driver_arrived'] },
+  started:   { customer: ['🚀 Package Picked Up!',         'Your package is on the way to the receiver.',           'trip_started'] },
+  completed: {
+    customer: ['📦 Delivered!',       'Please pay and rate your delivery partner!', 'trip_completed'],
+    driver:   ['✅ Delivery Complete!', 'Payment is on the way — please wait.',      'payment_pending', 'ride_requests'],
+  },
+  cancelled: {
+    customer: ['🚫 Delivery Cancelled', 'Your parcel delivery has been cancelled.', 'ride_cancelled'],
+    driver:   ['🚫 Delivery Cancelled', 'The delivery has been cancelled.',        'ride_cancelled', 'ride_requests'],
+  },
+  no_driver: {
+    customer: ['😔 No Delivery Partner Found', 'No one is available right now — please try again shortly.', 'no_driver'],
+  },
+};
+
 /**
  * Transition a ride to a new status.
  *
@@ -48,7 +68,7 @@ async function transitionRide(rideId, newStatus, opts = {}) {
 
   // 1 — Fetch current status + party phones (used for FCM if not supplied)
   const rideRes = await db.query(
-    `SELECT r.status, u_p.phone AS passenger_phone, u_d.phone AS driver_phone
+    `SELECT r.status, r.is_parcel, u_p.phone AS passenger_phone, u_d.phone AS driver_phone
      FROM rides r
      LEFT JOIN users u_p ON r.passenger_id = u_p.id
      LEFT JOIN users u_d ON r.driver_id    = u_d.id
@@ -101,7 +121,7 @@ async function transitionRide(rideId, newStatus, opts = {}) {
 
   // 5 — FCM
   if (!skipFCM) {
-    const fcm = FCM_MAP[newStatus];
+    const fcm = (current.is_parcel ? PARCEL_FCM_MAP : FCM_MAP)[newStatus];
     if (fcm) {
       if (fcm.customer && passengerPhone) {
         const [title, body, type] = fcm.customer;

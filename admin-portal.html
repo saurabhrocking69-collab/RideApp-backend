@@ -2203,6 +2203,7 @@ async function saveIntercityFare(v){
 // ── Parcel Fares ─────────────────────────────────
 var _pcLabels={bike:'🏍️ Bike',green_bike:'⚡ Green Bike',auto:'🛺 Auto',eriksha:'🛵 E-Rickshaw',electric_auto:'🌿 E-Auto',car:'🚗 Car'};
 var _pcSizeLabels={small:'👜 Small',medium:'📦 Medium',large:'🗄️ Large'};
+var _pcSizeLimits={small:'up to 2 kg',medium:'up to 10 kg',large:'up to 25 kg'};
 async function loadParcelFares(){
   var el=document.getElementById('parcel-fares-container');
   if(el) el.innerHTML='<div class="loading">Loading...</div>';
@@ -2220,10 +2221,11 @@ async function loadParcelFares(){
     });
     html+='</tbody></table></div>'
       +'<div style="font-weight:700;font-size:12px;margin-top:14px;margin-bottom:6px">Package size handling surcharge</div>'
-      +'<div style="overflow-x:auto"><table style="font-size:12px"><thead><tr><th>Size</th><th>Surcharge ₹</th><th></th></tr></thead><tbody>';
+      +'<div style="overflow-x:auto"><table style="font-size:12px"><thead><tr><th>Size</th><th>Weight limit</th><th>Surcharge ₹</th><th></th></tr></thead><tbody>';
     Object.keys(_pcSizeLabels).forEach(function(s){
       var surcharge=(d.size_surcharge||{})[s]||0;
       html+='<tr><td style="font-weight:700;white-space:nowrap">'+_pcSizeLabels[s]+'</td>'
+        +'<td style="color:#6B7280">'+_pcSizeLimits[s]+'</td>'
         +'<td><input id="pc-size-'+s+'" type="number" value="'+surcharge+'" style="width:64px" class="input-sm"></td>'
         +'<td><button class="refresh-btn" style="background:#1a1a2e;color:#fff;font-size:11px" onclick="saveParcelSizeSurcharge(\''+s+'\')">💾 Save</button></td></tr>';
     });

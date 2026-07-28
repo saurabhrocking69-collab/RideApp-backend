@@ -52,6 +52,23 @@ db.query('ALTER TABLE rides ADD COLUMN IF NOT EXISTS delivery_otp VARCHAR(4)').c
 db.query('ALTER TABLE rides ADD COLUMN IF NOT EXISTS delivery_confirmed_at TIMESTAMP').catch(() => {});
 db.query('ALTER TABLE rides ADD COLUMN IF NOT EXISTS receiver_name VARCHAR(100)').catch(() => {});
 db.query('ALTER TABLE rides ADD COLUMN IF NOT EXISTS receiver_phone VARCHAR(15)').catch(() => {});
+// COD settlement — the driver collects cod_amount in cash from the receiver
+// on the sender's behalf. pending_cod is a second debt bucket parallel to
+// pending_commission (same ₹300+ block warning, same Razorpay pay-flow in
+// routes/payments.js) — kept separate so a driver's "Commission Due" number
+// doesn't unexpectedly jump after a parcel and confuse them about why.
+db.query('ALTER TABLE driver_wallet ADD COLUMN IF NOT EXISTS pending_cod NUMERIC(10,2) DEFAULT 0').catch(() => {});
+// TEXT ref columns, not typed FKs — this codebase has mixed id types across
+// tables in practice (see the ::text casts throughout drivers.js) and this
+// table is an audit trail, not something ever joined query-critically.
+db.query(`CREATE TABLE IF NOT EXISTS cod_settlements (
+  id             SERIAL PRIMARY KEY,
+  ride_id        TEXT NOT NULL,
+  driver_id      TEXT NOT NULL,
+  sender_user_id TEXT NOT NULL,
+  amount         NUMERIC(10,2) NOT NULL,
+  settled_at     TIMESTAMPTZ DEFAULT NOW()
+)`).catch(() => {});
 db.query(`CREATE TABLE IF NOT EXISTS eta_zone_corrections (
   geocell        VARCHAR(40) NOT NULL,
   vehicle_type   VARCHAR(30) NOT NULL,
@@ -779,7 +796,7 @@ router.post('/report-cancel', async (req, res) => {
 // Accepts optional driver_lat/driver_lng for early-completion detection.
 // If driver is >800m from drop point, marks early_completion=true and logs an incident.
 router.post('/complete', async (req, res) => {
-  const { ride_id, driver_phone, driver_lat, driver_lng, delivery_otp } = req.body;
+  const { ride_id, driver_phone, driver_lat, driver_lng, delivery_otp, cod_collected } = req.body;
   try {
     const rideRow = await db.query(
       `SELECT r.*, u.phone AS passenger_phone, d.phone AS dphone,
@@ -856,6 +873,22 @@ router.post('/complete', async (req, res) => {
       custPhone:  ride.passenger_phone,
       drvPhone:   ride.dphone,
     });
+
+    // COD settlement — self-attested by the driver, same trust level the
+    // platform already uses for "cash fare received" confirmations (no new
+    // verification burden). Credits the sender's wallet immediately and
+    // records the driver as owing that amount back to the platform via
+    // pending_cod, the same ₹300+ block + Razorpay pay-flow that already
+    // exists for commission debt. Non-blocking: a delivery still completes
+    // even if cod_collected is false (receiver refused, no cash, etc.) —
+    // only the settlement is skipped, not the delivery itself.
+    const codAmt = parseFloat(ride.cod_amount || 0);
+    if (ride.is_parcel && cod_collected && codAmt > 0) {
+      db.query('UPDATE customer_wallet SET balance=balance+$1, updated_at=NOW() WHERE user_id=$2', [codAmt, ride.passenger_id]).catch(e => console.error('[parcel] COD wallet credit failed:', e.message));
+      db.query('UPDATE driver_wallet SET pending_cod = COALESCE(pending_cod, 0) + $1 WHERE driver_id = $2', [codAmt, ride.driver_id]).catch(e => console.error('[parcel] COD debt increment failed:', e.message));
+      db.query('INSERT INTO cod_settlements (ride_id, driver_id, sender_user_id, amount) VALUES ($1,$2,$3,$4)', [String(ride_id), String(ride.driver_id), String(ride.passenger_id), codAmt]).catch(e => console.error('[parcel] COD settlement log failed:', e.message));
+      sendFCM(ride.passenger_phone, '💰 COD Credited', `₹${Math.round(codAmt)} collected on delivery has been added to your Sppero wallet.`, { type: 'cod_credited', ride_id: String(ride_id) }, { role: 'customer' }).catch(() => {});
+    }
 
     const fare = netFareSocket;
     const paymentMethod = ride.payment_method;
