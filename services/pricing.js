@@ -64,6 +64,42 @@ function calculateIntercityFare(cfg, distKm, tripKind = 'oneway', tripDays = 1) 
   };
 }
 
+// ── Parcel delivery — flat per-km model, no night/city slabs ──────────────────
+// Package size only adds a small handling surcharge; the vehicle itself is
+// already gated by size on the client (small→any, medium→auto+, large→car
+// only), so the fare table doesn't need a separate rate per size.
+const PARCEL_FARES = {
+  bike:          { base_fare: 20, per_km_rate: 5,  min_fare: 30 },
+  green_bike:    { base_fare: 18, per_km_rate: 4,  min_fare: 28 },
+  auto:          { base_fare: 25, per_km_rate: 7,  min_fare: 40 },
+  eriksha:       { base_fare: 22, per_km_rate: 6,  min_fare: 35 },
+  electric_auto: { base_fare: 22, per_km_rate: 6,  min_fare: 35 },
+  car:           { base_fare: 40, per_km_rate: 11, min_fare: 65 },
+};
+const PARCEL_SIZE_SURCHARGE = { small: 0, medium: 10, large: 25 };
+
+/**
+ * Parcel fare — flat per-km + a small handling surcharge by package size.
+ * @param {object} cfg         - PARCEL_FARES entry
+ * @param {number} distKm      - route distance in km
+ * @param {string} packageSize - 'small' | 'medium' | 'large'
+ */
+function calculateParcelFare(cfg, distKm, packageSize = 'small') {
+  const surcharge = PARCEL_SIZE_SURCHARGE[packageSize] ?? 0;
+  const distFare   = Math.round(distKm * cfg.per_km_rate);
+  const rawFare    = cfg.base_fare + distFare + surcharge;
+  const fare       = Math.max(Math.round(rawFare), cfg.min_fare);
+  return {
+    fare,
+    base_fare:    cfg.base_fare,
+    dist_fare:    distFare,
+    per_km_rate:  cfg.per_km_rate,
+    surcharge,
+    package_size: packageSize,
+    distance_km:  Math.round(distKm * 10) / 10,
+  };
+}
+
 let SURGE_MULTIPLIER = 1.0;
 
 // Server runs in UTC (Railway default); night_start/night_end are configured as IST values by admins.
@@ -130,4 +166,4 @@ function calculateFare(f, distKm, durationMin = 0, isNight = false) {
   };
 }
 
-module.exports = { HOURLY_FARES, INTERCITY_FARES, getSurge: () => SURGE_MULTIPLIER, setSurge: (v) => { SURGE_MULTIPLIER = v; }, calculateFare, calculateIntercityFare, getISTHour };
+module.exports = { HOURLY_FARES, INTERCITY_FARES, PARCEL_FARES, getSurge: () => SURGE_MULTIPLIER, setSurge: (v) => { SURGE_MULTIPLIER = v; }, calculateFare, calculateIntercityFare, calculateParcelFare, getISTHour };

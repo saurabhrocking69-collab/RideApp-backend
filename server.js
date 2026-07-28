@@ -650,6 +650,7 @@ app.use('/api/payment',  paymentsRouter);
 app.use('/api/rides',     ridesRouter);
 app.use('/api/scheduled', require('./routes/scheduled'));
 app.use('/api/intercity', require('./routes/intercity'));
+app.use('/api/parcel',    require('./routes/parcel'));
 app.use('/api/advance',   require('./routes/advance'));
 app.use('/api/driver',   driversRouter);
 app.use('/api/hourly',   hourlyRouter);

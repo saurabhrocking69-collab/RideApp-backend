@@ -37,6 +37,21 @@ db.query('ALTER TABLE rides ADD COLUMN IF NOT EXISTS eta_estimate_min SMALLINT')
 // these columns only override what's shown/called by the DRIVER.
 db.query('ALTER TABLE rides ADD COLUMN IF NOT EXISTS rider_name VARCHAR(100)').catch(() => {});
 db.query('ALTER TABLE rides ADD COLUMN IF NOT EXISTS rider_phone VARCHAR(15)').catch(() => {});
+// Parcel delivery — package metadata + a second (delivery-side) OTP.
+// Deliberately NOT reusing rider_name/rider_phone above for the receiver —
+// those columns mean "who the driver picks up" everywhere else in this
+// codebase (drivers.js aliases them straight into passenger_name in five
+// separate queries). For a parcel the driver still picks up FROM the
+// account holder (the sender) — the receiver is a different person at the
+// OTHER end of the trip, so it gets its own columns.
+db.query('ALTER TABLE rides ADD COLUMN IF NOT EXISTS is_parcel BOOLEAN DEFAULT FALSE').catch(() => {});
+db.query('ALTER TABLE rides ADD COLUMN IF NOT EXISTS package_size VARCHAR(20)').catch(() => {});
+db.query('ALTER TABLE rides ADD COLUMN IF NOT EXISTS package_note TEXT').catch(() => {});
+db.query('ALTER TABLE rides ADD COLUMN IF NOT EXISTS cod_amount NUMERIC').catch(() => {});
+db.query('ALTER TABLE rides ADD COLUMN IF NOT EXISTS delivery_otp VARCHAR(4)').catch(() => {});
+db.query('ALTER TABLE rides ADD COLUMN IF NOT EXISTS delivery_confirmed_at TIMESTAMP').catch(() => {});
+db.query('ALTER TABLE rides ADD COLUMN IF NOT EXISTS receiver_name VARCHAR(100)').catch(() => {});
+db.query('ALTER TABLE rides ADD COLUMN IF NOT EXISTS receiver_phone VARCHAR(15)').catch(() => {});
 db.query(`CREATE TABLE IF NOT EXISTS eta_zone_corrections (
   geocell        VARCHAR(40) NOT NULL,
   vehicle_type   VARCHAR(30) NOT NULL,
@@ -290,7 +305,7 @@ router.post('/accept', async (req, res) => {
       : null;
 
     // Compute estimated ETA for dynamic correction tracking
-    const rideForEta = await db.query(`SELECT pickup_lat, pickup_lng, ride_type FROM rides WHERE id=$1`, [ride_id]);
+    const rideForEta = await db.query(`SELECT pickup_lat, pickup_lng, ride_type, is_parcel, receiver_phone FROM rides WHERE id=$1`, [ride_id]);
     let etaEstimateMin = null;
     if (rideForEta.rows[0]) {
       const { pickup_lat, pickup_lng, ride_type } = rideForEta.rows[0];
@@ -302,11 +317,30 @@ router.post('/accept', async (req, res) => {
       }
     }
 
+    // Parcel deliveries need a second OTP for the drop — the sender's
+    // start_otp above only proves the driver picked up from the right
+    // person; delivery_otp (texted to the receiver, who isn't an app user)
+    // proves the package reached the right person too.
+    const isParcelRide = !!rideForEta.rows[0]?.is_parcel;
+    const deliveryOtp = isParcelRide ? Math.floor(1000 + Math.random() * 9000).toString() : null;
+
     // State machine: validated DB update + socket + FCM
     await transitionRide(ride_id, 'matched', {
-      extraFields: { start_otp: otp, driver_id: driver.rows[0].id },
-      socketData:  { start_otp: otp, driver: driverCard },
+      extraFields: isParcelRide
+        ? { start_otp: otp, delivery_otp: deliveryOtp, driver_id: driver.rows[0].id }
+        : { start_otp: otp, driver_id: driver.rows[0].id },
+      socketData:  isParcelRide
+        ? { start_otp: otp, delivery_otp: deliveryOtp, driver: driverCard }
+        : { start_otp: otp, driver: driverCard },
     });
+
+    if (isParcelRide && rideForEta.rows[0].receiver_phone && process.env.FAST2SMS_API_KEY) {
+      fetch('https://www.fast2sms.com/dev/bulkV2', {
+        method: 'POST',
+        headers: { authorization: process.env.FAST2SMS_API_KEY },
+        body: new URLSearchParams({ route: 'otp', variables_values: deliveryOtp, flash: '0', numbers: rideForEta.rows[0].receiver_phone }),
+      }).catch(e => console.log('[parcel] delivery OTP SMS failed:', e.message));
+    }
 
     // Record match time + estimated ETA for dynamic ETA correction
     await db.query(
@@ -750,7 +784,7 @@ router.post('/report-cancel', async (req, res) => {
 // Accepts optional driver_lat/driver_lng for early-completion detection.
 // If driver is >800m from drop point, marks early_completion=true and logs an incident.
 router.post('/complete', async (req, res) => {
-  const { ride_id, driver_phone, driver_lat, driver_lng } = req.body;
+  const { ride_id, driver_phone, driver_lat, driver_lng, delivery_otp } = req.body;
   try {
     const rideRow = await db.query(
       `SELECT r.*, u.phone AS passenger_phone, d.phone AS dphone,
@@ -768,6 +802,12 @@ router.post('/complete', async (req, res) => {
 
     if (driver_phone && ride.dphone !== driver_phone)
       return res.status(403).json({ error: 'This ride does not belong to you' });
+
+    // Parcel deliveries require the receiver's OTP before the drop counts as
+    // complete — proves the package reached the right person, mirroring the
+    // start_otp check at pickup.
+    if (ride.is_parcel && ride.delivery_otp !== delivery_otp)
+      return res.status(400).json({ error: 'Incorrect delivery OTP!' });
 
     // ── Recalculate actual fare using real trip duration ───────────────────────
     // Intercity fares are FIXED at booking (own long-distance model with day
@@ -815,6 +855,7 @@ router.post('/complete', async (req, res) => {
         completion_dist_from_drop: distFromDrop,
         fare: finalFare,
         platform_fee: finalPlatFee,
+        ...(ride.is_parcel ? { delivery_confirmed_at: new Date() } : {}),
       },
       socketData: { fare: netFareSocket, discount: parseFloat(ride.discount || 0), early_completion: earlyCompletion, platform_fee: finalPlatFee },
       custPhone:  ride.passenger_phone,
