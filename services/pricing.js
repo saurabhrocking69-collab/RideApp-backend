@@ -77,6 +77,11 @@ const PARCEL_FARES = {
   car:           { base_fare: 40, per_km_rate: 11, min_fare: 65 },
 };
 const PARCEL_SIZE_SURCHARGE = { small: 0, medium: 10, large: 25 };
+// Return-to-sender: if the receiver can't be reached and the sender opts to
+// get the package back, this fraction of the original fare is kept as a
+// handling fee (covers the wasted delivery attempt + the return trip) and
+// paid to the driver in full; the rest is refunded to the sender.
+const PARCEL_RETURN_FEE_PCT = 0.5;
 
 /**
  * Parcel fare — flat per-km + a small handling surcharge by package size.
@@ -166,4 +171,4 @@ function calculateFare(f, distKm, durationMin = 0, isNight = false) {
   };
 }
 
-module.exports = { HOURLY_FARES, INTERCITY_FARES, PARCEL_FARES, PARCEL_SIZE_SURCHARGE, getSurge: () => SURGE_MULTIPLIER, setSurge: (v) => { SURGE_MULTIPLIER = v; }, calculateFare, calculateIntercityFare, calculateParcelFare, getISTHour };
+module.exports = { HOURLY_FARES, INTERCITY_FARES, PARCEL_FARES, PARCEL_SIZE_SURCHARGE, PARCEL_RETURN_FEE_PCT, getSurge: () => SURGE_MULTIPLIER, setSurge: (v) => { SURGE_MULTIPLIER = v; }, calculateFare, calculateIntercityFare, calculateParcelFare, getISTHour };
