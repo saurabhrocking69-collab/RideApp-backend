@@ -23,8 +23,16 @@ db.query('ALTER TABLE rides ADD COLUMN IF NOT EXISTS return_fee NUMERIC').catch(
 // Package size gates which vehicle types can carry it — enforced here too,
 // not just client-side, same "never trust the client" rule the rest of the
 // booking endpoints follow.
+// - small (fits in a bag, ≤2kg): bike/e-bike only — fastest, cheapest,
+//   most available on the road; sending a bag-sized item by car/auto is
+//   needlessly slow and expensive, and offering those just clutters the
+//   choice with no upside for the customer.
+// - medium (a box, ≤10kg): too bulky/heavy to secure safely on a 2-wheeler —
+//   needs an actual boot/cargo area, so bike/green_bike are excluded and it's
+//   auto/eriksha/electric_auto/car instead.
+// - large (won't fit on a bike, ≤25kg): only a car has the trunk space.
 const SIZE_VEHICLES = {
-  small:  ['bike', 'green_bike', 'auto', 'eriksha', 'electric_auto', 'car'],
+  small:  ['bike', 'green_bike'],
   medium: ['auto', 'eriksha', 'electric_auto', 'car'],
   large:  ['car'],
 };
