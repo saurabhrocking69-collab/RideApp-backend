@@ -9,6 +9,7 @@ const { emitToRoom, getIO } = require('../config/socket');
 const { directFavouriteRideIds } = require('./favourites');
 const { setDriverLoc } = require('../services/rideCache');
 const { attachAreaNames } = require('../services/zoneNames');
+const userAuth = require('../middleware/userAuth');
 
 // POST /api/upload
 router.post('/upload', async (req, res) => {
@@ -224,8 +225,9 @@ router.post('/update-location', async (req, res) => {
 });
 
 // GET /api/driver/upi
-router.get('/upi', async (req, res) => {
+router.get('/upi', userAuth, async (req, res) => {
   const { phone } = req.query;
+  if (req.user.phone !== phone) return res.status(403).json({ error: 'You can only view your own UPI ID' });
   try {
     const r = await db.query(`SELECT d.upi_id FROM drivers d JOIN users u ON d.id=u.id WHERE u.phone=$1`, [phone]);
     res.json({ upi_id: r.rows[0]?.upi_id || '' });
@@ -233,8 +235,9 @@ router.get('/upi', async (req, res) => {
 });
 
 // POST /api/driver/upi
-router.post('/upi', async (req, res) => {
+router.post('/upi', userAuth, async (req, res) => {
   const { phone, upi_id } = req.body;
+  if (req.user.phone !== String(phone)) return res.status(403).json({ error: 'You can only update your own UPI ID' });
   try {
     await db.query('ALTER TABLE drivers ADD COLUMN IF NOT EXISTS upi_id VARCHAR(100)');
     const result = await db.query(`UPDATE drivers SET upi_id=$1 WHERE id=(SELECT id FROM users WHERE phone=$2) RETURNING upi_id`, [upi_id, phone]);
@@ -244,9 +247,10 @@ router.post('/upi', async (req, res) => {
 });
 
 // GET /api/driver/bank
-router.get('/bank', async (req, res) => {
+router.get('/bank', userAuth, async (req, res) => {
   const { phone } = req.query;
   if (!phone) return res.status(400).json({ error: 'phone required' });
+  if (req.user.phone !== phone) return res.status(403).json({ error: 'You can only view your own bank details' });
   try {
     await db.query('ALTER TABLE drivers ADD COLUMN IF NOT EXISTS bank_account VARCHAR(50)').catch(() => {});
     await db.query('ALTER TABLE drivers ADD COLUMN IF NOT EXISTS bank_ifsc VARCHAR(20)').catch(() => {});
@@ -260,9 +264,10 @@ router.get('/bank', async (req, res) => {
 });
 
 // POST /api/driver/bank
-router.post('/bank', async (req, res) => {
+router.post('/bank', userAuth, async (req, res) => {
   const { phone, bank_account, bank_ifsc, bank_holder } = req.body;
   if (!phone || !bank_account || !bank_ifsc) return res.status(400).json({ error: 'Account number and IFSC required' });
+  if (req.user.phone !== String(phone)) return res.status(403).json({ error: 'You can only update your own bank details' });
   try {
     await db.query('ALTER TABLE drivers ADD COLUMN IF NOT EXISTS bank_account VARCHAR(50)').catch(() => {});
     await db.query('ALTER TABLE drivers ADD COLUMN IF NOT EXISTS bank_ifsc VARCHAR(20)').catch(() => {});
@@ -338,8 +343,9 @@ router.post('/track-metric', async (req, res) => {
 
 
 // POST /api/driver/payout — creates a pending request; admin approves separately
-router.post('/payout', async (req, res) => {
+router.post('/payout', userAuth, async (req, res) => {
   const { phone, amount, method } = req.body;
+  if (req.user.phone !== String(phone)) return res.status(403).json({ error: 'You can only request your own payout' });
   try {
     await db.query(`CREATE TABLE IF NOT EXISTS driver_payouts (
       id SERIAL PRIMARY KEY,

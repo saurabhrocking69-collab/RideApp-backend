@@ -5,10 +5,12 @@ const db = require('../config/db');
 const razorpay = require('../config/razorpay');
 const { sendFCM } = require('../config/firebase');
 const { completeRidePayment } = require('./rides');
+const userAuth = require('../middleware/userAuth');
 
 // GET /api/wallet/balance
-router.get('/balance', async (req, res) => {
+router.get('/balance', userAuth, async (req, res) => {
   const { phone } = req.query;
+  if (req.user.phone !== phone) return res.status(403).json({ error: 'You can only view your own wallet' });
   try {
     const user = await db.query('SELECT id FROM users WHERE phone = $1', [phone]);
     if (user.rows.length === 0) return res.json({ balance: 0 });
@@ -42,8 +44,9 @@ router.post('/add', async (req, res) => {
 });
 
 // POST /api/wallet/pay
-router.post('/pay', async (req, res) => {
+router.post('/pay', userAuth, async (req, res) => {
   const { phone, ride_id } = req.body;
+  if (req.user.phone !== String(phone)) return res.status(403).json({ error: 'You can only pay from your own wallet' });
   const client = await db.connect();
   try {
     const user = await client.query('SELECT id FROM users WHERE phone = $1', [phone]);
@@ -120,8 +123,9 @@ router.post('/pay', async (req, res) => {
 });
 
 // GET /api/wallet/transactions
-router.get('/transactions', async (req, res) => {
+router.get('/transactions', userAuth, async (req, res) => {
   const { phone } = req.query;
+  if (req.user.phone !== phone) return res.status(403).json({ error: 'You can only view your own transactions' });
   try {
     const user = await db.query('SELECT id FROM users WHERE phone = $1', [phone]);
     if (user.rows.length === 0) return res.json({ transactions: [] });
@@ -131,8 +135,9 @@ router.get('/transactions', async (req, res) => {
 });
 
 // POST /api/wallet/topup/order
-router.post('/topup/order', async (req, res) => {
+router.post('/topup/order', userAuth, async (req, res) => {
   const { phone, amount } = req.body;
+  if (req.user.phone !== String(phone)) return res.status(403).json({ error: 'You can only top up your own wallet' });
   const paise = Math.round(parseFloat(amount || 0) * 100);
   if (paise < 100) return res.status(400).json({ error: 'Minimum ₹1 required' });
   if (!razorpay) return res.status(500).json({ error: 'Payment gateway not configured' });
@@ -145,8 +150,9 @@ router.post('/topup/order', async (req, res) => {
 });
 
 // POST /api/wallet/topup/verify
-router.post('/topup/verify', async (req, res) => {
+router.post('/topup/verify', userAuth, async (req, res) => {
   const { phone, razorpay_order_id, razorpay_payment_id, razorpay_signature } = req.body;
+  if (req.user.phone !== String(phone)) return res.status(403).json({ error: 'You can only top up your own wallet' });
   if (!razorpay_order_id || !razorpay_payment_id || !razorpay_signature)
     return res.status(400).json({ error: 'Missing payment fields' });
   const expected = crypto.createHmac('sha256', process.env.RAZORPAY_KEY_SECRET).update(`${razorpay_order_id}|${razorpay_payment_id}`).digest('hex');
@@ -191,8 +197,9 @@ router.post('/topup/verify', async (req, res) => {
 });
 
 // GET /api/wallet/customer/detail
-router.get('/customer/detail', async (req, res) => {
+router.get('/customer/detail', userAuth, async (req, res) => {
   const { phone } = req.query;
+  if (req.user.phone !== phone) return res.status(403).json({ error: 'You can only view your own wallet detail' });
   try {
     const user = await db.query('SELECT id, name FROM users WHERE phone=$1', [phone]);
     if (!user.rows[0]) return res.json({ balance: 0, transactions: [] });
@@ -212,8 +219,9 @@ router.get('/customer/detail', async (req, res) => {
 });
 
 // GET /api/wallet/driver/detail
-router.get('/driver/detail', async (req, res) => {
+router.get('/driver/detail', userAuth, async (req, res) => {
   const { phone } = req.query;
+  if (req.user.phone !== phone) return res.status(403).json({ error: 'You can only view your own wallet detail' });
   try {
     const user = await db.query('SELECT u.id, u.name, d.vehicle_type, d.vehicle_no FROM users u JOIN drivers d ON u.id=d.id WHERE u.phone=$1', [phone]);
     if (!user.rows[0]) return res.json({ balance: 0, transactions: [] });
