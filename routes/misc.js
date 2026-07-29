@@ -363,14 +363,59 @@ router.get('/notifications/latest', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+// Per-(campaign, user) impression cap — lets a campaign say "show me at most
+// N times per person" instead of nagging forever until the admin pauses it.
+// max_views on marketing_campaigns is nullable — NULL keeps today's
+// unlimited behavior for every existing campaign, nothing changes unless an
+// admin actually sets a cap when creating one.
+db.query('ALTER TABLE marketing_campaigns ADD COLUMN IF NOT EXISTS max_views INTEGER').catch(() => {});
+db.query(`
+  CREATE TABLE IF NOT EXISTS campaign_views (
+    id             SERIAL PRIMARY KEY,
+    campaign_id    INTEGER NOT NULL,
+    phone          TEXT NOT NULL,
+    view_count     INTEGER DEFAULT 0,
+    last_viewed_at TIMESTAMPTZ,
+    UNIQUE(campaign_id, phone)
+  )
+`).catch(() => {});
+
 // GET /api/offers/active
 router.get('/offers/active', async (req, res) => {
-  const { role } = req.query;
+  const { role, phone } = req.query;
   try {
+    // phone is optional (older app builds don't send it) — without it there's
+    // no per-user identity to cap views against, so just fall back to the
+    // original unlimited behavior rather than erroring.
+    if (!phone) {
+      const r = await db.query(
+        `SELECT * FROM marketing_campaigns WHERE active=true AND (expires_at IS NULL OR expires_at > NOW()) AND (target='all' OR target=$1) ORDER BY created_at DESC LIMIT 5`,
+        [role || 'customer']
+      );
+      return res.json({ offers: r.rows });
+    }
     const r = await db.query(
-      `SELECT * FROM marketing_campaigns WHERE active=true AND (expires_at IS NULL OR expires_at > NOW()) AND (target='all' OR target=$1) ORDER BY created_at DESC LIMIT 5`,
-      [role || 'customer']
+      `SELECT c.* FROM marketing_campaigns c
+       LEFT JOIN campaign_views cv ON cv.campaign_id = c.id AND cv.phone = $2
+       WHERE c.active=true AND (c.expires_at IS NULL OR c.expires_at > NOW())
+         AND (c.target='all' OR c.target=$1)
+         AND (c.max_views IS NULL OR COALESCE(cv.view_count, 0) < c.max_views)
+       ORDER BY c.created_at DESC LIMIT 5`,
+      [role || 'customer', phone]
     );
+    // Count this as one impression per campaign per person — throttled so a
+    // burst of reconnects/resumes within the same sitting doesn't burn
+    // through the cap; only counts again after a real gap (a new app open).
+    for (const c of r.rows) {
+      db.query(
+        `INSERT INTO campaign_views (campaign_id, phone, view_count, last_viewed_at)
+         VALUES ($1, $2, 1, NOW())
+         ON CONFLICT (campaign_id, phone) DO UPDATE SET
+           view_count = CASE WHEN campaign_views.last_viewed_at < NOW() - INTERVAL '30 minutes' THEN campaign_views.view_count + 1 ELSE campaign_views.view_count END,
+           last_viewed_at = NOW()`,
+        [c.id, phone]
+      ).catch(() => {});
+    }
     res.json({ offers: r.rows });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });

@@ -580,12 +580,13 @@ router.get('/campaigns', async (req, res) => {
 
 // POST /api/admin/campaigns
 router.post('/campaigns', async (req, res) => {
-  const { title, body, target, type, promo_code, cta_label, expires_at } = req.body;
+  const { title, body, target, type, promo_code, cta_label, expires_at, max_views } = req.body;
   if (!title) return res.status(400).json({ error: 'Title required' });
   try {
+    const maxViews = max_views != null && max_views !== '' ? parseInt(max_views) : null;
     const r = await db.query(
-      `INSERT INTO marketing_campaigns (title,body,target,type,promo_code,cta_label,expires_at) VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *`,
-      [title, body || '', target || 'all', type || 'banner', promo_code || null, cta_label || null, expires_at || null]
+      `INSERT INTO marketing_campaigns (title,body,target,type,promo_code,cta_label,expires_at,max_views) VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *`,
+      [title, body || '', target || 'all', type || 'banner', promo_code || null, cta_label || null, expires_at || null, maxViews]
     );
     res.json({ success: true, campaign: r.rows[0] });
   } catch (err) { res.status(500).json({ error: err.message }); }

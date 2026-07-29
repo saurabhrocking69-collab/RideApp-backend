@@ -402,7 +402,10 @@ input,select,textarea{outline:none}
           <input id="camp-promo" placeholder="Promo code (optional)" class="input-sm">
           <input id="camp-cta" placeholder="Button label" class="input-sm">
         </div>
-        <input id="camp-expires" type="datetime-local" class="input-sm" style="margin-bottom:10px">
+        <div style="display:flex;gap:8px;margin-bottom:10px">
+          <input id="camp-expires" type="datetime-local" class="input-sm" style="flex:2">
+          <input id="camp-maxviews" type="number" min="1" placeholder="Max views/person (blank=∞)" class="input-sm" style="flex:1">
+        </div>
         <button onclick="createCampaign()" style="width:100%;background:#e94560;color:#fff;border:none;border-radius:8px;padding:10px;cursor:pointer;font-weight:700;font-size:13px">🚀 Launch Campaign</button>
         <div id="camp-status" style="font-size:12px;color:#4CAF50;margin-top:8px"></div>
       </div>
@@ -2418,10 +2421,11 @@ async function createCampaign(){
   const promo_code=document.getElementById('camp-promo').value.trim()||null;
   const cta_label=document.getElementById('camp-cta').value.trim()||null;
   const expires_at=document.getElementById('camp-expires').value||null;
+  const max_views=document.getElementById('camp-maxviews').value||null;
   if(!title){document.getElementById('camp-status').textContent='❌ Title zaroori hai';return;}
-  const d=await aJson('/api/admin/campaigns',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({title,body,target,type,promo_code,cta_label,expires_at})});
+  const d=await aJson('/api/admin/campaigns',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({title,body,target,type,promo_code,cta_label,expires_at,max_views})});
   document.getElementById('camp-status').textContent=d.success?'✅ Campaign launch ho gaya!':'❌ '+d.error;
-  if(d.success){document.getElementById('camp-title').value='';document.getElementById('camp-body').value='';loadCampaigns();}
+  if(d.success){document.getElementById('camp-title').value='';document.getElementById('camp-body').value='';document.getElementById('camp-maxviews').value='';loadCampaigns();}
 }
 async function loadCampaigns(){
   try{
@@ -2431,7 +2435,7 @@ async function loadCampaigns(){
         <div style="flex:1">
           <div style="font-weight:700;font-size:13px">${c.title}</div>
           <div style="font-size:11px;color:#666;margin-top:2px">${c.body||''}</div>
-          <div style="font-size:10px;color:#aaa;margin-top:3px">Target: ${c.target} · Type: ${c.type}${c.promo_code?' · Code: '+c.promo_code:''}${c.expires_at?' · Expires: '+fmt(c.expires_at):' · No expiry'}</div>
+          <div style="font-size:10px;color:#aaa;margin-top:3px">Target: ${c.target} · Type: ${c.type}${c.promo_code?' · Code: '+c.promo_code:''}${c.expires_at?' · Expires: '+fmt(c.expires_at):' · No expiry'}${c.max_views?' · Max '+c.max_views+' view(s)/person':''}</div>
         </div>
         <div style="display:flex;gap:6px;align-items:center;flex-shrink:0">
           <span style="background:${c.active?'#e8f5e9':'#f5f5f5'};color:${c.active?'#2e7d32':'#999'};padding:2px 8px;border-radius:8px;font-size:10px;font-weight:700">${c.active?'LIVE':'PAUSED'}</span>
