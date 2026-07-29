@@ -615,12 +615,7 @@ router.post('/cancel-smart', userAuth, async (req, res) => {
     // Verify against the ride's actual passenger/driver, not just whatever
     // `phone` the request happens to include (some call sites omit it) —
     // this is the one check that can't be spoofed by a bad request body.
-    // For a still-pre_assigned ride, driver_id isn't set yet (only
-    // pre_accepted_driver_phone is) — without this fallback, ride.driver_phone
-    // would be NULL and the check below would silently no-op for that case.
-    const expectedPhone = cancelled_by === 'driver'
-      ? (ride.driver_phone || ride.pre_accepted_driver_phone)
-      : ride.passenger_phone;
+    const expectedPhone = cancelled_by === 'driver' ? ride.driver_phone : ride.passenger_phone;
     if (expectedPhone && req.user.phone !== expectedPhone) {
       return res.json({ success: false, message: 'You can only cancel your own ride' });
     }
