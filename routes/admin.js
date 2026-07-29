@@ -418,7 +418,8 @@ router.get('/hourly-disputes', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// GET /api/admin/ride-disputes — emergency mid-trip cancellations awaiting decision
+// GET /api/admin/ride-disputes — emergency mid-trip cancellations AND parcel
+// "not delivered" reports awaiting decision (dispute_type tells them apart)
 router.get('/ride-disputes', async (req, res) => {
   try {
     const r = await db.query(`
@@ -428,6 +429,60 @@ router.get('/ride-disputes', async (req, res) => {
       ORDER BY (d.status='pending') DESC, d.created_at DESC LIMIT 100`);
     res.json({ disputes: r.rows });
   } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// POST /api/admin/parcel-disputes/resolve — sender reported a parcel as
+// never delivered. Unlike the emergency-cancel dispute above (money is HELD,
+// not yet given to anyone), a delivery's escrow has ALREADY been released to
+// the driver's wallet by the time this fires — so refund and penalty are two
+// independent numbers, not a split of one pot.
+// { dispute_id, refund_customer, penalize_driver, suspend_driver, note }
+router.post('/parcel-disputes/resolve', async (req, res) => {
+  const { dispute_id, refund_customer, penalize_driver, suspend_driver, note } = req.body;
+  try {
+    const dr = await db.query("SELECT * FROM ride_disputes WHERE id=$1 AND status='pending' AND dispute_type='parcel_not_delivered'", [dispute_id]);
+    if (!dr.rows[0]) return res.status(404).json({ error: 'Dispute not found or already resolved' });
+    const d = dr.rows[0];
+    const refund   = Math.max(0, parseFloat(refund_customer) || 0);
+    const penalty  = Math.max(0, parseFloat(penalize_driver) || 0);
+
+    if (refund > 0 && d.customer_phone) await refundToWallet(null, d.customer_phone, refund, d.ride_id, 'Parcel not delivered — refund (admin decision)').catch(() => {});
+
+    if (penalty > 0 && d.driver_phone) {
+      // Deduct from wallet balance first; any shortfall becomes commission
+      // debt (the existing ₹300+ block + Razorpay payoff flow already
+      // recovers it — no separate debt bucket needed).
+      const u = await db.query('SELECT id FROM users WHERE phone=$1', [d.driver_phone]);
+      if (u.rows[0]) {
+        const driverId = u.rows[0].id;
+        const w = await db.query('SELECT COALESCE(balance,0) as balance FROM driver_wallet WHERE driver_id=$1', [driverId]);
+        const balance = parseFloat(w.rows[0]?.balance || 0);
+        const fromBalance = Math.min(balance, penalty);
+        const shortfall = penalty - fromBalance;
+        await db.query(
+          `INSERT INTO driver_wallet (driver_id, balance, pending_commission) VALUES ($1, $2, $3)
+           ON CONFLICT (driver_id) DO UPDATE SET
+             balance = driver_wallet.balance - $2,
+             pending_commission = COALESCE(driver_wallet.pending_commission,0) + $3`,
+          [driverId, fromBalance, shortfall]
+        );
+      }
+    }
+
+    if (suspend_driver && d.driver_phone) {
+      await db.query(`UPDATE users SET is_suspended = true, suspend_reason = $1 WHERE phone = $2`, [note || 'Parcel delivery dispute — found guilty', d.driver_phone]);
+    }
+
+    await db.query(
+      "UPDATE ride_disputes SET status='resolved', admin_refund=$1, admin_penalty=$2, admin_note=$3, resolved_at=NOW() WHERE id=$4",
+      [refund, penalty, note || '', dispute_id]
+    );
+
+    if (d.customer_phone) sendFCM(d.customer_phone, '✅ Report Resolved', refund > 0 ? `₹${refund} refunded to your wallet.` : 'After review, no refund was issued.', { type: 'advance_refunded', ride_id: String(d.ride_id) }, { role: 'customer' }).catch(() => {});
+    if (d.driver_phone) sendFCM(d.driver_phone, penalty > 0 ? '⚠️ Delivery Dispute Resolved' : '✅ Delivery Dispute Resolved', penalty > 0 ? `₹${penalty} deducted from your account for an unresolved delivery dispute.${suspend_driver ? ' Your account has been suspended.' : ''}` : 'A delivery dispute against you was reviewed and closed with no penalty.', { type: 'ride_cancelled' }, { role: 'driver' }).catch(() => {});
+
+    res.json({ success: true, refund, penalty, suspended: !!suspend_driver });
+  } catch (err) { console.error('[admin] parcel-dispute resolve', err.message); res.status(500).json({ error: err.message }); }
 });
 
 // POST /api/admin/ride-disputes/resolve — admin sets penalty, refund, driver award

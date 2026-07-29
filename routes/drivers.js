@@ -404,17 +404,13 @@ router.get('/commission-status', async (req, res) => {
 router.get('/commission-history', async (req, res) => {
   const { phone } = req.query;
   try {
-    const walletRow = await db.query(`SELECT COALESCE(w.pending_commission, 0) as pending_commission, COALESCE(w.pending_cod, 0) as pending_cod, COALESCE(w.balance, 0) as balance, COALESCE(w.total_earned, 0) as total_earned FROM driver_wallet w JOIN users u ON w.driver_id = u.id WHERE u.phone = $1`, [phone]);
+    const walletRow = await db.query(`SELECT COALESCE(w.pending_commission, 0) as pending_commission, COALESCE(w.balance, 0) as balance, COALESCE(w.total_earned, 0) as total_earned FROM driver_wallet w JOIN users u ON w.driver_id = u.id WHERE u.phone = $1`, [phone]);
     const commRows = await db.query(`SELECT dc.id, dc.ride_id, dc.fare, dc.commission, dc.payment_method, dc.status, dc.created_at FROM driver_commissions dc WHERE dc.driver_phone = $1 ORDER BY dc.created_at DESC LIMIT 50`, [phone]);
     const payRows = await db.query(`SELECT id, amount, payment_id, status, created_at FROM driver_commission_payments WHERE driver_phone = $1 ORDER BY created_at DESC LIMIT 20`, [phone]);
     const records = commRows.rows;
     const totalCommission = records.reduce((s, r) => s + parseFloat(r.commission), 0);
     const settledCommission = records.filter(r => ['settled', 'collected', 'auto_settled'].includes(r.status)).reduce((s, r) => s + parseFloat(r.commission), 0);
-    // pending_commission is displayed/collected combined with pending_cod (COD
-    // cash the driver is holding, owed back to the platform) — same debt
-    // bucket to the driver in practice, one "amount you owe Sppero" number,
-    // reusing the existing ₹300+ block warning + Razorpay pay-flow untouched.
-    const pendingCommission = parseFloat(walletRow.rows[0]?.pending_commission || 0) + parseFloat(walletRow.rows[0]?.pending_cod || 0);
+    const pendingCommission = parseFloat(walletRow.rows[0]?.pending_commission || 0);
     res.json({ pending_commission: pendingCommission, total_commission: Math.round(totalCommission * 100) / 100, settled_commission: Math.round(settledCommission * 100) / 100, wallet_balance: parseFloat(walletRow.rows[0]?.balance || 0), total_earned: parseFloat(walletRow.rows[0]?.total_earned || 0), records, payments: payRows.rows });
   } catch (err) { console.error('[drivers]', err.message); res.status(500).json({ error: 'Something went wrong — please try again' }); }
 });
@@ -456,14 +452,11 @@ router.get('/order-history', async (req, res) => {
 });
 
 // POST /api/driver/commission-pay
-// Pays off pending_commission + pending_cod together as one Razorpay order —
-// to the driver these are both just "money I owe Sppero", shown as one
-// combined number (see GET /commission-history).
 router.post('/commission-pay', async (req, res) => {
   const { phone } = req.body;
   try {
-    const w = await db.query(`SELECT COALESCE(pending_commission, 0) as pending_commission, COALESCE(pending_cod, 0) as pending_cod FROM driver_wallet w JOIN users u ON w.driver_id = u.id WHERE u.phone = $1`, [phone]);
-    const pending = parseFloat(w.rows[0]?.pending_commission || 0) + parseFloat(w.rows[0]?.pending_cod || 0);
+    const w = await db.query(`SELECT COALESCE(pending_commission, 0) as pending_commission FROM driver_wallet w JOIN users u ON w.driver_id = u.id WHERE u.phone = $1`, [phone]);
+    const pending = parseFloat(w.rows[0]?.pending_commission || 0);
     if (pending <= 0) return res.json({ success: false, message: 'No pending commission' });
     const razorpay = require('../config/razorpay');
     if (!razorpay) return res.status(500).json({ error: 'Payment gateway not configured' });
@@ -486,17 +479,13 @@ router.post('/commission-pay-verify', async (req, res) => {
     if (!payRow.rows[0]) return res.status(400).json({ error: 'Order not found' });
     const amount = parseFloat(payRow.rows[0].amount);
     await db.query(`UPDATE driver_commission_payments SET status = 'paid', payment_id = $1 WHERE payment_id = $2 AND driver_phone = $3`, [razorpay_payment_id, razorpay_order_id, phone]);
-    // amount was pending_commission + pending_cod combined at order-creation
-    // time — pay commission down first, any remainder comes off the COD debt.
     await db.query(
-      `UPDATE driver_wallet SET
-         pending_commission = GREATEST(0, COALESCE(pending_commission,0) - LEAST($1, COALESCE(pending_commission,0))),
-         pending_cod         = GREATEST(0, COALESCE(pending_cod,0) - GREATEST(0, $1 - COALESCE(pending_commission,0)))
+      `UPDATE driver_wallet SET pending_commission = GREATEST(0, COALESCE(pending_commission,0) - $1)
        WHERE driver_id = (SELECT id FROM users WHERE phone = $2)`,
       [amount, phone]
     );
-    const remaining = await db.query(`SELECT COALESCE(pending_commission, 0) as pc, COALESCE(pending_cod, 0) as pcod FROM driver_wallet w JOIN users u ON w.driver_id = u.id WHERE u.phone = $1`, [phone]);
-    const remainingTotal = parseFloat(remaining.rows[0]?.pc || 0) + parseFloat(remaining.rows[0]?.pcod || 0);
+    const remaining = await db.query(`SELECT COALESCE(pending_commission, 0) as pc FROM driver_wallet w JOIN users u ON w.driver_id = u.id WHERE u.phone = $1`, [phone]);
+    const remainingTotal = parseFloat(remaining.rows[0]?.pc || 0);
     if (remainingTotal <= 0)
       await db.query(`UPDATE driver_commissions SET status = 'settled' WHERE driver_phone = $1 AND status = 'cash_owed'`, [phone]).catch(() => {});
     sendFCM(phone, '✅ Commission Paid!', `₹${amount.toFixed(0)} cleared. You can now accept new rides!`, { type: 'commission_cleared' }, { role: 'driver' }).catch(() => {});

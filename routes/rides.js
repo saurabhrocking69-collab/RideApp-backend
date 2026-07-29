@@ -796,7 +796,7 @@ router.post('/report-cancel', async (req, res) => {
 // Accepts optional driver_lat/driver_lng for early-completion detection.
 // If driver is >800m from drop point, marks early_completion=true and logs an incident.
 router.post('/complete', async (req, res) => {
-  const { ride_id, driver_phone, driver_lat, driver_lng, delivery_otp, cod_collected } = req.body;
+  const { ride_id, driver_phone, driver_lat, driver_lng, delivery_otp } = req.body;
   try {
     const rideRow = await db.query(
       `SELECT r.*, u.phone AS passenger_phone, d.phone AS dphone,
@@ -827,7 +827,7 @@ router.post('/complete', async (req, res) => {
     // multi-day trip's duration (17,280 min for 12 days) would balloon the fare.
     let finalFare = parseFloat(ride.fare);
     let finalPlatFee = parseFloat(ride.platform_fee || 0);
-    if (!ride.is_intercity && ride.trip_started_at && ride.fs_time != null) {
+    if (!ride.is_intercity && !ride.is_parcel && ride.trip_started_at && ride.fs_time != null) {
       const actualDurMin = (Date.now() - new Date(ride.trip_started_at).getTime()) / 60000;
       const distKm = parseFloat(ride.distance_km) || 5;
       const hourNow = getISTHour();
@@ -860,7 +860,7 @@ router.post('/complete', async (req, res) => {
     // State machine: DB update + socket + FCM for both parties
     await transitionRide(ride_id, 'completed', {
       extraFields: {
-        payment_status: 'pending',
+        ...(ride.is_parcel ? {} : { payment_status: 'pending' }),
         early_completion: earlyCompletion,
         driver_lat_at_complete: driver_lat || null,
         driver_lng_at_complete: driver_lng || null,
@@ -874,20 +874,17 @@ router.post('/complete', async (req, res) => {
       drvPhone:   ride.dphone,
     });
 
-    // COD settlement — self-attested by the driver, same trust level the
-    // platform already uses for "cash fare received" confirmations (no new
-    // verification burden). Credits the sender's wallet immediately and
-    // records the driver as owing that amount back to the platform via
-    // pending_cod, the same ₹300+ block + Razorpay pay-flow that already
-    // exists for commission debt. Non-blocking: a delivery still completes
-    // even if cod_collected is false (receiver refused, no cash, etc.) —
-    // only the settlement is skipped, not the delivery itself.
-    const codAmt = parseFloat(ride.cod_amount || 0);
-    if (ride.is_parcel && cod_collected && codAmt > 0) {
-      db.query('UPDATE customer_wallet SET balance=balance+$1, updated_at=NOW() WHERE user_id=$2', [codAmt, ride.passenger_id]).catch(e => console.error('[parcel] COD wallet credit failed:', e.message));
-      db.query('UPDATE driver_wallet SET pending_cod = COALESCE(pending_cod, 0) + $1 WHERE driver_id = $2', [codAmt, ride.driver_id]).catch(e => console.error('[parcel] COD debt increment failed:', e.message));
-      db.query('INSERT INTO cod_settlements (ride_id, driver_id, sender_user_id, amount) VALUES ($1,$2,$3,$4)', [String(ride_id), String(ride.driver_id), String(ride.passenger_id), codAmt]).catch(e => console.error('[parcel] COD settlement log failed:', e.message));
-      sendFCM(ride.passenger_phone, '💰 COD Credited', `₹${Math.round(codAmt)} collected on delivery has been added to your Sppero wallet.`, { type: 'cod_credited', ride_id: String(ride_id) }, { role: 'customer' }).catch(() => {});
+    // Parcel: the sender already paid in full at booking (held in escrow,
+    // rides.payment_status='escrowed') — release it to the driver's wallet
+    // right now instead of making them wait on a "customer is paying"
+    // screen. Reuses the exact same commission-calc/wallet-credit/cashback/
+    // socket logic as a normal ride's wallet payment (completeRidePayment is
+    // what routes/wallet.js's /pay already calls) — since payment_status is
+    // 'escrowed' (not 'completed'), this won't hit its idempotency guard.
+    let parcelSettlement = null;
+    if (ride.is_parcel) {
+      parcelSettlement = await completeRidePayment({ ride_id, payment_method: ride.payment_method, phone: ride.passenger_phone })
+        .catch(e => { console.error('[parcel] escrow release failed:', e.message); return null; });
     }
 
     const fare = netFareSocket;
@@ -900,7 +897,8 @@ router.post('/complete', async (req, res) => {
       dist_from_drop: distFromDrop ? distFromDrop.toFixed(2) : null,
       message: earlyCompletion
         ? `⚠️ Trip completed — you were ${(distFromDrop||0).toFixed(1)}km away from the drop point. Customer has been notified.`
-        : 'Trip complete! Waiting for customer payment.',
+        : (ride.is_parcel ? 'Delivery confirmed — payment released to your wallet!' : 'Trip complete! Waiting for customer payment.'),
+      ...(parcelSettlement ? { commission_amount: parcelSettlement.commission_amount, earned: parcelSettlement.driver_earning } : {}),
     });
 
     // post-complete async work
@@ -1087,7 +1085,7 @@ async function completeRidePayment({ ride_id, payment_method, phone }) {
   emitToRoom('ride_' + ride_id, 'paymentConfirmed', { ride_id, status: 'completed', payment_method, cashbacks });
   // Activate any pre-assigned ride this driver has queued (fire-and-forget)
   if (drPhone) activateQueuedRide(drPhone).catch(() => {});
-  return { success: true, status: 'completed', message: 'Payment complete!', cashbacks };
+  return { success: true, status: 'completed', message: 'Payment complete!', cashbacks, commission_amount: commission, driver_earning: driverEarning };
 }
 
 // POST /api/rides/payment-complete

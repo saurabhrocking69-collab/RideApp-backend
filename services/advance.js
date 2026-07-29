@@ -36,6 +36,9 @@ db.query(`
     resolved_at    TIMESTAMPTZ
   )
 `).catch(() => {});
+// 'emergency_cancel' (default, existing) | 'parcel_not_delivered' — lets the
+// admin portal tell the two dispute shapes apart in the same table/list.
+db.query("ALTER TABLE ride_disputes ADD COLUMN IF NOT EXISTS dispute_type TEXT DEFAULT 'emergency_cancel'").catch(() => {});
 
 // Credit a driver's wallet (used when admin awards the driver part of a dispute).
 async function creditDriverWallet(client, driverPhone, amount, note) {
@@ -71,6 +74,23 @@ async function verifyAdvancePayment({ order_id, payment_id, signature }) {
   }
 }
 
+// Verify a Razorpay payment for the FULL amount (no advance fraction) — used
+// by parcel booking-time escrow payment. Same signature/capture verification
+// as verifyAdvancePayment, just without the 1/3 math.
+async function verifyOnlinePayment({ order_id, payment_id, signature }) {
+  if (!order_id || !payment_id || !signature) return { ok: false, error: 'Missing payment fields' };
+  const expected = crypto.createHmac('sha256', process.env.RAZORPAY_KEY_SECRET)
+    .update(`${order_id}|${payment_id}`).digest('hex');
+  if (expected !== signature) return { ok: false, error: 'Invalid payment signature' };
+  try {
+    const order = await razorpay.orders.fetch(order_id);
+    if (order.status !== 'paid') return { ok: false, error: 'Payment not captured yet' };
+    return { ok: true, amount: order.amount / 100 };
+  } catch (_e) {
+    return { ok: false, error: 'Could not verify payment' };
+  }
+}
+
 // Credit a refund to the customer's wallet (used by cancellation tiers).
 // Runs inside the caller's transaction client when provided.
 async function refundToWallet(client, customerPhone, amount, rideId, note) {
@@ -87,5 +107,5 @@ async function refundToWallet(client, customerPhone, amount, rideId, note) {
 
 module.exports = {
   ADVANCE_THRESHOLD, ADVANCE_FRACTION,
-  advanceForFare, requiresAdvance, verifyAdvancePayment, refundToWallet, creditDriverWallet, razorpay,
+  advanceForFare, requiresAdvance, verifyAdvancePayment, verifyOnlinePayment, refundToWallet, creditDriverWallet, razorpay,
 };
