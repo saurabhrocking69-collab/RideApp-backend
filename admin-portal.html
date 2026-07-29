@@ -1109,6 +1109,7 @@ async function aJson(path, opts) { return aFetch(path, opts).then(r => r.json())
 function fmt(d){return d?new Date(d).toLocaleString('en-IN',{day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'}):'-'}
 function rupee(n){return '₹'+parseFloat(n||0).toFixed(0)}
 function trunc(s,n=25){return s&&s.length>n?s.slice(0,n)+'…':s||'-'}
+function esc(s){ return String(s==null?'':s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 
 var _activeSection = 'transactions';
 function showSection(id,btn){
@@ -1378,10 +1379,10 @@ async function loadTransactions(){
   try{
     const d=await aJson('/api/admin/all-transactions?limit=200');
     document.getElementById('txn-body').innerHTML=(d.transactions||[]).map(t=>`<tr>
-      <td>${fmt(t.created_at)}</td><td>${t.name||'-'}</td><td>${t.phone}</td>
+      <td>${fmt(t.created_at)}</td><td>${esc(t.name)||'-'}</td><td>${esc(t.phone)}</td>
       <td><span class="badge-${t.type}">${t.type.toUpperCase()}</span></td>
       <td class="${t.type==='credit'?'amount-green':'amount-red'}">${rupee(t.amount)}</td>
-      <td title="${t.description}">${trunc(t.description,40)}</td>
+      <td title="${esc(t.description)}">${esc(trunc(t.description,40))}</td>
     </tr>`).join('')||'<tr><td colspan=6 class=loading>Koi transaction nahi</td></tr>';
   }catch(e){if(e.message!=='Unauthorized')console.error('loadTransactions:',e);}
 }
@@ -1394,10 +1395,10 @@ let ridesOffset=0;
 function rideRowHtml(r){
   return `<tr>
       <td>${fmt(r.created_at)}</td>
-      <td>${r.passenger_name||'-'}<br><span style="color:#999;font-size:10px">${r.passenger_phone||''}</span></td>
-      <td>${r.driver_name||'—'}</td>
-      <td title="${r.pickup}">${trunc(r.pickup,20)}</td>
-      <td title="${r.drop_location}">${trunc(r.drop_location,20)}</td>
+      <td>${esc(r.passenger_name)||'-'}<br><span style="color:#999;font-size:10px">${esc(r.passenger_phone)||''}</span></td>
+      <td>${esc(r.driver_name)||'—'}</td>
+      <td title="${esc(r.pickup)}">${esc(trunc(r.pickup,20))}</td>
+      <td title="${esc(r.drop_location)}">${esc(trunc(r.drop_location,20))}</td>
       <td class="amount-green">${rupee(r.fare)}</td>
       <td><span style="font-size:10px;background:#f0f0f0;padding:2px 6px;border-radius:6px">${r.ride_type||'std'}</span></td>
       <td><span style="color:${RIDE_STATUS_COLOR[r.status]||'#888'};font-weight:700;font-size:11px">${r.status}</span></td>
@@ -1454,13 +1455,13 @@ async function viewRideDetail(id){
     document.getElementById('cmp-modal-content').innerHTML=`
       <h3 style="margin-bottom:12px">🛺 Ride Detail</h3>
       <div style="background:#f8f8f8;border-radius:10px;padding:12px;margin-bottom:14px;font-size:13px">
-        <b>${r.pickup||'?'}</b> → <b>${r.drop_location||'?'}</b><br>
+        <b>${esc(r.pickup)||'?'}</b> → <b>${esc(r.drop_location)||'?'}</b><br>
         <span style="color:${RIDE_STATUS_COLOR[r.status]||'#888'};font-weight:800">${r.status}</span>
         <span style="float:right">${mapLink}</span>
       </div>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:14px;font-size:13px">
-        <div><b>Passenger:</b> ${r.passenger_name||'-'}<br><span style="color:#888">${r.passenger_phone||''}</span></div>
-        <div><b>Driver:</b> ${r.driver_name||'Not assigned'}<br><span style="color:#888">${r.driver_phone||''}</span></div>
+        <div><b>Passenger:</b> ${esc(r.passenger_name)||'-'}<br><span style="color:#888">${esc(r.passenger_phone)||''}</span></div>
+        <div><b>Driver:</b> ${esc(r.driver_name)||'Not assigned'}<br><span style="color:#888">${esc(r.driver_phone)||''}</span></div>
         <div><b>Fare:</b> <span class="amount-green">${rupee(r.fare)}</span></div>
         <div><b>Distance:</b> ${r.distance_km?r.distance_km+' km':'-'}</div>
         <div><b>Payment:</b> ${r.payment_method||'-'} (${r.payment_status||'-'})</div>
@@ -1468,10 +1469,10 @@ async function viewRideDetail(id){
         <div><b>Booked:</b> ${new Date(r.created_at).toLocaleString('en-IN')}</div>
         <div><b>Completed:</b> ${r.completed_at?new Date(r.completed_at).toLocaleString('en-IN'):'-'}</div>
         ${r.rating?`<div><b>Rating:</b> ${'⭐'.repeat(r.rating)}</div>`:''}
-        ${r.cancelled_by?`<div><b>Cancelled by:</b> ${r.cancelled_by}</div>`:''}
+        ${r.cancelled_by?`<div><b>Cancelled by:</b> ${esc(r.cancelled_by)}</div>`:''}
       </div>
-      ${r.cancel_reason?`<div style="background:#ffebee;border-radius:8px;padding:10px;margin-bottom:12px;font-size:12px"><b>Cancel reason:</b> ${r.cancel_reason}</div>`:''}
-      ${r.review?`<div style="background:#f8f8f8;border-radius:8px;padding:10px;font-size:12px"><b>Review:</b> "${r.review}"</div>`:''}
+      ${r.cancel_reason?`<div style="background:#ffebee;border-radius:8px;padding:10px;margin-bottom:12px;font-size:12px"><b>Cancel reason:</b> ${esc(r.cancel_reason)}</div>`:''}
+      ${r.review?`<div style="background:#f8f8f8;border-radius:8px;padding:10px;font-size:12px"><b>Review:</b> "${esc(r.review)}"</div>`:''}
     `;
   }catch(e){document.getElementById('cmp-modal-content').innerHTML=`<div style="color:#c62828;padding:20px">❌ Error: ${e.message}</div>`;}
 }
@@ -1487,9 +1488,9 @@ async function viewDriverProfile(id){
     document.getElementById('cmp-modal-content').innerHTML=`
       <h3 style="margin-bottom:12px">🚗 Driver Profile</h3>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:16px;font-size:13px">
-        <div><b>Name:</b> ${dr.name||'?'}</div>
-        <div><b>Phone:</b> ${dr.phone||'?'}</div>
-        <div><b>Vehicle:</b> ${dr.vehicle_type||'-'} · ${dr.vehicle_no||'-'}</div>
+        <div><b>Name:</b> ${esc(dr.name)||'?'}</div>
+        <div><b>Phone:</b> ${esc(dr.phone)||'?'}</div>
+        <div><b>Vehicle:</b> ${dr.vehicle_type||'-'} · ${esc(dr.vehicle_no)||'-'}</div>
         <div><b>Status:</b> <span class="chip ${dr.is_online?'online':'offline'}">${dr.is_online?'🟢 Online':'⚫ Offline'}</span> · ${dr.verification_status||'-'}</div>
       </div>
       <div class="stats" style="margin-bottom:16px">
@@ -1500,9 +1501,9 @@ async function viewDriverProfile(id){
       <div style="font-size:14px;font-weight:800;margin-bottom:8px">Ride History (${d.rides?.length||0})</div>
       <div style="max-height:280px;overflow-y:auto">
       ${(d.rides||[]).map(r=>`<div style="background:#f8f8f8;border-radius:8px;padding:10px;margin-bottom:8px;font-size:12px;cursor:pointer" onclick="viewRideDetail('${r.id}')">
-        <b>${r.pickup||'?'}</b> → <b>${r.drop_location||'?'}</b>
+        <b>${esc(r.pickup)||'?'}</b> → <b>${esc(r.drop_location)||'?'}</b>
         <span style="float:right;color:#2e7d32;font-weight:700">${rupee(r.fare)}</span><br>
-        <span style="color:#888">${new Date(r.created_at).toLocaleString('en-IN',{day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'})} · ${r.passenger_name||'-'}</span>
+        <span style="color:#888">${new Date(r.created_at).toLocaleString('en-IN',{day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'})} · ${esc(r.passenger_name)||'-'}</span>
         <span style="float:right;color:${RIDE_STATUS_COLOR[r.status]||'#888'}">${r.status}</span>
       </div>`).join('')||'<div style="color:#aaa;text-align:center">Koi ride nahi</div>'}
       </div>
@@ -1529,10 +1530,10 @@ async function loadLiveRides(){
         :'<span style="color:#aaa">No GPS</span>';
       return `<tr style="cursor:pointer" onclick="viewRideDetail('${r.id}')">
         <td>${fmt(r.created_at)}</td>
-        <td>${r.passenger_name||'-'}<br><span style="color:#999;font-size:10px">${r.passenger_phone||''}</span></td>
-        <td>${r.driver_name||'-'}<br><span style="color:#999;font-size:10px">${r.driver_phone||''}</span></td>
-        <td title="${r.pickup}">${trunc(r.pickup,18)}</td>
-        <td title="${r.drop_location}">${trunc(r.drop_location,18)}</td>
+        <td>${esc(r.passenger_name)||'-'}<br><span style="color:#999;font-size:10px">${esc(r.passenger_phone)||''}</span></td>
+        <td>${esc(r.driver_name)||'-'}<br><span style="color:#999;font-size:10px">${esc(r.driver_phone)||''}</span></td>
+        <td title="${esc(r.pickup)}">${esc(trunc(r.pickup,18))}</td>
+        <td title="${esc(r.drop_location)}">${esc(trunc(r.drop_location,18))}</td>
         <td class="amount-green">${rupee(r.fare)}</td>
         <td><span style="color:${RIDE_STATUS_COLOR[r.status]||'#888'};font-weight:700;font-size:11px">${r.status}</span></td>
         <td onclick="event.stopPropagation()">${driverLoc}</td>
@@ -1547,8 +1548,8 @@ async function loadCustomers(){
   try{
     const d=await aJson('/api/admin/users');
     document.getElementById('cust-body').innerHTML=(d.users||[]).map(u=>`<tr>
-      <td><b>${u.name||'-'}</b>${u.booking_restricted?'<span style="color:#c62828;font-size:10px"> 🔒RESTRICTED</span>':u.is_blocked?'<span style="color:#c62828;font-size:10px"> 🚫BLOCKED</span>':u.is_suspended?'<span style="color:#e65100;font-size:10px"> ⏸SUSPENDED</span>':''}</td>
-      <td>${u.phone}</td>
+      <td><b>${esc(u.name)||'-'}</b>${u.booking_restricted?'<span style="color:#c62828;font-size:10px"> 🔒RESTRICTED</span>':u.is_blocked?'<span style="color:#c62828;font-size:10px"> 🚫BLOCKED</span>':u.is_suspended?'<span style="color:#e65100;font-size:10px"> ⏸SUSPENDED</span>':''}</td>
+      <td>${esc(u.phone)}</td>
       <td>${u.total_rides||0}</td>
       <td class="amount-green">${rupee(u.total_fare)}</td>
       <td class="amount-green">${rupee(u.wallet_balance)}</td>
@@ -1580,7 +1581,7 @@ function openUserModalFromEl(el){
 function openUserModal(phone,name,isBlocked,isSuspended,isRestricted){
   const m=document.getElementById('usr-modal');
   document.getElementById('usr-modal-content').innerHTML=`
-    <h3 style="margin-bottom:14px;font-size:15px">👤 User: ${name} (${phone})</h3>
+    <h3 style="margin-bottom:14px;font-size:15px">👤 User: ${esc(name)} (${esc(phone)})</h3>
     <div style="margin-bottom:14px;padding:10px;background:${isRestricted?'#ffebee':'#e8f5e9'};border-radius:8px;font-size:12px;font-weight:700;color:${isRestricted?'#c62828':'#2e7d32'}">
       Booking Status: ${isRestricted?'🔒 RESTRICTED — Booking band hai':'✅ Active — Booking khuli hai'}
     </div>
@@ -1678,9 +1679,9 @@ async function loadDrivers(){
   try{
     const d=await aJson('/api/admin/drivers');
     document.getElementById('drv-body').innerHTML=(d.drivers||[]).map(dr=>`<tr>
-      <td><b>${dr.name||'-'}</b></td>
-      <td>${dr.phone}</td>
-      <td>${dr.vehicle_type} · ${dr.vehicle_no||'-'}</td>
+      <td><b>${esc(dr.name)||'-'}</b></td>
+      <td>${esc(dr.phone)}</td>
+      <td>${dr.vehicle_type} · ${esc(dr.vehicle_no)||'-'}</td>
       <td><span class="chip ${dr.is_online?'online':'offline'}">${dr.is_online?'🟢 Online':'⚫ Offline'}</span></td>
       <td class="amount-green">${rupee(dr.balance)}</td>
       <td class="amount-green">${rupee(dr.total_earned)}</td>
@@ -1709,7 +1710,7 @@ function openDriverMgmtModalFromEl(el){
 function openDriverMgmtModal(phone,name,isSuspended,isBlocked){
   const m=document.getElementById('drv-modal');
   document.getElementById('drv-modal-content').innerHTML=`
-    <h3 style="margin-bottom:14px;font-size:15px">🚗 Driver: ${name} (${phone})</h3>
+    <h3 style="margin-bottom:14px;font-size:15px">🚗 Driver: ${esc(name)} (${esc(phone)})</h3>
     <div style="margin-bottom:14px">
       <div style="font-size:12px;color:#888;margin-bottom:6px;font-weight:600">📨 Send Message</div>
       <textarea id="dmgmt-msg" placeholder="Driver ko message likhein..." class="input-sm" style="resize:none;height:55px;margin-bottom:6px"></textarea>
@@ -1814,8 +1815,8 @@ function vVehicleLabel(dr){
   var icons={bike:'&#x1F3CD;',auto:'&#x1F6FA;',car:'&#x1F695;',eriksha:'&#x1F6F5;',ultra_luxury:'&#x1F48E;'};
   var ic=icons[dr.vehicle_type]||'&#x1F697;';
   var s=ic+' '+(dr.vehicle_type||'-');
-  if(dr.vehicle_brand) s+=' &middot; '+dr.vehicle_brand;
-  if(dr.vehicle_model) s+=' '+dr.vehicle_model;
+  if(dr.vehicle_brand) s+=' &middot; '+esc(dr.vehicle_brand);
+  if(dr.vehicle_model) s+=' '+esc(dr.vehicle_model);
   return s;
 }
 
@@ -1833,31 +1834,31 @@ function renderVerifications(){
     html+='<div data-card-id="'+dr.id+'" style="border:2px solid '+vStatusBorder(st)+';border-radius:16px;padding:20px;margin-bottom:18px;transition:border-color 0.3s">';
     html+='<div style="display:flex;align-items:flex-start;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:14px">';
     html+='<div>';
-    html+='<div style="font-size:18px;font-weight:900;color:#1a1a2e">'+(dr.name||'-')+'</div>';
+    html+='<div style="font-size:18px;font-weight:900;color:#1a1a2e">'+(esc(dr.name)||'-')+'</div>';
     html+='<div style="font-size:13px;color:#555;margin-top:4px;display:flex;gap:8px;flex-wrap:wrap;align-items:center">';
-    html+='<span>&#128241; '+(dr.phone||'-')+'</span>';
+    html+='<span>&#128241; '+(esc(dr.phone)||'-')+'</span>';
     html+='<span style="background:#f0f0f0;padding:2px 10px;border-radius:20px;font-size:12px;font-weight:700">'+vVehicleLabel(dr)+'</span>';
-    if(dr.vehicle_no) html+='<span style="background:#1a1a2e;color:#fff;padding:2px 10px;border-radius:20px;font-size:12px;font-weight:700;letter-spacing:1px">'+dr.vehicle_no+'</span>';
+    if(dr.vehicle_no) html+='<span style="background:#1a1a2e;color:#fff;padding:2px 10px;border-radius:20px;font-size:12px;font-weight:700;letter-spacing:1px">'+esc(dr.vehicle_no)+'</span>';
     html+='</div>';
     html+='</div>';
     html+='<span class="v-status-chip" style="padding:6px 16px;border-radius:20px;font-weight:800;font-size:12px;background:'+(STATUS_BG[st]||'#eee')+';color:'+(STATUS_COLORS[st]||'#333')+';white-space:nowrap;transition:all 0.3s">'+(st.toUpperCase())+'</span>';
     html+='</div>';
     html+='<div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-start;margin-bottom:14px;padding:12px;background:#fff;border-radius:12px">';
     html+=vDocBox(dr.face_photo,'SELFIE','');
-    html+=vDocBox(dr.dl_photo,'DL',dr.dl_name||'');
-    html+=vDocBox(dr.vehicle_photo,'VEHICLE',dr.vehicle_no||'');
+    html+=vDocBox(dr.dl_photo,'DL',esc(dr.dl_name)||'');
+    html+=vDocBox(dr.vehicle_photo,'VEHICLE',esc(dr.vehicle_no)||'');
     if(dr.rc_photo) html+=vDocBox(dr.rc_photo,'RC','');
-    html+=vDocBox(dr.aadhaar_photo,'AADHAAR',aadhaarMasked);
+    html+=vDocBox(dr.aadhaar_photo,'AADHAAR',esc(aadhaarMasked));
     html+='</div>';
     html+='<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:8px;margin-bottom:14px">';
-    html+='<div style="background:#fff;border-radius:10px;padding:10px;border:1px solid #f0f0f0"><div style="font-size:10px;color:#888;font-weight:700;margin-bottom:3px">DL NAME</div><div style="font-size:13px;font-weight:600">'+(dr.dl_name||'&mdash;')+'</div></div>';
-    html+='<div style="background:#fff;border-radius:10px;padding:10px;border:1px solid '+(dr.dl_number?'#bfdbfe':'#fee2e2')+'"><div style="font-size:10px;color:#888;font-weight:700;margin-bottom:3px">DL NUMBER</div><div style="font-size:13px;font-weight:700;color:'+(dr.dl_number?'#1565c0':'#dc2626')+'">'+(dr.dl_number||'Not provided')+'</div></div>';
-    html+='<div style="background:#fff;border-radius:10px;padding:10px;border:1px solid '+(dr.aadhaar_number?'#bbf7d0':'#fee2e2')+'"><div style="font-size:10px;color:#888;font-weight:700;margin-bottom:3px">AADHAAR</div><div style="font-size:13px;font-weight:700;color:'+(dr.aadhaar_number?'#166534':'#dc2626')+'">'+(aadhaarMasked||'Not provided')+'</div></div>';
-    html+='<div class="v-last-msg" style="'+(dr.admin_message?'':'display:none;')+'background:#fffbf0;border-radius:10px;padding:10px;border:1px solid #fde68a;grid-column:1/-1;font-size:13px;color:#78350f">'+(dr.admin_message||'')+'</div>';
+    html+='<div style="background:#fff;border-radius:10px;padding:10px;border:1px solid #f0f0f0"><div style="font-size:10px;color:#888;font-weight:700;margin-bottom:3px">DL NAME</div><div style="font-size:13px;font-weight:600">'+(esc(dr.dl_name)||'&mdash;')+'</div></div>';
+    html+='<div style="background:#fff;border-radius:10px;padding:10px;border:1px solid '+(dr.dl_number?'#bfdbfe':'#fee2e2')+'"><div style="font-size:10px;color:#888;font-weight:700;margin-bottom:3px">DL NUMBER</div><div style="font-size:13px;font-weight:700;color:'+(dr.dl_number?'#1565c0':'#dc2626')+'">'+(esc(dr.dl_number)||'Not provided')+'</div></div>';
+    html+='<div style="background:#fff;border-radius:10px;padding:10px;border:1px solid '+(dr.aadhaar_number?'#bbf7d0':'#fee2e2')+'"><div style="font-size:10px;color:#888;font-weight:700;margin-bottom:3px">AADHAAR</div><div style="font-size:13px;font-weight:700;color:'+(dr.aadhaar_number?'#166534':'#dc2626')+'">'+(esc(aadhaarMasked)||'Not provided')+'</div></div>';
+    html+='<div class="v-last-msg" style="'+(dr.admin_message?'':'display:none;')+'background:#fffbf0;border-radius:10px;padding:10px;border:1px solid #fde68a;grid-column:1/-1;font-size:13px;color:#78350f">'+esc(dr.admin_message||'')+'</div>';
     html+='</div>';
     html+='<div class="v-actions" style="border-top:1px solid #e5e7eb;padding-top:14px">';
     html+='<div style="font-size:11px;color:#888;margin-bottom:6px;font-weight:600">MESSAGE TO DRIVER:</div>';
-    html+='<textarea id="vmsg-'+dr.id+'" rows="2" placeholder="eg. Aapka DL missing hai / Approved ho gaye!" style="width:100%;padding:10px;border:1px solid #e0e0e0;border-radius:10px;font-size:13px;resize:vertical;margin-bottom:10px;font-family:inherit;box-sizing:border-box">'+(dr.admin_message||'')+'</textarea>';
+    html+='<textarea id="vmsg-'+dr.id+'" rows="2" placeholder="eg. Aapka DL missing hai / Approved ho gaye!" style="width:100%;padding:10px;border:1px solid #e0e0e0;border-radius:10px;font-size:13px;resize:vertical;margin-bottom:10px;font-family:inherit;box-sizing:border-box">'+esc(dr.admin_message||'')+'</textarea>';
     html+='<div style="display:flex;gap:8px;flex-wrap:wrap">';
     html+='<button data-vid="'+dr.id+'" data-vaction="approved" style="flex:1;min-width:90px;padding:10px 14px;background:#16a34a;color:#fff;border:none;border-radius:10px;font-weight:700;cursor:pointer;font-size:13px">✅ Approve</button>';
     html+='<button data-vid="'+dr.id+'" data-vaction="resubmit" style="flex:1;min-width:90px;padding:10px 14px;background:#2563eb;color:#fff;border:none;border-radius:10px;font-weight:700;cursor:pointer;font-size:13px">📋 Resubmit</button>';
@@ -2010,10 +2011,10 @@ async function loadWalletCreditHistory(){
     body.innerHTML = d.credits.map(c=>`<tr>
       <td style="font-size:12px;white-space:nowrap">${new Date(c.created_at).toLocaleString('en-IN',{day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'})}</td>
       <td>${c.role==='driver'?'🚗 Driver':'👤 Customer'}</td>
-      <td style="font-family:monospace">${c.phone||'—'}</td>
-      <td>${c.user_name||'—'}</td>
+      <td style="font-family:monospace">${esc(c.phone)||'—'}</td>
+      <td>${esc(c.user_name)||'—'}</td>
       <td style="color:#2e7d32;font-weight:700">₹${c.amount}</td>
-      <td style="color:#888;font-size:12px">${c.note||'—'}</td>
+      <td style="color:#888;font-size:12px">${esc(c.note)||'—'}</td>
       <td style="font-weight:700">₹${c.new_balance}</td>
     </tr>`).join('');
   }catch(e){body.innerHTML=`<tr><td colspan=7 style="color:red">Error: ${e.message}</td></tr>`;}
@@ -2129,9 +2130,9 @@ async function loadRideDisputes(){
           +'<div style="font-size:12px;font-weight:700">'+(isParcel?'📦 Not Delivered':((x.is_intercity?'🛣️ ':'')+(x.ride_type||'ride')))+' · Ride '+String(x.ride_id).slice(0,8)+'</div>'
           +'<div style="font-size:11px;color:'+(isPending?'#b45309':'#16a34a')+';font-weight:800">'+(isPending?('PENDING · '+hoursAgo+'h ago'):x.status.toUpperCase())+'</div>'
         +'</div>'
-        +'<div style="font-size:11px;color:#64748b;margin-top:4px">'+trunc(x.pickup||'',30)+' → '+trunc(x.drop_location||'',30)+'</div>'
-        +'<div style="font-size:11px;color:#374151;margin-top:4px">Customer: '+(x.customer_phone||'-')+' · Driver: '+(x.driver_phone||'-')+'</div>'
-        +'<div style="font-size:11px;color:#991b1b;margin-top:4px">Reason: '+(x.reason||'—')+'</div>'
+        +'<div style="font-size:11px;color:#64748b;margin-top:4px">'+esc(trunc(x.pickup||'',30))+' → '+esc(trunc(x.drop_location||'',30))+'</div>'
+        +'<div style="font-size:11px;color:#374151;margin-top:4px">Customer: '+esc(x.customer_phone||'-')+' · Driver: '+esc(x.driver_phone||'-')+'</div>'
+        +'<div style="font-size:11px;color:#991b1b;margin-top:4px">Reason: '+esc(x.reason||'—')+'</div>'
         +'<div style="font-size:12px;font-weight:800;margin-top:6px">'+(isParcel?'Delivery fare (already paid to driver)':'Held advance')+': ₹'+held.toFixed(0)+'</div>';
       if(isPending && isParcel){
         html+='<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:8px">'
@@ -2149,7 +2150,7 @@ async function loadRideDisputes(){
           +'<button class="refresh-btn" style="background:#dc2626;color:#fff;font-size:11px" onclick="resolveDispute('+x.id+','+held+')">Resolve</button>'
         +'</div>';
       } else {
-        html+='<div style="font-size:11px;color:#64748b;margin-top:6px">Refunded ₹'+parseFloat(x.admin_refund||0).toFixed(0)+' · penalty ₹'+parseFloat(x.admin_penalty||0).toFixed(0)+(isParcel?'':(' · driver ₹'+parseFloat(x.driver_credit||0).toFixed(0)))+(x.admin_note?(' · '+x.admin_note):'')+'</div>';
+        html+='<div style="font-size:11px;color:#64748b;margin-top:6px">Refunded ₹'+parseFloat(x.admin_refund||0).toFixed(0)+' · penalty ₹'+parseFloat(x.admin_penalty||0).toFixed(0)+(isParcel?'':(' · driver ₹'+parseFloat(x.driver_credit||0).toFixed(0)))+(x.admin_note?(' · '+esc(x.admin_note)):'')+'</div>';
       }
       html+='</div>';
     });
@@ -2506,8 +2507,8 @@ async function loadReferrals(){
     `;
     document.getElementById('referral-body').innerHTML=(d.recent||[]).map(r=>`<tr>
       <td>${fmt(r.created_at)}</td>
-      <td>${r.referrer_name||'-'} (${r.referrer_phone})</td>
-      <td>${r.referred_name||'-'} (${r.referred_phone})</td>
+      <td>${esc(r.referrer_name)||'-'} (${esc(r.referrer_phone)})</td>
+      <td>${esc(r.referred_name)||'-'} (${esc(r.referred_phone)})</td>
       <td class="amount-green">${rupee(r.reward_amount)}</td>
     </tr>`).join('')||'<tr><td colspan=4 class=loading>Koi referral nahi</td></tr>';
   }catch(e){if(e.message!=='Unauthorized')console.error(e);}
@@ -2528,8 +2529,8 @@ function setPayoutTab(t,btn){
 }
 function payoutMethodHtml(p){
   return p.method==='upi'
-    ? `📱 UPI<br><span style="font-size:10px;color:#555">${p.upi_id||'-'}</span>`
-    : `🏦 Bank<br><span style="font-size:10px;color:#555"><b>${p.bank_holder||''}</b> ${p.bank_account||'-'} / ${p.bank_ifsc||''}</span>`;
+    ? `📱 UPI<br><span style="font-size:10px;color:#555">${esc(p.upi_id)||'-'}</span>`
+    : `🏦 Bank<br><span style="font-size:10px;color:#555"><b>${esc(p.bank_holder)||''}</b> ${esc(p.bank_account)||'-'} / ${esc(p.bank_ifsc)||''}</span>`;
 }
 async function loadPayouts(status){
   try{
@@ -2539,8 +2540,8 @@ async function loadPayouts(status){
     const processing=all.filter(p=>p.status==='processing');
     const pendingRows=pending.map(p=>`<tr>
       <td>${fmt(p.requested_at)}</td>
-      <td><b>${p.driver_name||'-'}</b></td>
-      <td>${p.driver_phone}</td>
+      <td><b>${esc(p.driver_name)||'-'}</b></td>
+      <td>${esc(p.driver_phone)}</td>
       <td class="amount-green" style="font-weight:800;font-size:14px">₹${parseFloat(p.amount).toFixed(0)}</td>
       <td style="font-size:11px;line-height:1.6">${payoutMethodHtml(p)}</td>
       <td>₹${parseFloat(p.wallet_balance||0).toFixed(0)}</td>
@@ -2552,8 +2553,8 @@ async function loadPayouts(status){
     </tr>`).join('');
     const processingRows=processing.map(p=>`<tr style="background:#fffde7">
       <td>${fmt(p.requested_at)}</td>
-      <td><b>${p.driver_name||'-'}</b></td>
-      <td>${p.driver_phone}</td>
+      <td><b>${esc(p.driver_name)||'-'}</b></td>
+      <td>${esc(p.driver_phone)}</td>
       <td class="amount-green" style="font-weight:800">₹${parseFloat(p.amount).toFixed(0)}</td>
       <td style="font-size:11px;line-height:1.6">${payoutMethodHtml(p)}</td>
       <td colspan=2><span class="chip badge-pending">⏳ Processing via Razorpay</span><br>
@@ -2575,12 +2576,12 @@ async function loadPayoutHistory(){
     }[s]||`<span>${s}</span>`);
     document.getElementById('payout-history-body').innerHTML=payouts.map(p=>`<tr>
       <td>${fmt(p.requested_at)}</td>
-      <td>${p.driver_name||'-'}<br><span style="color:#888;font-size:10px">${p.driver_phone}</span></td>
+      <td>${esc(p.driver_name)||'-'}<br><span style="color:#888;font-size:10px">${esc(p.driver_phone)}</span></td>
       <td class="${p.status==='completed'?'amount-green':'amount-red'}" style="font-weight:800">₹${parseFloat(p.amount).toFixed(0)}</td>
       <td style="font-size:11px">${payoutMethodHtml(p)}</td>
       <td>${statusBadge(p.status)}</td>
-      <td style="font-size:11px;font-family:monospace">${p.razorpay_payout_id?`<span style="color:#7b1fa2">${p.razorpay_payout_id}</span><br>`:''}${p.transaction_ref||'-'}</td>
-      <td style="font-size:11px;color:#888">${p.admin_note||'-'}</td>
+      <td style="font-size:11px;font-family:monospace">${p.razorpay_payout_id?`<span style="color:#7b1fa2">${esc(p.razorpay_payout_id)}</span><br>`:''}${esc(p.transaction_ref)||'-'}</td>
+      <td style="font-size:11px;color:#888">${esc(p.admin_note)||'-'}</td>
       <td>${fmt(p.settled_at)}</td>
     </tr>`).join('')||'<tr><td colspan=8 class=loading>Koi history nahi</td></tr>';
   }catch(e){if(e.message!=='Unauthorized')console.error(e);}
@@ -2589,16 +2590,16 @@ async function loadDriverFinancials(){
   try{
     const d=await aJson('/api/admin/driver-financials');
     document.getElementById('financials-body').innerHTML=(d.drivers||[]).map(dr=>`<tr>
-      <td style="font-weight:700">${dr.name||'-'}</td>
-      <td>${dr.phone}</td>
-      <td style="font-size:11px">${dr.vehicle_type||'-'} ${dr.vehicle_no||''}</td>
+      <td style="font-weight:700">${esc(dr.name)||'-'}</td>
+      <td>${esc(dr.phone)}</td>
+      <td style="font-size:11px">${dr.vehicle_type||'-'} ${esc(dr.vehicle_no)||''}</td>
       <td class="amount-green" style="font-weight:800">₹${parseFloat(dr.wallet_balance||0).toFixed(0)}</td>
       <td>₹${parseFloat(dr.total_earned||0).toFixed(0)}</td>
       <td>₹${parseFloat(dr.total_withdrawn||0).toFixed(0)}</td>
       <td class="${parseFloat(dr.pending_commission||0)>0?'amount-red':''}">₹${parseFloat(dr.pending_commission||0).toFixed(0)}</td>
-      <td style="font-size:11px;line-height:1.5">${dr.bank_holder?'<b>'+dr.bank_holder+'</b><br>':''}${dr.bank_account||'<span style="color:#bbb">—</span>'}</td>
-      <td style="font-size:11px">${dr.bank_ifsc||'-'}</td>
-      <td style="font-size:11px">${dr.upi_id||'-'}</td>
+      <td style="font-size:11px;line-height:1.5">${dr.bank_holder?'<b>'+esc(dr.bank_holder)+'</b><br>':''}${esc(dr.bank_account)||'<span style="color:#bbb">—</span>'}</td>
+      <td style="font-size:11px">${esc(dr.bank_ifsc)||'-'}</td>
+      <td style="font-size:11px">${esc(dr.upi_id)||'-'}</td>
       <td>${dr.total_rides||0}</td>
     </tr>`).join('')||'<tr><td colspan=11 class=loading>Koi driver nahi</td></tr>';
   }catch(e){if(e.message!=='Unauthorized')console.error(e);}
@@ -2692,12 +2693,12 @@ async function loadComplaints(){
         <td style="white-space:nowrap">${new Date(c.created_at).toLocaleDateString('en-IN')}</td>
         <td><span class="chip" style="background:${CMP_PRI_COLOR[c.priority]||'#999'};color:#fff">${(c.priority||'').toUpperCase()}</span></td>
         <td style="white-space:nowrap">${(c.complaint_type||'').replace(/_/g,' ')}</td>
-        <td style="max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${c.title}">${c.title}</td>
-        <td>${c.filed_by_name||'-'}<br><span style="font-size:10px;color:#888">${c.filer_role}</span></td>
-        <td>${c.filed_against_name||'-'}</td>
+        <td style="max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(c.title)}">${esc(c.title)}</td>
+        <td>${esc(c.filed_by_name)||'-'}<br><span style="font-size:10px;color:#888">${c.filer_role}</span></td>
+        <td>${esc(c.filed_against_name)||'-'}</td>
         <td>${c.ride_id?'#'+c.ride_id:'-'}</td>
         <td><span class="chip" style="background:${CMP_STATUS_COLOR[c.status]||'#999'};color:#fff">${(c.status||'').replace(/_/g,' ').toUpperCase()}</span></td>
-        <td style="font-size:11px;color:#888">${c.assigned_admin||'—'}</td>
+        <td style="font-size:11px;color:#888">${esc(c.assigned_admin)||'—'}</td>
         <td><button class="action-btn btn-blue" onclick="openCmpDetail('${c.id}')">🔍 View</button></td>
       </tr>
     `).join('');
@@ -2716,7 +2717,7 @@ async function openCmpDetail(id){
     const tl=d.timeline||[];
     const incidents=d.incidents||[];
     document.getElementById('cmp-modal-content').innerHTML=`
-      <h3 style="margin-bottom:12px;font-size:16px">${c.title}</h3>
+      <h3 style="margin-bottom:12px;font-size:16px">${esc(c.title)}</h3>
       <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px">
         <span class="chip" style="background:${CMP_STATUS_COLOR[c.status]};color:#fff">${(c.status||'').replace(/_/g,' ').toUpperCase()}</span>
         <span class="chip" style="background:${CMP_PRI_COLOR[c.priority]};color:#fff">${(c.priority||'').toUpperCase()}</span>
@@ -2736,21 +2737,21 @@ async function openCmpDetail(id){
       </div>`:''}
 
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:14px;font-size:13px">
-        <div><b>Filed By:</b> ${c.filed_by_name||'?'} (${c.filer_role}) — ${c.filed_by_phone||''}</div>
-        <div><b>Against:</b> ${c.filed_against_name||'?'} — ${c.filed_against_phone||''}</div>
+        <div><b>Filed By:</b> ${esc(c.filed_by_name)||'?'} (${c.filer_role}) — ${esc(c.filed_by_phone)||''}</div>
+        <div><b>Against:</b> ${esc(c.filed_against_name)||'?'} — ${esc(c.filed_against_phone)||''}</div>
         ${c.ride_id?`<div><b>Ride:</b> #${c.ride_id} · ₹${c.fare||0} · ${(c.ride_type||'').toUpperCase()} · ${c.ride_status||''}</div>`:''}
-        ${c.pickup?`<div><b>Route:</b> ${c.pickup} → ${c.drop_location||''}</div>`:''}
-        ${c.assigned_admin?`<div><b>Assigned:</b> ${c.assigned_admin}</div>`:''}
+        ${c.pickup?`<div><b>Route:</b> ${esc(c.pickup)} → ${esc(c.drop_location)||''}</div>`:''}
+        ${c.assigned_admin?`<div><b>Assigned:</b> ${esc(c.assigned_admin)}</div>`:''}
       </div>
-      <div style="background:#f8f8f8;border-radius:10px;padding:12px;margin-bottom:14px;font-size:13px;line-height:1.7">${c.description}</div>
+      <div style="background:#f8f8f8;border-radius:10px;padding:12px;margin-bottom:14px;font-size:13px;line-height:1.7">${esc(c.description)}</div>
 
-      ${c.resolution?`<div style="background:#e8f5e9;border-radius:10px;padding:12px;margin-bottom:14px;font-size:13px"><b>Resolution:</b> ${c.resolution.replace(/_/g,' ')} — ${c.resolution_note||''}</div>`:''}
+      ${c.resolution?`<div style="background:#e8f5e9;border-radius:10px;padding:12px;margin-bottom:14px;font-size:13px"><b>Resolution:</b> ${c.resolution.replace(/_/g,' ')} — ${esc(c.resolution_note)||''}</div>`:''}
 
       <!-- Admin Controls -->
       <div style="background:#fff3e0;border-radius:10px;padding:14px;margin-bottom:14px">
         <div style="font-size:13px;font-weight:700;margin-bottom:10px">Admin Controls</div>
         <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px">
-          <input id="cmp-assign-input" class="input-sm" style="width:160px" placeholder="Assign to admin..." value="${c.assigned_admin||''}">
+          <input id="cmp-assign-input" class="input-sm" style="width:160px" placeholder="Assign to admin..." value="${esc(c.assigned_admin)}">
           <button class="action-btn btn-dark" onclick="cmpAssign('${c.id}')">Assign</button>
         </div>
         <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px">
@@ -2765,7 +2766,7 @@ async function openCmpDetail(id){
               <option value="">-- Resolution --</option>
               ${['favor_complainant','favor_respondent','partial','inconclusive'].map(r=>`<option value="${r}"${r===c.resolution?' selected':''}>${r.replace(/_/g,' ')}</option>`).join('')}
             </select>
-            <textarea id="cmp-res-note" class="input-sm" rows=2 placeholder="Resolution note...">${c.resolution_note||''}</textarea>
+            <textarea id="cmp-res-note" class="input-sm" rows=2 placeholder="Resolution note...">${esc(c.resolution_note)}</textarea>
             <input id="cmp-refund-amt" class="input-sm" type="number" placeholder="Refund ₹ (if any)" style="margin-bottom:6px;width:100%">
           </div>
           <button class="action-btn btn-green" style="white-space:nowrap;padding:8px 14px" onclick="cmpResolve('${c.id}')">✅ Resolve</button>
@@ -2811,15 +2812,15 @@ async function openCmpDetail(id){
 
       <!-- Evidence -->
       ${evidence.length?`<div style="margin-bottom:14px"><div style="font-size:13px;font-weight:700;margin-bottom:8px">Evidence (${evidence.length})</div>
-        <div style="display:flex;gap:8px;flex-wrap:wrap">${evidence.map(e=>`<a href="${e.file_url}" target="_blank"><img src="${e.file_url}" style="width:90px;height:70px;object-fit:cover;border-radius:8px;border:2px solid #e0e0e0" title="${e.caption||''}"></a>`).join('')}</div></div>`:''}
+        <div style="display:flex;gap:8px;flex-wrap:wrap">${evidence.map(e=>`<a href="${e.file_url}" target="_blank"><img src="${e.file_url}" style="width:90px;height:70px;object-fit:cover;border-radius:8px;border:2px solid #e0e0e0" title="${esc(e.caption)}"></a>`).join('')}</div></div>`:''}
 
       <!-- Messages -->
       <div style="margin-bottom:14px">
         <div style="font-size:13px;font-weight:700;margin-bottom:8px">Messages (${msgs.length})</div>
         ${msgs.length===0?'<div style="color:#aaa;font-size:12px">Koi message nahi</div>':msgs.map(m=>`
           <div style="padding:10px 12px;border-radius:8px;margin-bottom:8px;background:${m.sender_role==='admin'?'#e3f2fd':m.sender_role==='customer'?'#fff8e1':'#f1f8e9'}">
-            <div style="font-size:11px;font-weight:700;color:#1565c0;margin-bottom:4px">${m.sender_name} <span style="font-weight:400;color:#888">[${m.sender_role}]</span> · ${new Date(m.created_at).toLocaleString('en-IN',{day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'})}</div>
-            <div style="font-size:13px">${m.message}</div>
+            <div style="font-size:11px;font-weight:700;color:#1565c0;margin-bottom:4px">${esc(m.sender_name)} <span style="font-weight:400;color:#888">[${m.sender_role}]</span> · ${new Date(m.created_at).toLocaleString('en-IN',{day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'})}</div>
+            <div style="font-size:13px">${esc(m.message)}</div>
           </div>
         `).join('')}
       </div>
@@ -2837,7 +2838,7 @@ async function openCmpDetail(id){
       ${tl.length?`<div><div style="font-size:13px;font-weight:700;margin-bottom:8px">Timeline</div>
         ${tl.map(t=>`<div style="display:flex;gap:10px;margin-bottom:8px;font-size:12px">
           <span style="color:#e94560;margin-top:2px">●</span>
-          <span><b>${t.description}</b> <span style="color:#aaa">· ${new Date(t.created_at).toLocaleString('en-IN',{day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'})}</span></span>
+          <span><b>${esc(t.description)}</b> <span style="color:#aaa">· ${new Date(t.created_at).toLocaleString('en-IN',{day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'})}</span></span>
         </div>`).join('')}
       </div>`:''}
     `;
@@ -2947,12 +2948,12 @@ async function loadSosAlerts(){
       const mapLink=(a.lat&&a.lng)?`<a href="https://maps.google.com/?q=${a.lat},${a.lng}" target="_blank">📍 Map</a>`:'-';
       return `<tr style="${!a.resolved?'background:#fff5f5':''}">
         <td style="white-space:nowrap">${new Date(a.created_at).toLocaleString('en-IN',{day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'})}</td>
-        <td>${a.user_name||'-'}<br><span style="font-size:10px;color:#888">${a.user_phone||''}</span></td>
-        <td style="font-size:12px">${a.ride_id?'#'+String(a.ride_id).slice(-6):'-'}${a.pickup?`<br><span style="font-size:10px;color:#888">${a.pickup}</span>`:''}</td>
+        <td>${esc(a.user_name)||'-'}<br><span style="font-size:10px;color:#888">${esc(a.user_phone)||''}</span></td>
+        <td style="font-size:12px">${a.ride_id?'#'+String(a.ride_id).slice(-6):'-'}${a.pickup?`<br><span style="font-size:10px;color:#888">${esc(a.pickup)}</span>`:''}</td>
         <td style="font-size:12px">${mapLink}</td>
         <td><span class="chip" style="background:#c62828;color:#fff">${a.type||'emergency'}</span></td>
         <td><span class="chip" style="background:${a.resolved?'#4CAF50':'#f44336'};color:#fff">${a.resolved?'✅ Resolved':'🔴 OPEN'}</span></td>
-        <td>${!a.resolved?`<button class="action-btn btn-green" onclick="resolveSosAlert(${a.id})">✅ Resolve</button>`:(a.resolved_note?`<span style="font-size:11px;color:#666">${a.resolved_note}</span>`:'-')}</td>
+        <td>${!a.resolved?`<button class="action-btn btn-green" onclick="resolveSosAlert(${a.id})">✅ Resolve</button>`:(a.resolved_note?`<span style="font-size:11px;color:#666">${esc(a.resolved_note)}</span>`:'-')}</td>
       </tr>`;
     }).join('');
   }catch(e){body.innerHTML='<tr><td colspan=7 style="color:#c62828;text-align:center">Error: '+e.message+'</td></tr>';}
@@ -3017,8 +3018,8 @@ async function loadIncidents(){
         <td style="white-space:nowrap">${new Date(i.created_at).toLocaleString('en-IN',{day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'})}</td>
         <td><span class="chip" style="background:${INC_COLOR[i.incident_type]||'#999'};color:#fff">${INC_LABEL[i.incident_type]||i.incident_type}</span></td>
         <td style="font-size:12px">${i.ride_id?'#'+String(i.ride_id).slice(-6):'-'}</td>
-        <td>${i.driver_name||'-'}<br><span style="font-size:10px;color:#888">${i.driver_phone||''}</span></td>
-        <td>${i.customer_name||'-'}<br><span style="font-size:10px;color:#888">${i.customer_phone||''}</span></td>
+        <td>${esc(i.driver_name)||'-'}<br><span style="font-size:10px;color:#888">${esc(i.driver_phone)||''}</span></td>
+        <td>${esc(i.customer_name)||'-'}<br><span style="font-size:10px;color:#888">${esc(i.customer_phone)||''}</span></td>
         <td style="font-size:12px;color:#555">${detail}</td>
         <td><span class="chip" style="background:${i.resolved?'#4CAF50':'#f44336'};color:#fff">${i.resolved?'✅ Resolved':'🔴 Open'}</span></td>
         <td style="white-space:nowrap">
@@ -3058,7 +3059,7 @@ function compensateDriver(incidentId, driverName, fareAmt){
   const compensation = Math.round((fareAmt-commission)*100)/100;
   _compIncId = incidentId;
   document.getElementById('comp-summary').innerHTML =
-    `<b>Driver:</b> ${driverName}<br>`+
+    `<b>Driver:</b> ${esc(driverName)}<br>`+
     `<b>Ride Fare:</b> ₹${fareAmt}<br>`+
     `<b>15% Commission:</b> ₹${commission}<br>`+
     `<hr style="border:none;border-top:1px solid #e0e0e0;margin:8px 0">`+
@@ -3079,7 +3080,7 @@ async function submitCompensate(){
       method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({admin_name:admin})
     });
     if(d.success){
-      el.innerHTML = `<span style="color:#2e7d32">✅ ₹${d.compensation_amount} credited to ${d.driver_name}. Notification sent.</span>`;
+      el.innerHTML = `<span style="color:#2e7d32">✅ ₹${d.compensation_amount} credited to ${esc(d.driver_name)}. Notification sent.</span>`;
       setTimeout(()=>{ closeCompModal(); loadIncidents(); }, 1500);
     } else {
       el.innerHTML = `<span style="color:red">❌ ${d.error||'Unknown error'}</span>`;
@@ -3128,8 +3129,8 @@ async function viewCustomerProfile(id){
     document.getElementById('cmp-modal-content').innerHTML=`
       <h3 style="margin-bottom:12px">👤 Customer Profile</h3>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:16px;font-size:13px">
-        <div><b>Name:</b> ${u.name||'?'}</div>
-        <div><b>Phone:</b> ${u.phone||'?'}</div>
+        <div><b>Name:</b> ${esc(u.name)||'?'}</div>
+        <div><b>Phone:</b> ${esc(u.phone)||'?'}</div>
         <div><b>Trust Score:</b> <span style="color:${trustColor};font-weight:800">${u.trust_score||100}/100</span></div>
         <div><b>Status:</b> <span style="color:${u.booking_restricted?'#c62828':'#2e7d32'};font-weight:700">${u.booking_restricted?'🚫 RESTRICTED':'✅ Active'}</span></div>
       </div>
@@ -3138,14 +3139,14 @@ async function viewCustomerProfile(id){
         <div class="stat-card"><div class="stat-icon">💰</div><div class="stat-value">${rupee(rs.total_spent||0)}</div><div class="stat-label">Total Spent</div></div>
         <div class="stat-card red"><div class="stat-icon">❌</div><div class="stat-value">${rs.cancelled_rides||0}</div><div class="stat-label">Cancelled</div></div>
       </div>
-      ${u.booking_restricted?`<div style="background:#ffebee;border-radius:10px;padding:12px;margin-bottom:14px;font-size:13px"><b>Restriction Reason:</b> ${u.booking_restricted_reason||'—'}<br><br>
+      ${u.booking_restricted?`<div style="background:#ffebee;border-radius:10px;padding:12px;margin-bottom:14px;font-size:13px"><b>Restriction Reason:</b> ${esc(u.booking_restricted_reason)||'—'}<br><br>
         <button class="action-btn btn-green" onclick="unrestrictCustomer('${id}')">✅ Unrestrict Account</button></div>`:''}
       <div style="font-size:14px;font-weight:800;margin-bottom:8px">Ride History (${d.rides?.length||0})</div>
       <div style="max-height:220px;overflow-y:auto;margin-bottom:16px">
       ${(d.rides||[]).map(r=>`<div style="background:#f8f8f8;border-radius:8px;padding:10px;margin-bottom:8px;font-size:12px;cursor:pointer" onclick="viewRideDetail('${r.id}')">
-        <b>${r.pickup||'?'}</b> → <b>${r.drop_location||'?'}</b>
+        <b>${esc(r.pickup)||'?'}</b> → <b>${esc(r.drop_location)||'?'}</b>
         <span style="float:right;color:#2e7d32;font-weight:700">${rupee(r.fare)}</span><br>
-        <span style="color:#888">${new Date(r.created_at).toLocaleString('en-IN',{day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'})} · ${r.driver_name||'No driver'}</span>
+        <span style="color:#888">${new Date(r.created_at).toLocaleString('en-IN',{day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'})} · ${esc(r.driver_name)||'No driver'}</span>
         <span style="float:right;color:${r.status==='completed'?'#2e7d32':r.status==='cancelled'?'#c62828':'#1565C0'}">${r.status}</span>
       </div>`).join('')||'<div style="color:#aaa;text-align:center">Koi ride nahi</div>'}
       </div>
@@ -3220,8 +3221,8 @@ async function loadCustomerRewards() {
     tbody.innerHTML = d.customers.map(c => {
       const totalRewards = parseFloat(c.scratch_rewards||0) + parseFloat(c.referral_rewards||0);
       return `<tr>
-        <td>${c.name||'—'}</td>
-        <td>${c.phone}</td>
+        <td>${esc(c.name)||'—'}</td>
+        <td>${esc(c.phone)}</td>
         <td style="text-align:center;font-weight:700">${c.rides_completed||0}</td>
         <td class="amount-green">₹${parseFloat(c.total_fare_paid||0).toFixed(0)}</td>
         <td>₹${parseFloat(c.scratch_rewards||0).toFixed(0)}</td>
@@ -3240,8 +3241,8 @@ async function loadDriverEarnings() {
     const d = await aJson('/api/admin/driver-earnings-detail');
     if (!d.drivers || !d.drivers.length) { tbody.innerHTML = '<tr><td colspan=9 style="text-align:center;color:#999">No data</td></tr>'; return; }
     tbody.innerHTML = d.drivers.map(dr => `<tr>
-      <td>${dr.name||'—'}</td>
-      <td>${dr.phone}</td>
+      <td>${esc(dr.name)||'—'}</td>
+      <td>${esc(dr.phone)}</td>
       <td>${dr.vehicle_type||'—'}</td>
       <td style="text-align:center;font-weight:700">${dr.rides_completed||0}</td>
       <td class="amount-green">₹${parseFloat(dr.total_fare_generated||0).toFixed(0)}</td>
@@ -3262,8 +3263,8 @@ async function loadReferralDetail() {
     tbody.innerHTML = d.referrals.map(r => `<tr>
       <td>${new Date(r.created_at).toLocaleDateString('en-IN')}</td>
       <td><code>${r.referral_code}</code></td>
-      <td>${r.referrer_name||'—'}<br><span style="color:#888;font-size:10px">${r.referrer_phone}</span></td>
-      <td>${r.referred_name||'—'}<br><span style="color:#888;font-size:10px">${r.referred_phone}</span></td>
+      <td>${esc(r.referrer_name)||'—'}<br><span style="color:#888;font-size:10px">${esc(r.referrer_phone)}</span></td>
+      <td>${esc(r.referred_name)||'—'}<br><span style="color:#888;font-size:10px">${esc(r.referred_phone)}</span></td>
       <td style="text-align:center;font-weight:700">${r.referred_rides_done||0}</td>
       <td class="amount-green">₹${parseFloat(r.reward_amount||0).toFixed(0)}</td>
       <td><span class="chip ${r.status==='completed'?'badge-verified':'badge-pending'}">${r.status}</span></td>
@@ -3661,7 +3662,7 @@ function renderSupDetail(data) {
         '</div>' +
       '</div>';
   } else {
-    actionBtns = '<div style="background:#f0fdf4;border:1px solid #bbf7d0;border-radius:10px;padding:10px 14px;margin:12px 0;font-size:13px;color:#059669">✅ Resolved — ' + (t.resolution_note || '') + '</div>';
+    actionBtns = '<div style="background:#f0fdf4;border:1px solid #bbf7d0;border-radius:10px;padding:10px 14px;margin:12px 0;font-size:13px;color:#059669">✅ Resolved — ' + esc(t.resolution_note || '') + '</div>';
   }
 
   var enforceBtns = '<div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:16px">' +
@@ -3683,7 +3684,7 @@ function renderSupDetail(data) {
   var rideHtml = rc
     ? '<div style="background:#f5f3ff;border:1px solid #ddd6fe;border-radius:10px;padding:10px 14px;margin-bottom:12px;font-size:12px">' +
         '<div style="font-weight:600;color:#7C3AED;margin-bottom:4px">🛺 Linked Ride #' + rc.id + '</div>' +
-        '<div style="color:#374151">📍 ' + (rc.pickup||'') + ' → ' + (rc.drop_location||'') + '</div>' +
+        '<div style="color:#374151">📍 ' + esc(rc.pickup||'') + ' → ' + esc(rc.drop_location||'') + '</div>' +
         '<div style="color:#6B7280;margin-top:2px">Fare: ₹' + (rc.fare||'—') + ' · ' + (rc.status||'—') + ' · ' + fmt(rc.created_at) + '</div>' +
       '</div>'
     : '';
@@ -3694,13 +3695,13 @@ function renderSupDetail(data) {
     var isInternal = m.is_internal;
     var bg     = isSystem ? '#f9fafb' : isInternal ? '#fffbeb' : isAdmin ? '#eff6ff' : '#fff';
     var border = isSystem ? '#e5e7eb' : isInternal ? '#fcd34d' : isAdmin ? '#bfdbfe' : '#e5e7eb';
-    var label  = isSystem ? '🔧 System' : isInternal ? '🔒 ' + m.sender_name + ' (internal)' : isAdmin ? '👤 ' + m.sender_name : '🙋 User';
+    var label  = isSystem ? '🔧 System' : isInternal ? '🔒 ' + esc(m.sender_name) + ' (internal)' : isAdmin ? '👤 ' + esc(m.sender_name) : '🙋 User';
     return '<div style="margin-bottom:10px;background:' + bg + ';border:1px solid ' + border + ';border-radius:10px;padding:10px 12px">' +
       '<div style="display:flex;justify-content:space-between;margin-bottom:4px">' +
         '<span style="font-size:11px;font-weight:600;color:#374151">' + label + '</span>' +
         '<span style="font-size:10px;color:#9CA3AF">' + fmt(m.created_at) + '</span>' +
       '</div>' +
-      '<div style="font-size:13px;color:#1F2937;white-space:pre-wrap">' + (m.message||'').replace(/</g,'&lt;') + '</div>' +
+      '<div style="font-size:13px;color:#1F2937;white-space:pre-wrap">' + esc(m.message||'') + '</div>' +
     '</div>';
   }).join('')
   : '<div style="color:#9CA3AF;font-size:12px;text-align:center;padding:12px">No messages yet</div>';
@@ -3732,7 +3733,7 @@ function renderSupDetail(data) {
           '<span style="background:' + pc + '18;color:' + pc + ';font-size:11px;font-weight:600;padding:3px 8px;border-radius:20px">' + t.priority + '</span>' +
         '</div>' +
       '</div>' +
-      '<div style="font-size:13px;color:#374151;margin-bottom:6px;line-height:1.5">' + (t.description||'').replace(/</g,'&lt;') + '</div>' +
+      '<div style="font-size:13px;color:#374151;margin-bottom:6px;line-height:1.5">' + esc(t.description||'') + '</div>' +
       '<div style="font-size:12px;color:#6B7280;margin-bottom:4px">📱 ' + t.user_phone + (t.ride_id?' · Ride #'+t.ride_id:'') + (slaFull?' · '+slaFull:'') + '</div>' +
       actionInfo +
       '<hr style="border:none;border-top:1px solid #f0f0f0;margin:10px 0">' +

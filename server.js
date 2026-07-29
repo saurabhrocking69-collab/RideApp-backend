@@ -33,6 +33,7 @@ const { rideQueue, assignRideToNextDriver, broadcastToRadius } = require('./work
 const { driverLocations } = require('./services/matching');
 const { startLocationJobs } = require('./services/locationIntelligence');
 const db                  = require('./config/db');
+const { clearRide: clearRideCache } = require('./services/rideCache');
 
 // ── Middleware ───────────────────────────────────
 const adminAuth = require('./middleware/adminAuth');
@@ -419,6 +420,7 @@ app.post('/debug/cancel-stuck-rides', debugAuth, async (req, res) => {
       `UPDATE rides SET status='cancelled', cancelled_by='admin' WHERE passenger_id=$1 AND status IN ('requested','matched','arrived') RETURNING id, status, ride_type`,
       [u.rows[0].id]
     );
+    for (const row of result.rows) clearRideCache(row.id).catch(() => {});
     res.json({ cancelled: result.rows });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -1360,6 +1362,7 @@ setTimeout(async () => {
     );
     for (const r of stuckMatched.rows) {
       emitToRoom('ride_' + r.id, 'rideUpdate', { rideId: r.id, status: 'cancelled', reason: 'auto_timeout' });
+      clearRideCache(r.id).catch(() => {});
     }
     if (stuckMatched.rows.length) console.log(`✅ Cancelled ${stuckMatched.rows.length} stuck matched/arrived rides`);
   } catch (_e) {}
@@ -1404,6 +1407,7 @@ setInterval(async () => {
             sendFCM(u.rows[0].phone, '😔 No Driver Found', 'No driver is available right now — please try again shortly.', { type: 'no_driver_found', ride_id: String(row.id) }, { role: 'customer' }).catch(() => {});
           }
           emitToRoom('ride_' + row.id, 'rideUpdate', { rideId: row.id, status: 'cancelled', reason: 'no_driver' });
+          clearRideCache(row.id).catch(() => {});
         }
       } catch (_e) {}
     }
@@ -1424,6 +1428,7 @@ setInterval(async () => {
         if (row.pre_accepted_driver_phone) {
           emitToRoom('driver_' + row.pre_accepted_driver_phone, 'preRideCancelled', { rideId: row.id });
         }
+        clearRideCache(row.id).catch(() => {});
       }
       console.log(`🧹 Auto-cancelled ${stalePreAssignedRows.rows.length} stuck pre_assigned rides`);
     }
@@ -1445,6 +1450,7 @@ setInterval(async () => {
     );
     for (const row of stuckMatched.rows) {
       emitToRoom('ride_' + row.id, 'rideUpdate', { rideId: row.id, status: 'cancelled', reason: 'auto_timeout' });
+      clearRideCache(row.id).catch(() => {});
       try {
         const pRes = await db.query('SELECT phone FROM users WHERE id=$1', [row.passenger_id]);
         if (pRes.rows[0]) sendFCM(pRes.rows[0].phone, '🚫 Ride Cancelled', 'Lost connection with the driver. Please try again.', { type: 'ride_cancelled', ride_id: String(row.id) }, { role: 'customer' }).catch(() => {});
@@ -1476,6 +1482,7 @@ setInterval(async () => {
     );
     for (const row of stuckStarted.rows) {
       emitToRoom('ride_' + row.id, 'rideUpdate', { rideId: row.id, status: 'cancelled', reason: 'auto_timeout' });
+      clearRideCache(row.id).catch(() => {});
     }
     if (stuckStarted.rows.length) console.log(`🧹 Auto-cancelled ${stuckStarted.rows.length} stuck started rides (>4h)`);
   } catch (_e) {}
@@ -1520,6 +1527,7 @@ setInterval(async () => {
          AND created_at < NOW() - INTERVAL '10 minutes'
        RETURNING id`
     );
+    for (const row of r.rows) clearRideCache(row.id).catch(() => {});
     if (r.rowCount > 0) console.log(`[CLEANUP] Auto-cancelled ${r.rowCount} stale requested ride(s)`);
   } catch (_e) {}
 }, 2 * 60 * 1000); // runs every 2 minutes

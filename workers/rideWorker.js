@@ -394,14 +394,26 @@ async function activateQueuedRide(driverPhone) {
   if (!driverRes.rows[0]) return;
   const driver = driverRes.rows[0];
 
-  // Assign ride to driver
-  await db.query(
+  // Assign ride to driver — atomic guard against double-booking: don't force-match
+  // this queued ride if the driver already picked up a different active ride in
+  // the gap between queuing and now (e.g. accepted a fresh broadcast the instant
+  // their previous ride completed, before this queued one got a chance to fire).
+  // Leaving it un-matched here is safe: it stays 'pre_assigned' and this function
+  // gets called again the next time the driver frees up.
+  const assign = await db.query(
     `UPDATE rides
      SET status = 'matched', driver_id = (SELECT id FROM users WHERE phone = $1),
          matched_at = NOW(), pre_accepted_driver_phone = NULL, pre_accepted_at = NULL
-     WHERE id = $2 AND status = 'pre_assigned'`,
+     WHERE id = $2 AND status = 'pre_assigned'
+       AND NOT EXISTS (
+         SELECT 1 FROM rides r2
+         WHERE r2.driver_id = (SELECT id FROM users WHERE phone = $1)
+           AND r2.status IN ('matched', 'arrived', 'started')
+       )
+     RETURNING id`,
     [driverPhone, pr.id]
   );
+  if (!assign.rows[0]) return;
 
   const driverPayload = {
     name: driver.name, phone: driver.phone, vehicle_type: driver.vehicle_type,

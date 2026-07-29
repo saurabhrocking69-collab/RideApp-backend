@@ -440,11 +440,18 @@ router.get('/ride-disputes', async (req, res) => {
 router.post('/parcel-disputes/resolve', async (req, res) => {
   const { dispute_id, refund_customer, penalize_driver, suspend_driver, note } = req.body;
   try {
-    const dr = await db.query("SELECT * FROM ride_disputes WHERE id=$1 AND status='pending' AND dispute_type='parcel_not_delivered'", [dispute_id]);
-    if (!dr.rows[0]) return res.status(404).json({ error: 'Dispute not found or already resolved' });
-    const d = dr.rows[0];
     const refund   = Math.max(0, parseFloat(refund_customer) || 0);
     const penalty  = Math.max(0, parseFloat(penalize_driver) || 0);
+    // Atomically CLAIM the dispute first (single UPDATE guarded on
+    // status='pending') before doing any wallet movement — a double-click or
+    // two admins acting on the same ticket can only have one request win this,
+    // the other gets 0 rows back and bails before touching any money.
+    const dr = await db.query(
+      "UPDATE ride_disputes SET status='resolved', admin_refund=$1, admin_penalty=$2, admin_note=$3, resolved_at=NOW() WHERE id=$4 AND status='pending' AND dispute_type='parcel_not_delivered' RETURNING *",
+      [refund, penalty, note || '', dispute_id]
+    );
+    if (!dr.rows[0]) return res.status(404).json({ error: 'Dispute not found or already resolved' });
+    const d = dr.rows[0];
 
     if (refund > 0 && d.customer_phone) await refundToWallet(null, d.customer_phone, refund, d.ride_id, 'Parcel not delivered — refund (admin decision)').catch(() => {});
 
@@ -473,11 +480,6 @@ router.post('/parcel-disputes/resolve', async (req, res) => {
       await db.query(`UPDATE users SET is_suspended = true, suspend_reason = $1 WHERE phone = $2`, [note || 'Parcel delivery dispute — found guilty', d.driver_phone]);
     }
 
-    await db.query(
-      "UPDATE ride_disputes SET status='resolved', admin_refund=$1, admin_penalty=$2, admin_note=$3, resolved_at=NOW() WHERE id=$4",
-      [refund, penalty, note || '', dispute_id]
-    );
-
     if (d.customer_phone) sendFCM(d.customer_phone, '✅ Report Resolved', refund > 0 ? `₹${refund} refunded to your wallet.` : 'After review, no refund was issued.', { type: 'advance_refunded', ride_id: String(d.ride_id) }, { role: 'customer' }).catch(() => {});
     if (d.driver_phone) sendFCM(d.driver_phone, penalty > 0 ? '⚠️ Delivery Dispute Resolved' : '✅ Delivery Dispute Resolved', penalty > 0 ? `₹${penalty} deducted from your account for an unresolved delivery dispute.${suspend_driver ? ' Your account has been suspended.' : ''}` : 'A delivery dispute against you was reviewed and closed with no penalty.', { type: 'ride_cancelled' }, { role: 'driver' }).catch(() => {});
 
@@ -497,13 +499,18 @@ router.post('/ride-disputes/resolve', async (req, res) => {
     const drvCredit = Math.max(0, parseFloat(driver_credit) || 0);
     const penalty = Math.max(0, parseFloat(d.held_advance) - refund);
 
+    // Atomically CLAIM the dispute (WHERE status='pending' guard) BEFORE any
+    // wallet movement — a double-click/two-admins race can only have one
+    // request's claim succeed; the other gets 0 rows and bails before paying out.
+    const claim = await db.query(
+      "UPDATE ride_disputes SET status='resolved', admin_penalty=$1, admin_refund=$2, driver_credit=$3, admin_note=$4, resolved_at=NOW() WHERE id=$5 AND status='pending' RETURNING id",
+      [penalty, refund, drvCredit, note || '', dispute_id]
+    );
+    if (!claim.rows[0]) return res.status(404).json({ error: 'Dispute not found or already resolved' });
+
     if (refund > 0 && d.customer_phone) await refundToWallet(null, d.customer_phone, refund, d.ride_id, 'Emergency ride refund (admin decision)').catch(() => {});
     if (drvCredit > 0 && d.driver_phone) await creditDriverWallet(null, d.driver_phone, drvCredit, 'Emergency ride compensation').catch(() => {});
 
-    await db.query(
-      "UPDATE ride_disputes SET status='resolved', admin_penalty=$1, admin_refund=$2, driver_credit=$3, admin_note=$4, resolved_at=NOW() WHERE id=$5",
-      [penalty, refund, drvCredit, note || '', dispute_id]
-    );
     await db.query("UPDATE rides SET advance_status = CASE WHEN $1 >= held.hb THEN 'forfeited' WHEN $1 > 0 THEN 'partial_refund' ELSE 'refunded' END FROM (SELECT $2::numeric AS hb) held WHERE id=$3",
       [penalty, parseFloat(d.held_advance), d.ride_id]).catch(() => {});
 
@@ -534,20 +541,28 @@ router.post('/resolve-dispute', async (req, res) => {
         const commRate = parseFloat(fsRate.rows[0]?.hourly_commission_rate || 12) / 100;
         const commission = Math.round(totalFare * commRate * 100) / 100;
         const driverEarning = Math.round((totalFare - commission) * 100) / 100;
+        // Atomically CLAIM the dispute (WHERE dispute_raised=true guard) BEFORE
+        // crediting the driver's wallet — a double-click can only have one
+        // request's claim succeed.
+        const claim = await client.query(
+          `UPDATE hourly_bookings SET status='completed', ended_at=NOW(), driver_earning=$1, platform_fee=$2, total_fare=$3, payment_status='released', dispute_raised=false WHERE id=$4 AND dispute_raised=true RETURNING id`,
+          [driverEarning, commission, totalFare, booking_id]
+        );
+        if (!claim.rows[0]) { await client.query('ROLLBACK'); return res.json({ success: false, message: 'Dispute already resolved' }); }
         const driverUser = await client.query('SELECT id FROM users WHERE phone=$1', [b.driver_phone]);
         if (driverUser.rows[0]) await client.query('UPDATE driver_wallet SET balance=balance+$1, total_earned=total_earned+$1 WHERE driver_id=$2', [driverEarning, driverUser.rows[0].id]);
-        await client.query(`UPDATE hourly_bookings SET status='completed', ended_at=NOW(), driver_earning=$1, platform_fee=$2, total_fare=$3, payment_status='released', dispute_raised=false WHERE id=$4`, [driverEarning, commission, totalFare, booking_id]);
         await client.query('COMMIT');
         sendFCM(b.driver_phone, '✅ Dispute Resolved in Your Favour', `₹${driverEarning.toFixed(0)} added to your wallet!`, {}, { role: 'driver' });
         return res.json({ success: true, resolved: 'driver', driver_earning: driverEarning });
       } catch (e) { await client.query('ROLLBACK'); throw e; } finally { client.release(); }
     } else {
+      const claim = await db.query("UPDATE hourly_bookings SET status='cancelled', payment_status='refunded', dispute_raised=false WHERE id=$1 AND dispute_raised=true RETURNING id", [booking_id]);
+      if (!claim.rows[0]) return res.json({ success: false, message: 'Dispute already resolved' });
       const cu = await db.query('SELECT id FROM users WHERE phone=$1', [b.customer_phone]);
       if (cu.rows[0]) {
         await db.query('UPDATE customer_wallet SET balance=balance+$1 WHERE user_id=$2', [b.base_fare, cu.rows[0].id]);
         await db.query("INSERT INTO transactions (user_id,type,amount,description) VALUES ($1,'credit',$2,'Hourly dispute resolved - full refund')", [cu.rows[0].id, b.base_fare]);
       }
-      await db.query("UPDATE hourly_bookings SET status='cancelled', payment_status='refunded', dispute_raised=false WHERE id=$1", [booking_id]);
       sendFCM(b.customer_phone, '✅ Dispute Resolved', `₹${b.base_fare} refunded to your wallet!`, {}, { role: 'customer' });
       sendFCM(b.driver_phone, '❌ Dispute Against You', 'Customer has been refunded', {}, { role: 'driver' });
       return res.json({ success: true, resolved: 'customer', refunded: b.base_fare });

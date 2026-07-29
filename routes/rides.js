@@ -497,27 +497,9 @@ router.post('/start', async (req, res) => {
   }
 });
 
-// POST /api/rides/cancel (legacy — prefer cancel-smart)
-router.post('/cancel', async (req, res) => {
-  const { ride_id, reason, driver_phone } = req.body;
-  try {
-    if (driver_phone) {
-      const owner = await db.query(`SELECT 1 FROM rides r JOIN users u ON r.driver_id=u.id WHERE r.id=$1 AND u.phone=$2`, [ride_id, driver_phone]);
-      if (!owner.rows[0]) return res.status(403).json({ error: 'This ride does not belong to you' });
-    }
-    const cancelRes = await db.query(
-      "UPDATE rides SET status = 'cancelled' WHERE id = $1 AND status IN ('requested', 'matched', 'arrived') RETURNING id",
-      [ride_id]
-    );
-    if (!cancelRes.rows[0]) return res.json({ success: false, message: 'Ride is already started, completed, or cancelled' });
-    const rideInfo = await db.query('SELECT p.phone AS passenger_phone FROM rides r JOIN users p ON r.passenger_id=p.id WHERE r.id=$1', [ride_id]);
-    if (rideInfo.rows[0]) {
-      emitRideUpdate(ride_id, { status: 'cancelled' });
-      sendFCM(rideInfo.rows[0].passenger_phone, '🚫 Ride Cancelled', 'Driver cancelled your ride', { type: 'ride_cancelled', ride_id: String(ride_id) }, { role: 'customer' }).catch(() => {});
-    }
-    res.json({ success: true, message: 'Trip cancelled', reason });
-  } catch (err) { console.error('[rides]', err.message); res.status(500).json({ error: 'Something went wrong — please try again' }); }
-});
+// (Legacy POST /api/rides/cancel removed — had no caller-identity check for
+// customer cancels and no Redis cache invalidation; confirmed zero callers
+// across both apps and the admin portal. Use /cancel-smart instead.)
 
 // Helper: load cancel settings from DB (falls back to defaults if table missing)
 async function getCancelSettings() {
@@ -666,15 +648,28 @@ router.post('/cancel-smart', async (req, res) => {
       // their next top-up or ride payment.
       const isAdvancePaidRide = parseFloat(ride.advance_amount || 0) > 0 && ride.advance_status === 'paid';
       if (penalty > 0 && !isAdvancePaidRide && ride.passenger_id) {
-        await db.query(
-          `INSERT INTO customer_wallet (user_id, balance) VALUES ($1, $2)
-           ON CONFLICT (user_id) DO UPDATE SET balance = customer_wallet.balance - $3, updated_at = NOW()`,
-          [ride.passenger_id, -penalty, penalty]
-        ).catch(e => console.error('[cancel-smart] wallet charge failed:', e.message));
-        await db.query(
-          `INSERT INTO transactions (user_id, type, amount, description) VALUES ($1, 'debit', $2, $3)`,
-          [ride.passenger_id, penalty, `Cancellation charge`]
-        ).catch(e => console.error('[cancel-smart] transaction log failed:', e.message));
+        // Wallet debit + its transaction-history log as one atomic unit —
+        // previously these were two independently-.catch()'d queries, so a
+        // failure on the second could leave a real debit with no ledger entry
+        // (invisible in the customer's history), or a failure on the first
+        // left the fee silently never collected with no flag to retry/reconcile.
+        const feeClient = await db.connect();
+        try {
+          await feeClient.query('BEGIN');
+          await feeClient.query(
+            `INSERT INTO customer_wallet (user_id, balance) VALUES ($1, $2)
+             ON CONFLICT (user_id) DO UPDATE SET balance = customer_wallet.balance - $3, updated_at = NOW()`,
+            [ride.passenger_id, -penalty, penalty]
+          );
+          await feeClient.query(
+            `INSERT INTO transactions (user_id, type, amount, description) VALUES ($1, 'debit', $2, $3)`,
+            [ride.passenger_id, penalty, `Cancellation charge`]
+          );
+          await feeClient.query('COMMIT');
+        } catch (e) {
+          await feeClient.query('ROLLBACK').catch(() => {});
+          console.error('[cancel-smart] cancellation fee charge failed, not collected:', e.message);
+        } finally { feeClient.release(); }
       }
 
       const newTrust = Math.max(0, (metrics.trust_score || 100) - (penalty > 0 ? 5 : 2));
@@ -773,8 +768,13 @@ router.post('/report-cancel', async (req, res) => {
     if (ride.status !== 'started') return res.status(400).json({ error: 'Only an in-progress trip can be reported for emergency cancel' });
 
     const heldAdvance = parseFloat(ride.advance_amount || 0);
-    await db.query("UPDATE rides SET status='cancelled', cancel_reason=$1, advance_status = CASE WHEN COALESCE(advance_amount,0) > 0 THEN 'held' ELSE advance_status END WHERE id=$2",
+    // WHERE status='started' guard (not just the SELECT check above) so a
+    // concurrent /complete landing in this exact window can't get stomped
+    // back into 'cancelled' by a stale read.
+    const upd = await db.query(
+      "UPDATE rides SET status='cancelled', cancel_reason=$1, advance_status = CASE WHEN COALESCE(advance_amount,0) > 0 THEN 'held' ELSE advance_status END WHERE id=$2 AND status='started' RETURNING id",
       [`emergency_report: ${reason || 'unspecified'}`, ride_id]);
+    if (!upd.rows[0]) return res.status(400).json({ error: 'This trip already finished — could not report it' });
     await db.query(
       `INSERT INTO ride_disputes (ride_id, customer_phone, driver_phone, reason, held_advance, fare, status)
        VALUES ($1,$2,$3,$4,$5,$6,'pending')`,

@@ -475,10 +475,18 @@ router.post('/commission-pay-verify', async (req, res) => {
       return res.status(400).json({ error: 'Missing payment fields' });
     const expected = crypto.createHmac('sha256', process.env.RAZORPAY_KEY_SECRET).update(`${razorpay_order_id}|${razorpay_payment_id}`).digest('hex');
     if (expected !== razorpay_signature) return res.status(400).json({ error: 'Invalid payment signature' });
-    const payRow = await db.query(`SELECT amount FROM driver_commission_payments WHERE payment_id = $1 AND driver_phone = $2`, [razorpay_order_id, phone]);
-    if (!payRow.rows[0]) return res.status(400).json({ error: 'Order not found' });
-    const amount = parseFloat(payRow.rows[0].amount);
-    await db.query(`UPDATE driver_commission_payments SET status = 'paid', payment_id = $1 WHERE payment_id = $2 AND driver_phone = $3`, [razorpay_payment_id, razorpay_order_id, phone]);
+    // Atomic claim: only proceeds if this order hasn't already been marked
+    // paid — closes a race where a client retry or a webhook+callback both
+    // firing for the same payment could otherwise both pass a read-then-write
+    // check and double-decrement pending_commission (wiping real debt for free).
+    const claim = await db.query(
+      `UPDATE driver_commission_payments SET status = 'paid', payment_id = $1
+       WHERE payment_id = $2 AND driver_phone = $3 AND status != 'paid'
+       RETURNING amount`,
+      [razorpay_payment_id, razorpay_order_id, phone]
+    );
+    if (!claim.rows[0]) return res.status(400).json({ error: 'Order not found or already processed' });
+    const amount = parseFloat(claim.rows[0].amount);
     await db.query(
       `UPDATE driver_wallet SET pending_commission = GREATEST(0, COALESCE(pending_commission,0) - $1)
        WHERE driver_id = (SELECT id FROM users WHERE phone = $2)`,

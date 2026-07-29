@@ -43,18 +43,47 @@ router.post('/add', async (req, res) => {
 
 // POST /api/wallet/pay
 router.post('/pay', async (req, res) => {
-  const { phone, amount, ride_id } = req.body;
+  const { phone, ride_id } = req.body;
   const client = await db.connect();
   try {
     const user = await client.query('SELECT id FROM users WHERE phone = $1', [phone]);
-    if (user.rows.length === 0) { client.release(); return res.status(404).json({ error: 'User not found' }); }
+    if (user.rows.length === 0) return res.status(404).json({ error: 'User not found' });
     const userId = user.rows[0].id;
     await client.query('BEGIN');
+
+    // Never trust a client-supplied amount — recompute the real amount owed
+    // server-side from the ride itself. Also atomically CLAIM the ride for
+    // payment here (not just check-then-debit): completeRidePayment has its
+    // own atomic idempotency guard for the commission/driver-credit side, but
+    // that runs AFTER this wallet debit, in a separate call — without a claim
+    // here too, two concurrent /pay calls for the same ride_id (double-tap,
+    // client retry) would both pass a plain read-check and both debit the
+    // customer's wallet, even though only one completeRidePayment run
+    // actually settles anything. 'processing' is a transient marker;
+    // completeRidePayment's own guard (payment_status != 'completed') still
+    // lets it through right after.
+    let amount;
+    if (ride_id) {
+      const rideRow = await client.query('SELECT fare, discount FROM rides WHERE id = $1', [ride_id]);
+      if (!rideRow.rows[0]) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'Ride not found' }); }
+      const claim = await client.query(
+        `UPDATE rides SET payment_status = 'processing' WHERE id = $1 AND payment_status IS DISTINCT FROM 'completed' AND payment_status IS DISTINCT FROM 'processing' RETURNING id`,
+        [ride_id]
+      );
+      if (!claim.rows[0]) {
+        await client.query('ROLLBACK');
+        return res.json({ success: true, already_paid: true, balance: null });
+      }
+      amount = Math.max(0, parseFloat(rideRow.rows[0].fare) - parseFloat(rideRow.rows[0].discount || 0));
+    } else {
+      amount = Math.max(0, parseFloat(req.body.amount) || 0);
+    }
+    if (!(amount > 0)) { await client.query('ROLLBACK'); return res.status(400).json({ error: 'Nothing to pay' }); }
+
     const wallet = await client.query('SELECT balance FROM customer_wallet WHERE user_id = $1 FOR UPDATE', [userId]);
     const balance = wallet.rows[0] ? parseFloat(wallet.rows[0].balance) : 0;
     if (balance < amount) {
       await client.query('ROLLBACK');
-      client.release();
       return res.json({ success: false, message: 'Insufficient wallet balance', balance });
     }
     const result = await client.query(
