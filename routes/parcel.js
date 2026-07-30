@@ -212,10 +212,17 @@ router.post('/book', userAuth, async (req, res) => {
     // normal individual broadcast exactly as before batching existed.
     const _pLat = pickup_lat || null, _pLng = pickup_lng || null;
     setTimeout(async () => {
+      let batched = false;
       try {
-        const batched = await tryBatchDispatch(rideId, vehicle_type, size, _pLat, _pLng);
-        if (!batched) await assignRideToNextDriver(rideId, _pLat, _pLng, vehicle_type);
-      } catch (e) { console.error('[PARCEL_ASSIGN_FAIL]', e.message); }
+        batched = await tryBatchDispatch(rideId, vehicle_type, size, _pLat, _pLng);
+      } catch (e) { console.error('[PARCEL_BATCH_FAIL]', e.message); }
+      // Batching is a best-effort optimization — if it throws for any reason
+      // (schema drift, DB hiccup, etc.), the parcel must still get dispatched
+      // normally instead of being silently stranded in 'requested'.
+      if (!batched) {
+        try { await assignRideToNextDriver(rideId, _pLat, _pLng, vehicle_type); }
+        catch (e) { console.error('[PARCEL_ASSIGN_FAIL]', e.message); }
+      }
     }, 2000);
 
     res.json({

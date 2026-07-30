@@ -166,17 +166,27 @@ async function tryBatchDispatch(rideId, vehicleType, packageSize, pickupLat, pic
     return false;
   } finally { client.release(); }
 
-  // Fetch both full ride rows for stop-sequencing + broadcast payload
-  const ridesRes = await db.query(
-    `SELECT r.*, u.phone AS passenger_phone FROM rides r JOIN users u ON r.passenger_id = u.id WHERE r.id IN ($1,$2)`,
-    [rideId, partner.id]
-  );
-  const rideA = ridesRes.rows.find(r => r.id === rideId);
-  const rideB = ridesRes.rows.find(r => r.id === partner.id);
-  if (!rideA || !rideB) return true; // claimed but data fetch failed — leave as batch_offered, admin can see it stuck rather than silently falling back and risking a double-broadcast
+  // Fetch both full ride rows for stop-sequencing + broadcast payload. Both
+  // rides are already committed as 'batch_offered' at this point — if
+  // anything below throws, release them back to 'requested' so the caller's
+  // normal-dispatch fallback (or the next poll) can still pick them up,
+  // instead of leaving them stuck with no active offer and no driver.
+  try {
+    const ridesRes = await db.query(
+      `SELECT r.*, u.phone AS passenger_phone FROM rides r JOIN users u ON r.passenger_id = u.id WHERE r.id IN ($1,$2)`,
+      [rideId, partner.id]
+    );
+    const rideA = ridesRes.rows.find(r => r.id === rideId);
+    const rideB = ridesRes.rows.find(r => r.id === partner.id);
+    if (!rideA || !rideB) { await expireBatchOffer(batchId); return false; }
 
-  await broadcastBatchOffer(batchId, vehicleType, rideA, rideB, pickupLat, pickupLng);
-  return true;
+    await broadcastBatchOffer(batchId, vehicleType, rideA, rideB, pickupLat, pickupLng);
+    return true;
+  } catch (e) {
+    console.error('[batching] post-claim failed, releasing:', e.message);
+    await expireBatchOffer(batchId).catch(() => {});
+    return false;
+  }
 }
 
 // ── Broadcast the combined offer to eligible drivers ─────────────────────────
