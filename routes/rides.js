@@ -821,6 +821,19 @@ router.post('/complete', async (req, res) => {
     if (ride.is_parcel && ride.delivery_otp !== delivery_otp)
       return res.status(400).json({ error: 'Incorrect delivery OTP!' });
 
+    // A parcel with a live RTO sub-flow must not be completed as a normal
+    // delivery out from under it — the driver app's UI already hides the
+    // delivery-OTP input in both states (renderParcelStartedControls), but
+    // that's client-side only; this is the actual enforcement. Without it, a
+    // direct /complete call while return_status='pending_decision' would
+    // silently release full payment to the driver while the sender's
+    // decision is still open, or while return_status='accepted' would
+    // complete it as delivered when the sender explicitly asked for it back.
+    if (ride.is_parcel && ride.return_status === 'pending_decision')
+      return res.status(400).json({ error: "Still waiting on the sender's decision — can't confirm delivery yet." });
+    if (ride.is_parcel && ride.return_status === 'accepted')
+      return res.status(400).json({ error: 'The sender asked for this package back — confirm the return with the return OTP instead.' });
+
     // ── Recalculate actual fare using real trip duration ───────────────────────
     // Intercity fares are FIXED at booking (own long-distance model with day
     // allowance + night halts) — never run the city meter recalc on them, or a

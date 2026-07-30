@@ -248,6 +248,8 @@ input,select,textarea{outline:none}
 
   <div id="net-earnings-card" style="margin-bottom:20px"><div class="loading">Loading P&amp;L...</div></div>
 
+  <div id="cloudinary-usage-card" style="margin-bottom:20px"><div class="loading">Loading Cloudinary usage...</div></div>
+
   <div class="tabs">
     <button class="tab active" onclick="showSection('transactions',this)">📋 Transactions</button>
     <button class="tab" onclick="showSection('rides',this)">🛺 Rides</button>
@@ -601,6 +603,12 @@ input,select,textarea{outline:none}
       <div class="card-title">📦 Parcel Fares <button class="refresh-btn" onclick="loadParcelFares()">⟳ Reload</button></div>
       <p style="font-size:12px;color:#6B7280;margin-bottom:10px">Base fare + ₹/km per vehicle, min fare floor, and a handling surcharge per package size (added on top of the vehicle fare, same for every vehicle). Changes apply instantly aur restart ke baad bhi rahenge.</p>
       <div id="parcel-fares-container"><div class="loading">Loading...</div></div>
+    </div>
+    <!-- Route Batching: recent 2-parcel combined trips -->
+    <div class="card" style="margin-top:14px">
+      <div class="card-title">📦📦 Route-Batched Deliveries <button class="refresh-btn" onclick="loadParcelBatches()">⟳ Reload</button></div>
+      <p style="font-size:12px;color:#6B7280;margin-bottom:10px">Two nearby, compatible parcels combined into one driver trip. Last 50, newest first.</p>
+      <div id="parcel-batches-container"><div class="loading">Loading...</div></div>
     </div>
     <!-- Ride Disputes: emergency mid-trip cancellations + parcel "not delivered" reports -->
     <div class="card" style="margin-top:14px">
@@ -1126,7 +1134,7 @@ function showSection(id,btn){
   if(id==='rides') loadRides();
   if(id==='topups') loadTopups();
   if(id==='verify') loadVerifications();
-  if(id==='settings'){loadFares();loadStdFares();loadCancelSettings();loadCommRates();loadIntercityFares();loadParcelFares();loadRideDisputes();}
+  if(id==='settings'){loadFares();loadStdFares();loadCancelSettings();loadCommRates();loadIntercityFares();loadParcelFares();loadParcelBatches();loadRideDisputes();}
   if(id==='marketing'){loadCampaigns();loadPromos();loadReferrals();}
   if(id==='payouts'){loadPayouts('pending');}
   if(id==='complaints'){loadComplaints();}
@@ -1376,6 +1384,45 @@ function renderNetEarnings(){
     '</div>';
 }
 function neSwitch(period){ _nePeriod=period; renderNetEarnings(); }
+
+// ── Cloudinary Usage (driver document uploads) ───────────
+function fmtBytes(n){
+  if (n==null) return '?';
+  if (n < 1024*1024) return (n/1024).toFixed(0)+' KB';
+  if (n < 1024*1024*1024) return (n/1024/1024).toFixed(1)+' MB';
+  return (n/1024/1024/1024).toFixed(2)+' GB';
+}
+async function loadCloudinaryUsage(){
+  const el = document.getElementById('cloudinary-usage-card');
+  if(!el) return;
+  try {
+    const d = await aJson('/api/admin/cloudinary-usage');
+    if (d.error) { el.innerHTML = `<div class="card" style="padding:14px;color:#e94560">⚠️ Cloudinary usage: ${esc(d.error)}</div>`; return; }
+    const pct = d.usedPercent ?? 0;
+    const color = pct >= 90 ? '#e94560' : pct >= 70 ? '#ff9800' : '#4CAF50';
+    const warn = pct >= 80
+      ? `<div style="margin-top:10px;font-size:.82rem;color:${color};font-weight:600">⚠️ Approaching the free-tier limit — upgrade the Cloudinary plan before driver document uploads start failing.</div>`
+      : '';
+    el.innerHTML = `
+      <div class="card" style="margin-bottom:0">
+        <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;margin-bottom:12px">
+          <div class="card-title" style="margin-bottom:0">☁️ Cloudinary Usage — ${esc(d.plan)} Plan</div>
+          <div style="font-size:12px;color:#888">${d.creditsUsed!=null?d.creditsUsed.toFixed(2):'?'} / ${d.creditsLimit??'?'} credits this month</div>
+        </div>
+        <div style="background:#eee;border-radius:8px;height:10px;overflow:hidden">
+          <div style="background:${color};height:100%;width:${Math.min(pct,100)}%;transition:width .3s"></div>
+        </div>
+        <div style="display:flex;gap:18px;margin-top:10px;font-size:12px;color:#777;flex-wrap:wrap">
+          <span>📦 Storage: ${fmtBytes(d.storageBytes)}</span>
+          <span>📡 Bandwidth: ${fmtBytes(d.bandwidthBytes)}</span>
+          <span>🖼️ Files: ${d.resources??'?'}</span>
+        </div>
+        ${warn}
+      </div>`;
+  } catch(e) {
+    if (e.message !== 'Unauthorized') el.innerHTML = `<div class="card" style="padding:14px;color:#e94560">❌ Cloudinary usage error: ${esc(e.message)}</div>`;
+  }
+}
 
 // ── Transactions ────────────────────────────────────────
 async function loadTransactions(){
@@ -2222,6 +2269,34 @@ async function saveIntercityFare(v){
     el.style.color=d.success?'#2e7d32':'#c62828';
   }
   if(d.success) setTimeout(loadIntercityFares,800);
+}
+
+// ── Route-Batched Deliveries ──────────────────────
+async function loadParcelBatches(){
+  var el=document.getElementById('parcel-batches-container');
+  if(el) el.innerHTML='<div class="loading">Loading...</div>';
+  try{
+    const d=await aJson('/api/admin/parcel-batches');
+    if(d.error) throw new Error(d.error);
+    if(!d.batches||!d.batches.length){ if(el) el.innerHTML='<div style="font-size:12px;color:#6B7280">No batched trips yet.</div>'; return; }
+    var statusColor={offered:'#f59e0b',matched:'#2563eb',expired:'#9e9e9e',cancelled:'#c62828'};
+    var html='<div style="overflow-x:auto"><table style="font-size:12px"><thead><tr><th>ID</th><th>Status</th><th>Vehicle/Size</th><th>Driver</th><th>Stops</th><th>Created</th></tr></thead><tbody>';
+    d.batches.forEach(function(b){
+      var stopsHtml=(b.stops||[]).map(function(s){
+        return '<div style="margin-bottom:3px">'+(s.stop_type==='pickup'?'📍':'🎯')+' '+esc(s.address||'')+' <span style="color:#6B7280">('+esc(s.ride_status)+', ₹'+Math.round(s.fare||0)+')</span></div>';
+      }).join('');
+      html+='<tr>'
+        +'<td>#'+b.id+'</td>'
+        +'<td><span style="color:'+(statusColor[b.status]||'#333')+';font-weight:700">'+esc(b.status)+'</span></td>'
+        +'<td>'+esc(b.vehicle_type||'')+' / '+esc(b.package_size||'')+'</td>'
+        +'<td>'+(b.driver_name?esc(b.driver_name)+'<br><span style="color:#6B7280">'+esc(b.driver_phone||'')+'</span>':'<span style="color:#6B7280">—</span>')+'</td>'
+        +'<td>'+stopsHtml+'</td>'
+        +'<td style="white-space:nowrap;color:#6B7280">'+new Date(b.created_at).toLocaleString('en-IN',{day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'})+'</td>'
+        +'</tr>';
+    });
+    html+='</tbody></table></div>';
+    if(el) el.innerHTML=html;
+  }catch(e){if(el) el.innerHTML='<div style="color:#c62828;font-size:12px">❌ Error: '+e.message+'</div>';}
 }
 
 // ── Parcel Fares ─────────────────────────────────
@@ -3280,6 +3355,7 @@ async function loadAll(){
   document.getElementById('last-refresh').textContent=new Date().toLocaleTimeString('en-IN');
   await loadDashboard();
   loadNetEarnings();
+  loadCloudinaryUsage();
   await loadTransactions();
   loadRevenueChart();
 }
@@ -3290,7 +3366,7 @@ function refreshActive(){
     transactions:loadTransactions, rides:loadRides, customers:loadCustomers,
     drivers:loadDrivers, verify:loadVerifications, topups:loadTopups,
     marketing:()=>{loadCampaigns();loadPromos();loadReferrals();},
-    settings:()=>{loadFares();loadStdFares();loadCancelSettings();loadCommRates();loadIntercityFares();loadParcelFares();loadRideDisputes();},
+    settings:()=>{loadFares();loadStdFares();loadCancelSettings();loadCommRates();loadIntercityFares();loadParcelFares();loadParcelBatches();loadRideDisputes();},
     payouts:()=>loadPayouts('pending'), complaints:loadComplaints,
     incidents:loadIncidents, rewards:loadRewardSettings,
     location:loadLocationIntel, support:loadSupport

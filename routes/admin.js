@@ -33,6 +33,33 @@ router.get('/stats', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+// GET /api/admin/cloudinary-usage — live check against Cloudinary's own Admin
+// API, so the dashboard shows real numbers instead of a blind "remember to
+// check" reminder. Drivers upload KYC documents straight to Cloudinary
+// (routes/drivers.js POST /upload); if the free-tier credit quota runs out,
+// that upload starts failing and new drivers can't finish registration —
+// this card exists so that shows up here well before it becomes a surprise.
+router.get('/cloudinary-usage', async (req, res) => {
+  try {
+    const cloudinary = require('../config/cloudinary');
+    const usage = await cloudinary.api.usage();
+    const creditsUsed  = usage.credits?.usage ?? null;
+    const creditsLimit = usage.credits?.limit ?? null;
+    const usedPercent  = (creditsUsed != null && creditsLimit) ? Math.round((creditsUsed / creditsLimit) * 1000) / 10 : null;
+    res.json({
+      plan:            usage.plan || 'Unknown',
+      creditsUsed, creditsLimit, usedPercent,
+      storageBytes:    usage.storage?.usage ?? null,
+      bandwidthBytes:  usage.bandwidth?.usage ?? null,
+      transformations: usage.transformations?.usage ?? null,
+      resources:       usage.resources ?? null,
+      lastUpdated:     usage.last_updated || null,
+    });
+  } catch (err) {
+    res.status(500).json({ error: 'Could not fetch Cloudinary usage — check API credentials in .env', detail: err.message });
+  }
+});
+
 // GET /api/admin/rides — supports optional status filter + phone/ride-id search
 router.get('/rides', async (req, res) => {
   const { status, search, limit = 50, offset = 0 } = req.query;
@@ -855,6 +882,31 @@ router.post('/intercity-fares', async (req, res) => {
       await db.query('UPDATE fare_settings SET intercity_commission_rate=$1 WHERE vehicle_type=$2', [cr, vehicle_type]);
     }
     res.json({ success: true, updated: { vehicle_type, ...cfg } });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// GET /api/admin/parcel-batches — recent route-batched (2-parcel) trips, for
+// visibility into how the batching feature is actually performing. Read-only.
+router.get('/parcel-batches', async (req, res) => {
+  try {
+    const batches = await db.query(
+      `SELECT rb.id, rb.status, rb.vehicle_type, rb.package_size, rb.created_at, rb.matched_at, u.phone AS driver_phone, u.name AS driver_name
+       FROM ride_batches rb LEFT JOIN users u ON rb.driver_id = u.id
+       ORDER BY rb.created_at DESC LIMIT 50`
+    );
+    if (!batches.rows.length) return res.json({ batches: [] });
+
+    const batchIds = batches.rows.map(b => b.id);
+    const stopsRes = await db.query(
+      `SELECT bs.batch_id, bs.stop_type, bs.sequence_order, bs.address, r.id AS ride_id, r.status AS ride_status, r.fare, r.receiver_name
+       FROM batch_stops bs JOIN rides r ON bs.ride_id = r.id
+       WHERE bs.batch_id = ANY($1::int[]) ORDER BY bs.batch_id, bs.sequence_order ASC`,
+      [batchIds]
+    );
+    const stopsByBatch = {};
+    for (const s of stopsRes.rows) (stopsByBatch[s.batch_id] ||= []).push(s);
+
+    res.json({ batches: batches.rows.map(b => ({ ...b, stops: stopsByBatch[b.id] || [] })) });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 

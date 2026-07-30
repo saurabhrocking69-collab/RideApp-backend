@@ -72,17 +72,19 @@ async function webhookHandler(req, res) {
 
   try {
     // ── payment.captured → wallet top-up ─────────────────────────────────
+    // Opt-IN, not opt-out: only credit the wallet when the order was
+    // explicitly created as a wallet top-up (routes/wallet.js sets
+    // notes.purpose='wallet_topup'). Every other Razorpay flow — parcel
+    // escrow, ride advance, subscriptions, buddy fund — carries notes.phone
+    // too (for FCM/logging), and an opt-out list here previously let any of
+    // those slip through and get ALSO credited to the wallet on top of what
+    // they already paid for. Bug found 2026-07-30 via a parcel payment that
+    // incorrectly also appeared as a "Wallet recharge".
     if (event.event === 'payment.captured') {
       const payment = event?.payload?.payment?.entity;
-      if (payment) {
-        const paymentId   = payment.id;
-        const phone       = payment.notes?.phone;
-        const paymentType = payment.notes?.type;
-        // Skip wallet credit for non-wallet-recharge payments
-        if (paymentType === 'buddy_fund' || paymentType === 'subscription') {
-          console.log(`ℹ️ Webhook skipping wallet credit for ${paymentType} payment ${paymentId}`);
-          return res.json({ status: 'ok' });
-        }
+      if (payment && payment.notes?.purpose === 'wallet_topup') {
+        const paymentId = payment.id;
+        const phone      = payment.notes?.phone;
         if (phone && payment.amount) {
           // Idempotency: skip if already confirmed
           const dup = await db.query("SELECT id FROM razorpay_topups WHERE payment_id=$1 AND status='confirmed'", [paymentId]);

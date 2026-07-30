@@ -4,11 +4,13 @@ const router  = express.Router();
 const db      = require('../config/db');
 const { PARCEL_FARES, PARCEL_SIZE_SURCHARGE, PARCEL_RETURN_FEE_PCT, calculateParcelFare } = require('../services/pricing');
 const { assignRideToNextDriver } = require('../workers/rideWorker');
+const { tryBatchDispatch, acceptBatch } = require('../services/parcelBatching');
 const userAuth = require('../middleware/userAuth');
 const { verifyOnlinePayment, razorpay, refundToWallet, creditDriverWallet } = require('../services/advance');
 const { sendFCM } = require('../config/firebase');
 const { emitToRoom } = require('../config/socket');
 const { transitionRide } = require('../services/rideStateMachine');
+const { clearRide } = require('../services/rideCache');
 
 // Return-to-sender columns — a parcel whose delivery attempt failed
 // (receiver unreachable/refused) and the sender opted to get it back.
@@ -203,10 +205,18 @@ router.post('/book', userAuth, async (req, res) => {
     const rideId = rideRes.rows[0].id;
 
     console.log(`[parcel] ✅ ride=${rideId} ${vehicle_type} ${size} ${distKm}km → ${receiverNameVal} · paid ₹${fare} via ${paymentMethod} (escrowed)`);
-    // 2s delay so the customer joins the socket room first (same as /rides/book, /intercity/book)
+    // 2s delay so the customer joins the socket room first (same as /rides/book, /intercity/book).
+    // Try route-batching with another nearby unassigned parcel first; if no
+    // partner is found (or the resulting offer times out with no driver —
+    // see expireBatchOffer in services/parcelBatching.js), fall back to the
+    // normal individual broadcast exactly as before batching existed.
     const _pLat = pickup_lat || null, _pLng = pickup_lng || null;
-    setTimeout(() => assignRideToNextDriver(rideId, _pLat, _pLng, vehicle_type)
-      .catch(e => console.error('[PARCEL_ASSIGN_FAIL]', e.message)), 2000);
+    setTimeout(async () => {
+      try {
+        const batched = await tryBatchDispatch(rideId, vehicle_type, size, _pLat, _pLng);
+        if (!batched) await assignRideToNextDriver(rideId, _pLat, _pLng, vehicle_type);
+      } catch (e) { console.error('[PARCEL_ASSIGN_FAIL]', e.message); }
+    }, 2000);
 
     res.json({
       message: 'Finding your delivery partner...',
@@ -254,6 +264,15 @@ router.post('/flag-non-delivery', userAuth, async (req, res) => {
       "UPDATE rides SET return_status='pending_decision', delivery_fail_reason=$1 WHERE id=$2",
       [(reason || '').trim() || null, ride_id]
     );
+    // /api/rides/status/:id serves from Redis whenever a ride is 'started'
+    // (which a parcel stays throughout this entire RTO sub-flow) — without
+    // this, the very next poll/resync after the socket event below would
+    // hand the client a stale pre-flag copy and stomp return_status back to
+    // null within about a second, making the just-shown decision window
+    // vanish. transitionRide() does this automatically for real status
+    // changes; this raw UPDATE needs it done explicitly since return_status
+    // is a sub-field, not a status transition.
+    await clearRide(ride_id).catch(() => {});
 
     emitToRoom('ride_' + ride_id, 'returnDecisionNeeded', { ride_id, reason: reason || null });
     sendFCM(ride.passenger_phone, '⚠️ Delivery Issue', `Your delivery partner couldn't reach ${ride.receiver_name || 'the receiver'}. Tap to decide what happens next.`, { type: 'return_decision_needed', ride_id: String(ride_id) }, { role: 'customer' }).catch(() => {});
@@ -280,6 +299,7 @@ router.post('/return-decision', userAuth, async (req, res) => {
 
     if (decision === 'retry') {
       await db.query("UPDATE rides SET return_status=NULL WHERE id=$1", [ride_id]);
+      await clearRide(ride_id).catch(() => {}); // see the comment in /flag-non-delivery above
       emitToRoom('ride_' + ride_id, 'returnDecisionMade', { ride_id, decision: 'retry' });
       sendFCM(ride.driver_phone, '🔁 Try Again', 'The sender wants you to try reaching the receiver again.', { type: 'return_decision_made', ride_id: String(ride_id) }, { role: 'driver' }).catch(() => {});
       return res.json({ success: true, decision: 'retry' });
@@ -287,6 +307,7 @@ router.post('/return-decision', userAuth, async (req, res) => {
 
     const returnOtp = Math.floor(1000 + Math.random() * 9000).toString();
     await db.query("UPDATE rides SET return_status='accepted', return_otp=$1 WHERE id=$2", [returnOtp, ride_id]);
+    await clearRide(ride_id).catch(() => {}); // see the comment in /flag-non-delivery above
     emitToRoom('ride_' + ride_id, 'returnDecisionMade', {
       ride_id, decision: 'return',
       pickup: ride.pickup, pickup_lat: ride.pickup_lat, pickup_lng: ride.pickup_lng,
@@ -332,13 +353,38 @@ router.post('/confirm-return', userAuth, async (req, res) => {
       custPhone: ride.passenger_phone, drvPhone: ride.driver_phone, skipFCM: true,
     });
 
-    if (refund > 0) await refundToWallet(null, ride.passenger_phone, refund, ride_id, 'Parcel returned — refund').catch(() => {});
-    if (returnFee > 0) await creditDriverWallet(null, ride.driver_phone, returnFee, 'Parcel return compensation').catch(() => {});
+    // Both credits atomic with each other (both land or neither does) — the
+    // previous version ran these unguarded and swallowed any failure, so a
+    // mid-way DB error could silently short the sender's refund or the
+    // driver's compensation while the API still reported success:true to
+    // both apps. transitionRide() above has already marked the ride
+    // returned/completed regardless (the physical handoff genuinely
+    // happened), but the money movement itself now either fully succeeds or
+    // is loudly logged for manual follow-up — never silently half-done.
+    let settlementOk = true;
+    if (refund > 0 || returnFee > 0) {
+      const sClient = await db.connect();
+      try {
+        await sClient.query('BEGIN');
+        if (refund > 0)    await refundToWallet(sClient, ride.passenger_phone, refund, ride_id, 'Parcel returned — refund');
+        if (returnFee > 0) await creditDriverWallet(sClient, ride.driver_phone, returnFee, 'Parcel return compensation');
+        await sClient.query('COMMIT');
+      } catch (e) {
+        await sClient.query('ROLLBACK').catch(() => {});
+        settlementOk = false;
+        console.error(`[parcel] confirm-return settlement FAILED for ride ${ride_id} — refund ₹${refund} to ${ride.passenger_phone} and compensation ₹${returnFee} to ${ride.driver_phone} did NOT land, needs manual admin follow-up:`, e.message);
+      } finally { sClient.release(); }
+    }
 
-    sendFCM(ride.passenger_phone, '📦 Package Returned', `Your package is back with you. ₹${refund} refunded to your wallet.`, { type: 'trip_completed', ride_id: String(ride_id) }, { role: 'customer' }).catch(() => {});
-    sendFCM(ride.driver_phone, '✅ Return Confirmed', `₹${returnFee} credited to your wallet for the return trip.`, { type: 'earning_credited', amount: String(returnFee) }, { role: 'driver' }).catch(() => {});
+    if (settlementOk) {
+      sendFCM(ride.passenger_phone, '📦 Package Returned', `Your package is back with you. ₹${refund} refunded to your wallet.`, { type: 'trip_completed', ride_id: String(ride_id) }, { role: 'customer' }).catch(() => {});
+      sendFCM(ride.driver_phone, '✅ Return Confirmed', `₹${returnFee} credited to your wallet for the return trip.`, { type: 'earning_credited', amount: String(returnFee) }, { role: 'driver' }).catch(() => {});
+    } else {
+      sendFCM(ride.passenger_phone, '📦 Package Returned', `Your package is back with you. Your refund is being processed — contact support if it doesn't appear soon.`, { type: 'trip_completed', ride_id: String(ride_id) }, { role: 'customer' }).catch(() => {});
+      sendFCM(ride.driver_phone, '✅ Return Confirmed', `Your compensation is being processed — contact support if it doesn't appear soon.`, { type: 'earning_credited', amount: String(returnFee) }, { role: 'driver' }).catch(() => {});
+    }
 
-    res.json({ success: true, refund, return_fee: returnFee, earned: returnFee, commission_amount: 0 });
+    res.json({ success: true, refund, return_fee: returnFee, earned: returnFee, commission_amount: 0, settlement_pending: !settlementOk });
   } catch (err) { console.error('[parcel] confirm-return', err.message); res.status(500).json({ error: 'Something went wrong — please try again' }); }
 });
 
@@ -376,6 +422,127 @@ router.post('/report-not-delivered', userAuth, async (req, res) => {
 
     res.json({ success: true, message: 'Your report is under review — our team will get back to you.' });
   } catch (err) { console.error('[parcel] report-not-delivered', err.message); res.status(500).json({ error: 'Something went wrong — please try again' }); }
+});
+
+// ════════════════════════════════════════════════
+//  ROUTE BATCHING — two nearby, compatible parcels combined into one driver
+//  trip. See services/parcelBatching.js for the matching/sequencing logic;
+//  everything here is thin endpoint plumbing around it. Deliberately does
+//  NOT duplicate /arrived, /start, or /complete — the driver app calls those
+//  exact existing endpoints per-stop, scoped to that stop's own ride_id.
+// ════════════════════════════════════════════════
+
+// ── POST /api/parcel/batch-accept — driver accepts a combined 2-parcel offer ──
+router.post('/batch-accept', userAuth, async (req, res) => {
+  const { batch_id, driver_phone } = req.body;
+  if (req.user.phone !== String(driver_phone)) return res.status(403).json({ error: 'You can only act as yourself' });
+  if (!batch_id) return res.status(400).json({ error: 'batch_id required' });
+  const result = await acceptBatch(batch_id, driver_phone);
+  if (!result.success) return res.status(400).json(result);
+  res.json(result);
+});
+
+// ── GET /api/parcel/batch/active?phone=X — driver's current batch + ordered
+//    stop sequence, each stop carrying its ride's full detail so the driver
+//    app doesn't need a second round-trip per stop. ─────────────────────────
+router.get('/batch/active', async (req, res) => {
+  const { phone } = req.query;
+  if (!phone) return res.status(400).json({ error: 'phone required' });
+  try {
+    const b = await db.query(
+      `SELECT rb.* FROM ride_batches rb JOIN users u ON rb.driver_id = u.id
+       WHERE u.phone=$1 AND rb.status='matched'
+         AND EXISTS (SELECT 1 FROM rides r WHERE r.batch_id = rb.id AND r.status NOT IN ('completed','cancelled'))
+       ORDER BY rb.matched_at DESC LIMIT 1`,
+      [phone]
+    );
+    if (!b.rows[0]) return res.json({ batch: null, stops: [] });
+    const batch = b.rows[0];
+
+    // r.* (the full row, not cherry-picked fields) so each stop's `ride`
+    // object is exactly the same shape the driver app already gets from
+    // GET /api/driver/active-ride for a normal single ride — pickup_lat/lng
+    // AND drop_lat/lng both present (not just this stop's own lat/lng),
+    // driver-facing fields, everything. That shape-compatibility is what
+    // lets the app feed a batch's current-stop ride straight into its
+    // existing single-ride UI with zero changes to that UI's own code.
+    const stopsRes = await db.query(
+      `SELECT bs.stop_type, bs.sequence_order, bs.lat AS stop_lat, bs.lng AS stop_lng, bs.address AS stop_address,
+              r.*
+       FROM batch_stops bs JOIN rides r ON bs.ride_id = r.id
+       WHERE bs.batch_id=$1 ORDER BY bs.sequence_order ASC`,
+      [batch.id]
+    );
+
+    const stops = stopsRes.rows.map(s => ({
+      ...s,
+      ride_id: s.id, ride_status: s.status,
+      // Derived, not stored — a pickup stop is "done" once its ride has
+      // actually started (arrived + start-OTP both happened); a drop stop is
+      // "done" once its ride is completed. Deriving from rides.status (which
+      // the existing /arrived, /start, /complete already update correctly)
+      // instead of a separately-tracked batch_stops.status avoids a second
+      // source of truth that could drift out of sync.
+      // 'cancelled' also counts as done (i.e. skippable) — if the driver
+      // cancels one leg of a batch mid-trip, that leg's stops must stop
+      // blocking the sequence rather than sit "not done" forever, so the
+      // driver can still reach the OTHER leg's remaining stop(s) normally.
+      done: s.stop_type === 'pickup' ? ['started', 'completed', 'cancelled'].includes(s.status) : ['completed', 'cancelled'].includes(s.status),
+    }));
+
+    res.json({ batch: { id: batch.id, status: batch.status }, stops });
+  } catch (err) { console.error('[parcel] batch/active', err.message); res.status(500).json({ error: 'Something went wrong' }); }
+});
+
+// ── POST /api/parcel/batch-stop-complete — informational nudge only. Called
+//    by the driver app right after it completes a stop via the real,
+//    unchanged /arrived, /start, or /complete endpoints, so any batch-mate
+//    still waiting on their own pickup gets a live "N stops before you"
+//    update instead of a stale count from match time. Never gates or
+//    verifies anything — the actual state change already happened. ────────
+router.post('/batch-stop-complete', async (req, res) => {
+  const { ride_id } = req.body;
+  try {
+    const rideRes = await db.query(`SELECT batch_id FROM rides WHERE id=$1`, [ride_id]);
+    const batchId = rideRes.rows[0]?.batch_id;
+    if (!batchId) return res.json({ success: true });
+
+    const stopsRes = await db.query(
+      `SELECT bs.sequence_order, bs.stop_type, bs.ride_id, r.status AS ride_status
+       FROM batch_stops bs JOIN rides r ON bs.ride_id = r.id
+       WHERE bs.batch_id=$1 ORDER BY bs.sequence_order ASC`,
+      [batchId]
+    );
+    const stops = stopsRes.rows;
+    const isDone = s => s.stop_type === 'pickup' ? ['started', 'completed', 'cancelled'].includes(s.ride_status) : ['completed', 'cancelled'].includes(s.ride_status);
+
+    // The customer app's rideUpdate handler only merges batched/
+    // stops_before_pickup into rideData on the branch gated by `data.driver`
+    // being present (see AppContext.tsx) — the no-driver branch re-fetches
+    // from /api/rides/status/:id instead, which doesn't carry these
+    // request-time-computed fields at all. So this nudge must include
+    // driver info too, or it'd silently take that other branch and never
+    // actually update the "stops before you" count. Driver is the same
+    // across the whole batch, so fetch it once.
+    const driverRes = await db.query(
+      `SELECT rb.driver_id, u.name, d.vehicle_no, d.vehicle_brand, d.vehicle_model, d.rating, d.upi_id
+       FROM ride_batches rb JOIN users u ON rb.driver_id = u.id JOIN drivers d ON d.id = u.id
+       WHERE rb.id=$1`,
+      [batchId]
+    );
+    const di = driverRes.rows[0];
+    const driverCard = di ? { name: di.name, vehicle_no: di.vehicle_no, vehicle_brand: di.vehicle_brand, vehicle_model: di.vehicle_model, rating: parseFloat(di.rating) || 5.0, upi_id: di.upi_id || null } : null;
+
+    for (const s of stops) {
+      if (s.stop_type !== 'pickup' || s.ride_status !== 'matched') continue; // only nudge riders still waiting on their own pickup
+      const stopsBeforeMine = stops.filter(x => x.sequence_order < s.sequence_order && !isDone(x)).length;
+      emitToRoom('ride_' + s.ride_id, 'rideUpdate', {
+        rideId: s.ride_id, status: 'matched', driver: driverCard, batched: true, stops_before_pickup: stopsBeforeMine,
+        message: stopsBeforeMine > 0 ? `Driver matched — ${stopsBeforeMine} more stop before reaching you` : 'Driver is on the way to you now!',
+      });
+    }
+    res.json({ success: true });
+  } catch (err) { console.error('[parcel] batch-stop-complete', err.message); res.json({ success: true }); }
 });
 
 module.exports = router;
