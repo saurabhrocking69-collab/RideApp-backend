@@ -1551,6 +1551,50 @@ setInterval(async () => {
   } catch (_e) {}
 }, 30 * 60 * 1000); // runs every 30 minutes
 
+// ── Cron: nudge senders sitting on an undelivered-parcel decision ──
+// When a receiver refuses or can't be reached, the sender gets ONE push asking
+// them to choose (try again / get it back). If they miss it, the driver is left
+// holding the package until the decision window runs out. These reminders give
+// a distracted sender two more chances inside that window, and warn them before
+// it closes — the whole point is that the window expiring should be a genuine
+// non-response, not "they never saw the first notification".
+setInterval(async () => {
+  try {
+    const RETURN_REMINDER_HOURS = [2, 4];      // must match routes/parcel.js
+    const RETURN_DECISION_TIMEOUT_HOURS = 5;
+    const due = await db.query(
+      `SELECT r.id, r.return_reminders_sent, u.phone AS passenger_phone,
+              EXTRACT(EPOCH FROM (NOW() - r.return_requested_at))/3600 AS hours_waited
+       FROM rides r JOIN users u ON r.passenger_id = u.id
+       WHERE r.is_parcel = true AND r.status = 'started'
+         AND r.return_status IN ('pending_decision','awaiting_payment')
+         AND r.return_requested_at IS NOT NULL
+         AND r.return_requested_at > NOW() - INTERVAL '24 hours'`
+    );
+    for (const row of due.rows) {
+      const waited = parseFloat(row.hours_waited || 0);
+      const sent = parseInt(row.return_reminders_sent || 0);
+      // How many reminder marks this ride has now passed.
+      const owed = RETURN_REMINDER_HOURS.filter(h => waited >= h).length;
+      if (owed <= sent) continue;
+      // Claim the send first (conditional on the count we read) so a slow push
+      // can't let the next cron pass fire the same reminder twice.
+      const claim = await db.query(
+        'UPDATE rides SET return_reminders_sent = $1 WHERE id = $2 AND COALESCE(return_reminders_sent,0) = $3 RETURNING id',
+        [owed, row.id, sent]
+      );
+      if (!claim.rows[0]) continue;
+      const left = Math.max(0, RETURN_DECISION_TIMEOUT_HOURS - waited);
+      sendFCM(row.passenger_phone, '📦 Your parcel is still waiting',
+        left <= 1.5
+          ? `Last call — decide in about ${Math.max(1, Math.round(left * 60))} min, or your delivery partner will close the trip and keep the parcel until you contact them.`
+          : `Your delivery partner is still holding your package. Tap to choose: try again, or get it back.`,
+        { type: 'return_decision_needed', ride_id: String(row.id) }, { role: 'customer' }).catch(() => {});
+      console.log(`[parcel] reminder ${owed} sent for ride ${row.id} (${waited.toFixed(1)}h waited)`);
+    }
+  } catch (_e) {}
+}, 10 * 60 * 1000); // every 10 minutes — window is only 5h, so checks must be fine-grained
+
 // ── Cron: auto-resolve emergency ride disputes after 2 days ──
 // If admin hasn't decided within the 2-day hold, refund the full held advance
 // to the customer (benefit of the doubt for a reported emergency).

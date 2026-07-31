@@ -32,11 +32,27 @@ db.query('ALTER TABLE rides ADD COLUMN IF NOT EXISTS return_payment_status TEXT'
 db.query('ALTER TABLE rides ADD COLUMN IF NOT EXISTS return_requested_at TIMESTAMPTZ').catch(() => {});
 db.query('ALTER TABLE rides ADD COLUMN IF NOT EXISTS disposed_at TIMESTAMPTZ').catch(() => {});
 db.query('ALTER TABLE rides ADD COLUMN IF NOT EXISTS return_payment_method TEXT').catch(() => {});
+// How many nudges the sender has already been sent while the decision sits
+// unanswered — so the reminder cron doesn't spam the same person every pass.
+db.query('ALTER TABLE rides ADD COLUMN IF NOT EXISTS return_reminders_sent INTEGER DEFAULT 0').catch(() => {});
 
 // How long the sender gets to respond (retry / pay for a return) before the
-// driver is allowed to stop being an unpaid warehouse and dispose of the
-// package. The driver is still paid for the outbound trip in that case.
-const RETURN_DECISION_TIMEOUT_HOURS = 24;
+// driver may close the trip and stop waiting on them.
+//
+// This is NOT a "throw the package away" timer. The parcel stays WITH the
+// driver — closing simply ends the paid trip so the driver isn't pinned in
+// 'started' and unable to earn, while the sender keeps a route to recover
+// their goods (the driver's name and number go out with the closure notice,
+// and the ride stays in both parties' history). Senders very often come back
+// a day or two later, so the driver is asked to hold onto it, not bin it.
+//
+// 5h rather than a full day: the driver is doing this unpaid, usually on a
+// bike with the package physically on them. Asking them to babysit a stranger's
+// parcel all day is unreasonable, and the sender is nudged twice before the
+// window closes (see the reminder cron in server.js).
+const RETURN_DECISION_TIMEOUT_HOURS = 5;
+// Sender nudges at these elapsed-hour marks before the window closes.
+const RETURN_REMINDER_HOURS = [2, 4];
 
 // ⚠️  Paid returns change what /return-decision does: instead of confirming
 // the return outright, it parks the ride in 'awaiting_payment' until the
@@ -638,15 +654,23 @@ router.post('/confirm-return', userAuth, async (req, res) => {
   } catch (err) { console.error('[parcel] confirm-return', err.message); res.status(500).json({ error: 'Something went wrong — please try again' }); }
 });
 
-// ── POST /api/parcel/dispose — the sender never responded (no retry, no
-//    return payment) within the decision window. Without this the driver is
+// ── POST /api/parcel/close-unclaimed — the sender never responded (no retry,
+//    no return payment) within the decision window. Without this the driver is
 //    stuck holding someone else's package indefinitely with the ride pinned
 //    open in 'started', unable to take any other job. The outbound trip was
 //    genuinely performed, so it is paid in full (minus commission).
+//
+//    This closes the TRIP, not the parcel's existence — the driver keeps the
+//    package. Deliberately not called "dispose": letting a driver bin a
+//    customer's goods hours after one failed attempt is a liability and a
+//    support nightmare, and senders routinely resurface a day or two later.
+//    So the closure notice hands the sender the driver's name and number, the
+//    ride stays in both histories, and the driver is asked to hold onto it.
+//
 //    Deliberately NOT available once return_status='accepted' — at that point
 //    the sender HAS paid for a return, and the package must come back or go
-//    to dispute, never be disposed of. ───────────────────────────────────────
-router.post('/dispose', userAuth, async (req, res) => {
+//    to dispute. ─────────────────────────────────────────────────────────────
+router.post('/close-unclaimed', userAuth, async (req, res) => {
   const { ride_id, driver_phone, note } = req.body;
   if (req.user.phone !== String(driver_phone)) return res.status(403).json({ error: 'You can only act as yourself' });
   try {
@@ -676,11 +700,11 @@ router.post('/dispose', userAuth, async (req, res) => {
 
     await transitionRide(ride_id, 'completed', {
       extraFields: {
-        return_status: 'disposed', payment_status: 'completed',
+        return_status: 'unclaimed', payment_status: 'completed',
         disposed_at: new Date(), delivery_fail_reason: (note || '').trim() || ride.delivery_fail_reason,
         commission_amount: commission, commission_status: 'pending',
       },
-      socketData: { fare: 0, discount: 0, return_status: 'disposed' },
+      socketData: { fare: 0, discount: 0, return_status: 'unclaimed' },
       custPhone: ride.passenger_phone, drvPhone: ride.driver_phone, skipFCM: true,
     });
 
@@ -689,7 +713,7 @@ router.post('/dispose', userAuth, async (req, res) => {
       const sClient = await db.connect();
       try {
         await sClient.query('BEGIN');
-        await creditDriverWallet(sClient, ride.driver_phone, driverEarns, 'Parcel delivery attempt — sender unreachable', ride_id);
+        await creditDriverWallet(sClient, ride.driver_phone, driverEarns, 'Parcel delivery attempt — sender did not respond', ride_id);
         await sClient.query(
           `INSERT INTO driver_commissions (driver_phone, ride_id, fare, commission, payment_method, status)
            VALUES ($1,$2,$3,$4,'online','paid') ON CONFLICT (ride_id) DO NOTHING`,
@@ -699,20 +723,41 @@ router.post('/dispose', userAuth, async (req, res) => {
       } catch (e) {
         await sClient.query('ROLLBACK').catch(() => {});
         settlementOk = false;
-        console.error(`[parcel] dispose settlement FAILED for ride ${ride_id} — payout ₹${driverEarns} to ${ride.driver_phone} did NOT land:`, e.message);
+        console.error(`[parcel] close-unclaimed settlement FAILED for ride ${ride_id} — payout ₹${driverEarns} to ${ride.driver_phone} did NOT land:`, e.message);
       } finally { sClient.release(); }
     }
 
-    emitToRoom('ride_' + ride_id, 'rideUpdate', { rideId: ride_id, status: 'completed', return_status: 'disposed' });
-    sendFCM(ride.passenger_phone, '📦 Delivery Closed',
-      `You didn't respond within ${RETURN_DECISION_TIMEOUT_HOURS} hours, so your package could not be held any longer. Contact support if you believe this is wrong.`,
+    // Driver's contact goes to the sender so the parcel stays recoverable —
+    // this is the whole difference between closing a trip and losing goods.
+    const drvName = (await db.query('SELECT name FROM users WHERE phone=$1', [ride.driver_phone]).catch(() => ({ rows: [] }))).rows[0]?.name || 'your delivery partner';
+
+    emitToRoom('ride_' + ride_id, 'rideUpdate', {
+      rideId: ride_id, status: 'completed', return_status: 'unclaimed',
+      held_by_driver: { name: drvName, phone: ride.driver_phone },
+    });
+    sendFCM(ride.passenger_phone, '📦 Your parcel is still safe',
+      `No reply for ${RETURN_DECISION_TIMEOUT_HOURS}h, so the trip has been closed — but ${drvName} still has your package. Call ${ride.driver_phone} to arrange collection, or contact support.`,
       { type: 'trip_completed', ride_id: String(ride_id) }, { role: 'customer' }).catch(() => {});
 
     const adminPhone = process.env.ADMIN_ALERT_PHONE;
-    if (adminPhone) sendFCM(adminPhone, '📦 Parcel Disposed', `Ride ${ride_id}: sender unresponsive ${Math.floor(waited)}h, driver closed the trip.`, { type: 'health_alert', ride_id: String(ride_id) }, {}).catch(() => {});
+    if (adminPhone) sendFCM(adminPhone, '📦 Parcel Unclaimed', `Ride ${ride_id}: sender silent ${Math.floor(waited)}h. Trip closed, package still with ${drvName} (${ride.driver_phone}).`, { type: 'health_alert', ride_id: String(ride_id) }, {}).catch(() => {});
 
-    res.json({ success: true, earned: driverEarns, commission_amount: commission, settlement_pending: !settlementOk });
-  } catch (err) { console.error('[parcel] dispose', err.message); res.status(500).json({ error: 'Something went wrong — please try again' }); }
+    res.json({
+      success: true, earned: driverEarns, commission_amount: commission, settlement_pending: !settlementOk,
+      // Shown to the driver on the closing screen. The package is theirs to
+      // safeguard, not to keep or discard — senders often reappear later.
+      keep_safe_notice: {
+        title: 'Please keep the parcel safe',
+        lines: [
+          'Store it somewhere safe at your place — do not throw it away.',
+          'The sender can still call you; many get in touch a day or two later.',
+          "If their pickup address is on your way, dropping it back is a kindness — you're not required to.",
+          'Still unclaimed after a few days? Contact Sppero support and we will sort it out.',
+        ],
+        sender_phone: ride.passenger_phone,
+      },
+    });
+  } catch (err) { console.error('[parcel] close-unclaimed', err.message); res.status(500).json({ error: 'Something went wrong — please try again' }); }
 });
 
 // ── POST /api/parcel/report-not-delivered — sender reports a completed
