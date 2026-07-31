@@ -70,37 +70,65 @@ const VEHICLE_CLASS = {
   car: 'four_wheeler',
 };
 
+// Schema init. Every statement is run and reported INDEPENDENTLY.
+//
+// The first version wrapped all of these in one try block, and the very first
+// statement declared `driver_id INTEGER REFERENCES users(id)`. users.id is not
+// integer-compatible on this database (the same mismatch that forces the
+// `r.passenger_id::text = p.id::text` cast in routes/drivers.js), so the FK
+// could not be created, the CREATE TABLE threw, and the catch swallowed it —
+// silently skipping batch_stops AND the `rides.batch_id` column too. The only
+// visible symptom in production was one "table init failed" line, while three
+// separate schema objects were quietly missing.
+//
+// So: no FK to users(id), driver identity is stored as TEXT (works whether the
+// underlying id is an int or a uuid) alongside the phone, which is what every
+// driver query in this codebase actually joins on — same reasoning as
+// driver_transactions in services/advance.js. And one failure can no longer
+// hide the rest.
+const BATCH_DDL = [
+  ['ride_batches', `
+    CREATE TABLE IF NOT EXISTS ride_batches (
+      id SERIAL PRIMARY KEY,
+      status TEXT DEFAULT 'offered',          -- offered | matched | expired | cancelled
+      driver_id TEXT,
+      driver_phone TEXT,
+      offered_phones TEXT[] DEFAULT '{}',
+      assignment_expires_at TIMESTAMPTZ,
+      vehicle_type TEXT,
+      package_size TEXT,
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      matched_at TIMESTAMPTZ
+    )`],
+  ['batch_stops', `
+    CREATE TABLE IF NOT EXISTS batch_stops (
+      id SERIAL PRIMARY KEY,
+      batch_id INTEGER,
+      ride_id INTEGER,
+      stop_type TEXT NOT NULL,                -- 'pickup' | 'drop'
+      sequence_order INTEGER NOT NULL,
+      lat NUMERIC, lng NUMERIC, address TEXT,
+      status TEXT DEFAULT 'pending',           -- pending | completed
+      completed_at TIMESTAMPTZ
+    )`],
+  ['rides.batch_id', 'ALTER TABLE rides ADD COLUMN IF NOT EXISTS batch_id INTEGER'],
+  // Repairs a database that got the pre-fix table, where driver_id was created
+  // as INTEGER and would reject a uuid on accept.
+  ['ride_batches.driver_id->text', 'ALTER TABLE ride_batches ALTER COLUMN driver_id TYPE TEXT USING driver_id::text'],
+  ['ride_batches.driver_phone', 'ALTER TABLE ride_batches ADD COLUMN IF NOT EXISTS driver_phone TEXT'],
+  ['batch_stops.idx', 'CREATE INDEX IF NOT EXISTS idx_batch_stops_batch ON batch_stops (batch_id, sequence_order)'],
+];
+
 (async () => {
+  let failed = 0;
+  for (const [label, sql] of BATCH_DDL) {
+    try { await db.query(sql); }
+    catch (e) { failed++; console.error(`[batching] schema step "${label}" failed:`, e.message); }
+  }
+  console.log(failed ? `[batching] schema ready with ${failed} failed step(s)` : '[batching] schema ready');
   try {
-    await db.query(`
-      CREATE TABLE IF NOT EXISTS ride_batches (
-        id SERIAL PRIMARY KEY,
-        status TEXT DEFAULT 'offered',          -- offered | matched | expired | cancelled
-        driver_id INTEGER REFERENCES users(id),
-        offered_phones TEXT[] DEFAULT '{}',
-        assignment_expires_at TIMESTAMPTZ,
-        vehicle_type TEXT,
-        package_size TEXT,
-        created_at TIMESTAMPTZ DEFAULT NOW(),
-        matched_at TIMESTAMPTZ
-      )
-    `);
-    await db.query(`
-      CREATE TABLE IF NOT EXISTS batch_stops (
-        id SERIAL PRIMARY KEY,
-        batch_id INTEGER REFERENCES ride_batches(id),
-        ride_id INTEGER REFERENCES rides(id),
-        stop_type TEXT NOT NULL,                -- 'pickup' | 'drop'
-        sequence_order INTEGER NOT NULL,
-        lat NUMERIC, lng NUMERIC, address TEXT,
-        status TEXT DEFAULT 'pending',           -- pending | completed
-        completed_at TIMESTAMPTZ
-      )
-    `);
-    await db.query('ALTER TABLE rides ADD COLUMN IF NOT EXISTS batch_id INTEGER').catch(() => {});
-    console.log('[batching] tables ready');
     await recoverStrandedBatchOffers();
-  } catch (e) { console.error('[batching] table init failed:', e.message); }
+  } catch (e) { console.error('[batching] stranded-offer recovery failed:', e.message); }
 })();
 
 // ── Recover parcels stranded in 'batch_offered' ─────────────────────────────
@@ -341,7 +369,7 @@ async function acceptBatch(batchId, driverPhone) {
         [driverId, otps[ride.id].start, otps[ride.id].delivery, ride.id]
       );
     }
-    await client.query(`UPDATE ride_batches SET status='matched', driver_id=$1, matched_at=NOW() WHERE id=$2`, [driverId, batchId]);
+    await client.query(`UPDATE ride_batches SET status='matched', driver_id=$1::text, driver_phone=$2, matched_at=NOW() WHERE id=$3`, [driverId, driverPhone, batchId]);
 
     const driverLoc = driverLocations[driverPhone];
     const [rideA, rideB] = ridesRes.rows;

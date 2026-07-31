@@ -890,8 +890,11 @@ router.post('/intercity-fares', async (req, res) => {
 router.get('/parcel-batches', async (req, res) => {
   try {
     const batches = await db.query(
-      `SELECT rb.id, rb.status, rb.vehicle_type, rb.package_size, rb.created_at, rb.matched_at, u.phone AS driver_phone, u.name AS driver_name
-       FROM ride_batches rb LEFT JOIN users u ON rb.driver_id = u.id
+      // Joined on phone, not rb.driver_id — driver_id is TEXT (users.id is not
+      // integer-compatible on this DB, which is what broke the original FK),
+      // so comparing it to u.id would be a type mismatch.
+      `SELECT rb.id, rb.status, rb.vehicle_type, rb.package_size, rb.created_at, rb.matched_at, rb.driver_phone, u.name AS driver_name
+       FROM ride_batches rb LEFT JOIN users u ON rb.driver_phone = u.phone
        ORDER BY rb.created_at DESC LIMIT 50`
     );
     if (!batches.rows.length) return res.json({ batches: [] });
