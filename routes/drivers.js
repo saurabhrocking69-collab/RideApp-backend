@@ -379,13 +379,25 @@ router.post('/payout', async (req, res) => {
 router.get('/history', async (req, res) => {
   const { phone } = req.query;
   try {
+    // is_parcel/return_status let the app label a parcel delivery as such
+    // instead of rendering it as an ordinary passenger ride, and tell a
+    // normal delivery apart from one that came back or was disposed of.
     const rides = await db.query(
-      `SELECT r.id, r.pickup, r.drop_location, r.fare, r.ride_type, r.status, r.created_at, COALESCE(NULLIF(r.rider_name,''), p.name) AS passenger_name
+      `SELECT r.id, r.pickup, r.drop_location, r.fare, r.ride_type, r.status, r.created_at,
+              r.is_parcel, r.return_status, r.package_size,
+              COALESCE(NULLIF(r.rider_name,''), p.name) AS passenger_name
        FROM rides r JOIN users d ON r.driver_id = d.id LEFT JOIN users p ON r.passenger_id = p.id
        WHERE d.phone = $1 AND r.status = 'completed' ORDER BY r.created_at DESC LIMIT 50`, [phone]
     );
     const wallet = await db.query(`SELECT w.balance, w.total_earned FROM driver_wallet w JOIN users d ON w.driver_id = d.id WHERE d.phone = $1`, [phone]);
-    res.json({ rides: rides.rows, wallet: wallet.rows[0] || { balance: 0, total_earned: 0 }, total_trips: rides.rows.length });
+    // Actual wallet movements, so the driver sees WHAT they were paid and why
+    // — the rides list above shows each job's gross fare, which is not the
+    // same number as what landed in the wallet after commission.
+    const txns = await db.query(
+      `SELECT type, amount, description, ride_id, created_at
+       FROM driver_transactions WHERE driver_phone = $1 ORDER BY created_at DESC LIMIT 50`, [phone]
+    ).catch(() => ({ rows: [] }));
+    res.json({ rides: rides.rows, wallet: wallet.rows[0] || { balance: 0, total_earned: 0 }, transactions: txns.rows, total_trips: rides.rows.length });
   } catch (err) { console.error('[drivers]', err.message); res.status(500).json({ error: 'Something went wrong — please try again' }); }
 });
 

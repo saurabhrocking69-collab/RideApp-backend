@@ -242,6 +242,15 @@ router.post('/book', userAuth, async (req, res) => {
       if (!v.ok || Math.round(v.amount) < Math.round(fare))
         { client.release(); return res.status(402).json({ error: v.error || 'Payment verification failed' }); }
       await client.query('BEGIN');
+      // Record the payment in the sender's history even though it never
+      // touched their wallet balance (paid card/UPI direct to Razorpay).
+      // Without this the wallet-paid and online-paid bookings look completely
+      // different to the customer: one shows a line, the other shows nothing
+      // at all, so an online-paid parcel appears to have never been paid for.
+      await client.query(
+        "INSERT INTO transactions (user_id, type, amount, description) VALUES ($1,'debit',$2,'Parcel delivery payment (paid online)')",
+        [passenger.id, fare]
+      );
     }
 
     const rideRes = await client.query(
@@ -477,6 +486,12 @@ router.post('/return-pay', userAuth, async (req, res) => {
       const v = await verifyOnlinePayment({ order_id: payment?.order_id, payment_id: payment?.payment_id, signature: payment?.signature });
       if (!v.ok || Math.round(v.amount) < amount)
         return res.status(402).json({ error: v.error || 'Payment verification failed' });
+      // Same reasoning as /book's online branch — record it even though the
+      // wallet balance never moved, so the return charge is visible.
+      await db.query(
+        "INSERT INTO transactions (user_id, type, amount, description) VALUES ($1,'debit',$2,$3)",
+        [ride.passenger_uid, amount, `Parcel return trip, paid online (ride ${ride_id})`]
+      );
     }
 
     // ── Money is in. NOW authorise the return trip. ──────────────────────────
@@ -589,7 +604,7 @@ router.post('/confirm-return', userAuth, async (req, res) => {
         if (legacyRefund > 0) await refundToWallet(sClient, ride.passenger_phone, legacyRefund, ride_id, 'Parcel returned — refund');
         if (driverEarns > 0) {
           await creditDriverWallet(sClient, ride.driver_phone, driverEarns,
-            isPaidReturn ? `Parcel delivery attempt + return trip (ride ${ride_id})` : 'Parcel return compensation');
+            isPaidReturn ? 'Parcel delivery attempt + return trip' : 'Parcel return compensation', ride_id);
           if (commissionTotal > 0) {
             await sClient.query(
               `INSERT INTO driver_commissions (driver_phone, ride_id, fare, commission, payment_method, status)
@@ -674,7 +689,7 @@ router.post('/dispose', userAuth, async (req, res) => {
       const sClient = await db.connect();
       try {
         await sClient.query('BEGIN');
-        await creditDriverWallet(sClient, ride.driver_phone, driverEarns, `Parcel delivery attempt — sender unreachable (ride ${ride_id})`);
+        await creditDriverWallet(sClient, ride.driver_phone, driverEarns, 'Parcel delivery attempt — sender unreachable', ride_id);
         await sClient.query(
           `INSERT INTO driver_commissions (driver_phone, ride_id, fare, commission, payment_method, status)
            VALUES ($1,$2,$3,$4,'online','paid') ON CONFLICT (ride_id) DO NOTHING`,

@@ -48,14 +48,60 @@ db.query('ALTER TABLE ride_disputes ADD COLUMN IF NOT EXISTS driver_lng NUMERIC'
 db.query('ALTER TABLE ride_disputes ADD COLUMN IF NOT EXISTS driver_seen_at TIMESTAMPTZ').catch(() => {});
 
 // Credit a driver's wallet (used when admin awards the driver part of a dispute).
-async function creditDriverWallet(client, driverPhone, amount, note) {
+async function creditDriverWallet(client, driverPhone, amount, note, rideId = null) {
   const q = client || db;
   const u = await q.query('SELECT id FROM users WHERE phone=$1', [driverPhone]);
   if (!u.rows[0]) return false;
   const driverId = u.rows[0].id;
   await q.query('INSERT INTO driver_wallet (driver_id) VALUES ($1) ON CONFLICT (driver_id) DO NOTHING', [driverId]);
   await q.query('UPDATE driver_wallet SET balance = balance + $1, total_earned = total_earned + $1 WHERE driver_id = $2', [amount, driverId]);
+  // Ledger line for the driver's wallet history. Until this existed, every
+  // caller passed a descriptive `note` that was accepted and silently
+  // dropped: the balance moved with nothing anywhere explaining why, so the
+  // driver app could only ever show an aggregate, never a statement.
+  await logDriverTxn(q, driverPhone, 'credit', amount, note, rideId);
   return true;
+}
+
+// ── Driver wallet ledger ────────────────────────────────────────────────────
+// Keyed on driver_phone (TEXT), matching driver_commissions, rather than a
+// driver_id FK — the two credit paths resolve the driver differently and the
+// id column type isn't consistent across environments, so the phone is the
+// one join key every driver-facing query already uses.
+db.query(`
+  CREATE TABLE IF NOT EXISTS driver_transactions (
+    id           SERIAL PRIMARY KEY,
+    driver_phone TEXT NOT NULL,
+    type         TEXT NOT NULL,              -- 'credit' | 'debit'
+    amount       NUMERIC NOT NULL,
+    description  TEXT,
+    ride_id      INTEGER,
+    created_at   TIMESTAMPTZ DEFAULT NOW()
+  )
+`).then(() => db.query('CREATE INDEX IF NOT EXISTS idx_driver_txn_phone ON driver_transactions (driver_phone, created_at DESC)')).catch(() => {});
+
+async function logDriverTxn(client, driverPhone, type, amount, description, rideId = null) {
+  if (!driverPhone || !(parseFloat(amount) > 0)) return;
+  const q = client || db;
+  // This runs inside the caller's payment transaction. In Postgres a failed
+  // statement aborts the WHOLE transaction — every later statement, including
+  // the COMMIT, then fails — so simply catching the error here would NOT keep
+  // a broken history line from killing the payment that wraps it. The
+  // savepoint confines the damage: on failure we roll back just this insert
+  // and the outer transaction stays usable and commits normally. The balance
+  // update is the source of truth; this is only the readable trail.
+  const inTxn = !!client;
+  try {
+    if (inTxn) await q.query('SAVEPOINT driver_txn_log');
+    await q.query(
+      'INSERT INTO driver_transactions (driver_phone, type, amount, description, ride_id) VALUES ($1,$2,$3,$4,$5)',
+      [driverPhone, type, amount, description || null, rideId]
+    );
+    if (inTxn) await q.query('RELEASE SAVEPOINT driver_txn_log');
+  } catch (e) {
+    if (inTxn) await q.query('ROLLBACK TO SAVEPOINT driver_txn_log').catch(() => {});
+    console.error('[wallet] driver txn log failed:', e.message);
+  }
 }
 
 function advanceForFare(fare) {
@@ -114,5 +160,5 @@ async function refundToWallet(client, customerPhone, amount, rideId, note) {
 
 module.exports = {
   ADVANCE_THRESHOLD, ADVANCE_FRACTION,
-  advanceForFare, requiresAdvance, verifyAdvancePayment, verifyOnlinePayment, refundToWallet, creditDriverWallet, razorpay,
+  advanceForFare, requiresAdvance, verifyAdvancePayment, verifyOnlinePayment, refundToWallet, creditDriverWallet, logDriverTxn, razorpay,
 };

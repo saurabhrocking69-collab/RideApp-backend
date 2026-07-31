@@ -219,12 +219,25 @@ router.get('/driver/detail', async (req, res) => {
     if (!user.rows[0]) return res.json({ balance: 0, transactions: [] });
     const driverId = user.rows[0].id;
     const w = await db.query('SELECT balance, total_earned, COALESCE(total_withdrawn,0) AS total_withdrawn FROM driver_wallet WHERE driver_id=$1', [driverId]);
+    // is_parcel/return_status/package_size let the wallet screen show a parcel
+    // delivery AS a parcel delivery — without them a completed parcel is
+    // indistinguishable from an ordinary passenger ride here, since both just
+    // carry a vehicle ride_type like 'bike'.
     const rides = await db.query(
       `SELECT r.id, r.fare, r.payment_method, r.ride_type, r.created_at, r.commission_amount,
+              r.is_parcel, r.return_status, r.package_size,
               p.name AS passenger_name
        FROM rides r JOIN users d ON r.driver_id=d.id LEFT JOIN users p ON r.passenger_id=p.id
        WHERE d.phone=$1 AND r.status='completed' ORDER BY r.created_at DESC LIMIT 50`, [phone]
     );
+    // Actual wallet movements. The rides list above shows each job's gross
+    // fare, which is NOT what reached the wallet — commission is taken out,
+    // and pending cash commission can be auto-deducted on top. This is the
+    // statement that explains the balance.
+    const transactions = await db.query(
+      `SELECT type, amount, description, ride_id, created_at
+       FROM driver_transactions WHERE driver_phone=$1 ORDER BY created_at DESC LIMIT 50`, [phone]
+    ).catch(() => ({ rows: [] }));
     const hourly = await db.query(
       `SELECT id, base_fare, total_fare, driver_earning, vehicle_type, package_hours, customer_phone, created_at
        FROM hourly_bookings WHERE driver_phone=$1 AND status='completed' ORDER BY created_at DESC LIMIT 30`, [phone]
@@ -235,7 +248,7 @@ router.get('/driver/detail', async (req, res) => {
     res.json({
       name: user.rows[0].name, vehicle_type: user.rows[0].vehicle_type, vehicle_no: user.rows[0].vehicle_no,
       wallet: { balance: parseFloat(w.rows[0]?.balance||0), total_earned: parseFloat(w.rows[0]?.total_earned||0), total_withdrawn: parseFloat(w.rows[0]?.total_withdrawn||0) },
-      rides: rides.rows, hourly: hourly.rows, payouts: payouts.rows,
+      rides: rides.rows, hourly: hourly.rows, payouts: payouts.rows, transactions: transactions.rows,
     });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });

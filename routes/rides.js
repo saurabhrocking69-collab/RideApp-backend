@@ -15,7 +15,7 @@ const { maybeGrantReferralReward } = require('./referral');
 const { getSurgeMultiplier } = require('../services/locationIntelligence');
 const { calculateFare, getISTHour } = require('../services/pricing');
 const { useSubscriptionIfActive } = require('../services/subscription');
-const { requiresAdvance, verifyAdvancePayment, refundToWallet } = require('../services/advance');
+const { requiresAdvance, verifyAdvancePayment, refundToWallet, logDriverTxn } = require('../services/advance');
 
 function emitRideUpdate(rideId, data) {
   emitToRoom('ride_' + rideId, 'rideUpdate', { rideId, ...data });
@@ -1072,6 +1072,21 @@ async function completeRidePayment({ ride_id, payment_method, phone }) {
 
           if (autoDeduct > 0) {
             await payClient.query(`UPDATE driver_commissions SET status = 'auto_settled' WHERE driver_phone = $1 AND status = 'cash_owed'`, [drPhone]);
+          }
+
+          // Ledger lines for the driver's wallet history. This path credits
+          // driver_wallet with its own raw SQL rather than going through
+          // creditDriverWallet, so it has to log its own — otherwise the
+          // MAIN earning path (every completed ride and parcel delivery)
+          // would be the one thing missing from the statement.
+          // The gross earning and any auto-deducted cash commission are
+          // logged as separate lines so the net credit is explainable
+          // instead of looking like an unexplained short payment.
+          await logDriverTxn(payClient, drPhone, 'credit', driverEarning,
+            ride.is_parcel ? 'Parcel delivery earning' : 'Ride earning', ride_id);
+          if (autoDeduct > 0) {
+            await logDriverTxn(payClient, drPhone, 'debit', autoDeduct,
+              'Pending cash commission deducted', ride_id);
           }
         }
       }
