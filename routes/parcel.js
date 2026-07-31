@@ -38,6 +38,17 @@ db.query('ALTER TABLE rides ADD COLUMN IF NOT EXISTS return_payment_method TEXT'
 // package. The driver is still paid for the outbound trip in that case.
 const RETURN_DECISION_TIMEOUT_HOURS = 24;
 
+// ⚠️  Paid returns change what /return-decision does: instead of confirming
+// the return outright, it parks the ride in 'awaiting_payment' until the
+// sender pays via /return-pay. The installed customer builds have no
+// pay-for-return screen (no OTA — see the pending-native-rebuild memory), so
+// with this on and the apps un-rebuilt a sender could ask for a return and
+// then have no way to complete it: the driver is never sent back and the
+// package sits until the 24h dispose window. Off until both apps ship the UI.
+// /confirm-return handles both models regardless of this flag, so returns
+// already in flight when it's flipped still settle correctly.
+const PAID_RETURN_ENABLED = process.env.PARCEL_PAID_RETURN === 'on';
+
 // ── Return leg fare — a real quote for driving drop→pickup, priced through
 //    the same engine as the outbound trip (not a % of the original), so a
 //    receiver who turned out to be far away doesn't leave the driver
@@ -378,6 +389,22 @@ router.post('/return-decision', userAuth, async (req, res) => {
     // the OTP is what authorises the handover, so it must not exist before
     // the trip it belongs to has been paid for.
     const returnFare = ride.return_fare != null ? Math.round(parseFloat(ride.return_fare)) : computeReturnFare(ride);
+
+    if (!PAID_RETURN_ENABLED) {
+      // Legacy behaviour — confirm the return immediately and mint the OTP,
+      // exactly as before paid returns existed. /confirm-return detects the
+      // absent escrow and settles on the old 50/50 terms.
+      const legacyOtp = Math.floor(1000 + Math.random() * 9000).toString();
+      await db.query("UPDATE rides SET return_status='accepted', return_otp=$1 WHERE id=$2", [legacyOtp, ride_id]);
+      await clearRide(ride_id).catch(() => {});
+      emitToRoom('ride_' + ride_id, 'returnDecisionMade', {
+        ride_id, decision: 'return',
+        pickup: ride.pickup, pickup_lat: ride.pickup_lat, pickup_lng: ride.pickup_lng,
+      });
+      sendFCM(ride.driver_phone, '🔄 Return the Package', 'The sender wants the package back — head back to the pickup location.', { type: 'return_decision_made', ride_id: String(ride_id) }, { role: 'driver' }).catch(() => {});
+      return res.json({ success: true, decision: 'return', return_otp: legacyOtp });
+    }
+
     await db.query("UPDATE rides SET return_status='awaiting_payment', return_fare=$1, return_payment_status='pending' WHERE id=$2", [returnFare, ride_id]);
     await clearRide(ride_id).catch(() => {}); // see the comment in /flag-non-delivery above
     emitToRoom('ride_' + ride_id, 'returnDecisionMade', {
@@ -496,29 +523,51 @@ router.post('/confirm-return', userAuth, async (req, res) => {
     const ride = r.rows[0];
     if (ride.driver_phone !== driver_phone) return res.status(403).json({ error: 'This ride does not belong to you' });
     if (ride.return_status !== 'accepted') return res.status(400).json({ error: 'Return was not confirmed by the sender' });
-    if (ride.return_payment_status !== 'escrowed')
-      return res.status(400).json({ error: 'The return trip has not been paid for yet' });
     if (ride.return_otp !== return_otp) return res.status(400).json({ error: 'Incorrect return OTP!' });
 
-    // Two separate paid legs, both already escrowed:
-    //   outbound — the driver drove to the receiver and genuinely did that
-    //              work, so it is earned in full (sender gets no refund).
-    //   return   — a second real trip the sender explicitly paid for.
-    // Platform commission applies to both, on the same basis as any other
-    // completed job (see parcelCommission), rather than the old model where
-    // the driver got 50% of ONE fare for ~two trips of work.
-    const outboundFare = Math.max(0, parseFloat(ride.fare || 0) - parseFloat(ride.discount || 0));
-    const returnFare   = Math.round(parseFloat(ride.return_fare || 0));
-    const outCommission = await parcelCommission(ride.ride_type, outboundFare);
-    const retCommission = await parcelCommission(ride.ride_type, returnFare);
-    const commissionTotal = Math.round((outCommission + retCommission) * 100) / 100;
-    const driverEarns = Math.max(0, Math.round((outboundFare + returnFare - commissionTotal) * 100) / 100);
+    // A return that was authorised under the OLD rules (sender approved it
+    // before paid returns existed, so no fare was ever quoted or charged) must
+    // still be settleable. Otherwise every return already in flight at deploy
+    // time becomes permanently stuck: package physically handed back, money
+    // frozen, no endpoint willing to close it. Those settle on the old terms;
+    // only returns that actually went through /return-pay use the two-leg
+    // model. New-flow rides can never reach here unpaid — /return-pay is the
+    // only thing that sets return_status='accepted', and it always escrows in
+    // the same statement.
+    const isPaidReturn = ride.return_payment_status === 'escrowed';
+
+    let outboundFare, returnFare, commissionTotal, driverEarns, legacyRefund = 0;
+    if (isPaidReturn) {
+      // Two separate paid legs, both already escrowed:
+      //   outbound — the driver drove to the receiver and genuinely did that
+      //              work, so it is earned in full (sender gets no refund).
+      //   return   — a second real trip the sender explicitly paid for.
+      // Platform commission applies to both, on the same basis as any other
+      // completed job (see parcelCommission).
+      outboundFare = Math.max(0, parseFloat(ride.fare || 0) - parseFloat(ride.discount || 0));
+      returnFare   = Math.round(parseFloat(ride.return_fare || 0));
+      const outCommission = await parcelCommission(ride.ride_type, outboundFare);
+      const retCommission = await parcelCommission(ride.ride_type, returnFare);
+      commissionTotal = Math.round((outCommission + retCommission) * 100) / 100;
+      driverEarns = Math.max(0, Math.round((outboundFare + returnFare - commissionTotal) * 100) / 100);
+    } else {
+      // Legacy terms: PARCEL_RETURN_FEE_PCT of the single original fare to the
+      // driver, commission waived, remainder refunded to the sender.
+      const fare = parseFloat(ride.fare || 0);
+      outboundFare    = fare;
+      returnFare      = Math.round(fare * PARCEL_RETURN_FEE_PCT);
+      legacyRefund    = Math.max(0, fare - returnFare);
+      commissionTotal = 0;
+      driverEarns     = returnFare;
+    }
 
     await transitionRide(ride_id, 'completed', {
       extraFields: {
         return_status: 'returned', payment_status: 'completed',
-        return_payment_status: 'released',
-        commission_amount: commissionTotal, commission_status: 'pending', return_fee: returnFare,
+        ...(isPaidReturn ? { return_payment_status: 'released' } : {}),
+        commission_amount: commissionTotal,
+        commission_status: isPaidReturn ? 'pending' : 'waived_return',
+        return_fee: returnFare,
       },
       socketData: { fare: 0, discount: 0, return_status: 'returned' },
       custPhone: ride.passenger_phone, drvPhone: ride.driver_phone, skipFCM: true,
@@ -533,33 +582,44 @@ router.post('/confirm-return', userAuth, async (req, res) => {
     // happened), but the money movement itself now either fully succeeds or
     // is loudly logged for manual follow-up — never silently half-done.
     let settlementOk = true;
-    if (driverEarns > 0) {
+    if (driverEarns > 0 || legacyRefund > 0) {
       const sClient = await db.connect();
       try {
         await sClient.query('BEGIN');
-        await creditDriverWallet(sClient, ride.driver_phone, driverEarns, `Parcel delivery attempt + return trip (ride ${ride_id})`);
-        await sClient.query(
-          `INSERT INTO driver_commissions (driver_phone, ride_id, fare, commission, payment_method, status)
-           VALUES ($1,$2,$3,$4,'online','paid') ON CONFLICT (ride_id) DO NOTHING`,
-          [ride.driver_phone, ride_id, outboundFare + returnFare, commissionTotal]
-        );
+        if (legacyRefund > 0) await refundToWallet(sClient, ride.passenger_phone, legacyRefund, ride_id, 'Parcel returned — refund');
+        if (driverEarns > 0) {
+          await creditDriverWallet(sClient, ride.driver_phone, driverEarns,
+            isPaidReturn ? `Parcel delivery attempt + return trip (ride ${ride_id})` : 'Parcel return compensation');
+          if (commissionTotal > 0) {
+            await sClient.query(
+              `INSERT INTO driver_commissions (driver_phone, ride_id, fare, commission, payment_method, status)
+               VALUES ($1,$2,$3,$4,'online','paid') ON CONFLICT (ride_id) DO NOTHING`,
+              [ride.driver_phone, ride_id, outboundFare + returnFare, commissionTotal]
+            );
+          }
+        }
         await sClient.query('COMMIT');
       } catch (e) {
         await sClient.query('ROLLBACK').catch(() => {});
         settlementOk = false;
-        console.error(`[parcel] confirm-return settlement FAILED for ride ${ride_id} — driver payout ₹${driverEarns} to ${ride.driver_phone} did NOT land, needs manual admin follow-up:`, e.message);
+        console.error(`[parcel] confirm-return settlement FAILED for ride ${ride_id} — driver payout ₹${driverEarns} to ${ride.driver_phone}${legacyRefund > 0 ? ` and refund ₹${legacyRefund} to ${ride.passenger_phone}` : ''} did NOT land, needs manual admin follow-up:`, e.message);
       } finally { sClient.release(); }
     }
 
-    if (settlementOk) {
-      sendFCM(ride.passenger_phone, '📦 Package Returned', `Your package is back with you. Return trip charge: ₹${returnFare}.`, { type: 'trip_completed', ride_id: String(ride_id) }, { role: 'customer' }).catch(() => {});
-      sendFCM(ride.driver_phone, '✅ Return Confirmed', `₹${driverEarns} credited — delivery attempt + return trip, both paid.`, { type: 'earning_credited', amount: String(driverEarns) }, { role: 'driver' }).catch(() => {});
-    } else {
-      sendFCM(ride.passenger_phone, '📦 Package Returned', `Your package is back with you.`, { type: 'trip_completed', ride_id: String(ride_id) }, { role: 'customer' }).catch(() => {});
-      sendFCM(ride.driver_phone, '✅ Return Confirmed', `Your earnings are being processed — contact support if they don't appear soon.`, { type: 'earning_credited', amount: String(driverEarns) }, { role: 'driver' }).catch(() => {});
-    }
+    const custMsg = !settlementOk
+      ? 'Your package is back with you.'
+      : isPaidReturn
+        ? `Your package is back with you. Return trip charge: ₹${returnFare}.`
+        : `Your package is back with you. ₹${legacyRefund} refunded to your wallet.`;
+    const drvMsg = !settlementOk
+      ? "Your earnings are being processed — contact support if they don't appear soon."
+      : isPaidReturn
+        ? `₹${driverEarns} credited — delivery attempt + return trip, both paid.`
+        : `₹${driverEarns} credited to your wallet for the return trip.`;
+    sendFCM(ride.passenger_phone, '📦 Package Returned', custMsg, { type: 'trip_completed', ride_id: String(ride_id) }, { role: 'customer' }).catch(() => {});
+    sendFCM(ride.driver_phone, '✅ Return Confirmed', drvMsg, { type: 'earning_credited', amount: String(driverEarns) }, { role: 'driver' }).catch(() => {});
 
-    res.json({ success: true, refund: 0, outbound_fare: outboundFare, return_fare: returnFare, earned: driverEarns, commission_amount: commissionTotal, settlement_pending: !settlementOk });
+    res.json({ success: true, refund: legacyRefund, outbound_fare: outboundFare, return_fare: returnFare, earned: driverEarns, commission_amount: commissionTotal, paid_return: isPaidReturn, settlement_pending: !settlementOk });
   } catch (err) { console.error('[parcel] confirm-return', err.message); res.status(500).json({ error: 'Something went wrong — please try again' }); }
 });
 
