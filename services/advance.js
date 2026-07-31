@@ -39,6 +39,13 @@ db.query(`
 // 'emergency_cancel' (default, existing) | 'parcel_not_delivered' — lets the
 // admin portal tell the two dispute shapes apart in the same table/list.
 db.query("ALTER TABLE ride_disputes ADD COLUMN IF NOT EXISTS dispute_type TEXT DEFAULT 'emergency_cancel'").catch(() => {});
+// Where the driver (and therefore the package) was when the complaint was
+// filed. driver_locations only keeps a current position per phone and is
+// overwritten continuously, so this snapshot is the only durable record of it
+// by the time an admin reviews the case.
+db.query('ALTER TABLE ride_disputes ADD COLUMN IF NOT EXISTS driver_lat NUMERIC').catch(() => {});
+db.query('ALTER TABLE ride_disputes ADD COLUMN IF NOT EXISTS driver_lng NUMERIC').catch(() => {});
+db.query('ALTER TABLE ride_disputes ADD COLUMN IF NOT EXISTS driver_seen_at TIMESTAMPTZ').catch(() => {});
 
 // Credit a driver's wallet (used when admin awards the driver part of a dispute).
 async function creditDriverWallet(client, driverPhone, amount, note) {

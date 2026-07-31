@@ -831,8 +831,15 @@ router.post('/complete', async (req, res) => {
     // complete it as delivered when the sender explicitly asked for it back.
     if (ride.is_parcel && ride.return_status === 'pending_decision')
       return res.status(400).json({ error: "Still waiting on the sender's decision — can't confirm delivery yet." });
+    if (ride.is_parcel && ride.return_status === 'awaiting_payment')
+      return res.status(400).json({ error: "The sender asked for this package back and is paying for the return — can't confirm delivery." });
     if (ride.is_parcel && ride.return_status === 'accepted')
       return res.status(400).json({ error: 'The sender asked for this package back — confirm the return with the return OTP instead.' });
+    // A reported delivery has its escrow frozen pending admin review — the
+    // driver must not be able to release that money to themselves by simply
+    // completing the ride while the complaint is open.
+    if (ride.is_parcel && ride.payment_status === 'disputed')
+      return res.status(400).json({ error: 'This delivery is under review by our team — payment is on hold. Contact support.' });
 
     // ── Recalculate actual fare using real trip duration ───────────────────────
     // Intercity fares are FIXED at booking (own long-distance model with day
