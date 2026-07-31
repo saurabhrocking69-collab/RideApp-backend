@@ -175,7 +175,9 @@ router.get('/active-ride', async (req, res) => {
     const result = await db.query(
       `SELECT r.*, COALESCE(NULLIF(r.rider_name,''), p.name) AS passenger_name, COALESCE(NULLIF(r.rider_phone,''), p.phone) AS passenger_phone, d2.vehicle_no
        FROM rides r JOIN users d ON r.driver_id = d.id LEFT JOIN users p ON r.passenger_id::text = p.id::text LEFT JOIN drivers d2 ON r.driver_id = d2.id
-       WHERE d.phone = $1 AND r.status IN ('matched','arrived','started') ORDER BY r.created_at DESC LIMIT 1`,
+       WHERE d.phone = $1 AND r.status IN ('matched','arrived','started')
+         AND r.parcel_parked_at IS NULL
+       ORDER BY r.created_at DESC LIMIT 1`,
       [phone]
     );
     const ride = result.rows[0] || null;
@@ -198,7 +200,11 @@ router.post('/update-location', async (req, res) => {
        ON CONFLICT (phone) DO UPDATE SET lat = $2, lng = $3, geocell = $4, updated_at = NOW()`,
       [phone, lat, lng, geocell]
     );
-    const activeRide = await db.query(`SELECT r.id FROM rides r JOIN users u ON r.driver_id=u.id WHERE u.phone=$1 AND r.status IN ('matched','arrived','started') LIMIT 1`, [phone]);
+    // Parked parcels excluded: the driver has been released to other work, so
+    // the job whose customer should be watching them move is the live one.
+    // Without this the LIMIT 1 could pick the parked parcel and the customer
+    // actually being driven to would silently stop receiving location updates.
+    const activeRide = await db.query(`SELECT r.id FROM rides r JOIN users u ON r.driver_id=u.id WHERE u.phone=$1 AND r.status IN ('matched','arrived','started') AND r.parcel_parked_at IS NULL LIMIT 1`, [phone]);
     if (activeRide.rows[0]) {
       const rideId = activeRide.rows[0].id;
       const io = getIO();

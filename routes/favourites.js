@@ -143,7 +143,9 @@ router.post('/book', async (req, res) => {
       return res.json({ success: false, reason: 'offline', driver_name: buddy.driver_name });
 
     const busyCheck = await client.query(
-      `SELECT 1 FROM rides WHERE driver_id=$1 AND status IN ('matched','arrived','started') LIMIT 1`,
+      // A parked parcel doesn't make a favourite buddy "busy" — they've been
+      // released to take normal rides while carrying it.
+      `SELECT 1 FROM rides WHERE driver_id=$1 AND status IN ('matched','arrived','started') AND parcel_parked_at IS NULL LIMIT 1`,
       [buddy.driver_id]
     );
     if (busyCheck.rows[0])

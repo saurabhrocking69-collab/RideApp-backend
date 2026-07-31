@@ -71,12 +71,21 @@ async function broadcastToRadius(rideId, pickupLat, pickupLng, rideType, radiusM
          AND NOT EXISTS (
            SELECT 1 FROM rides r2
            WHERE r2.driver_id = d.id AND r2.status IN ('matched','arrived','started')
+             AND (
+               -- A genuinely active job always blocks new work.
+               r2.parcel_parked_at IS NULL
+               -- A PARKED parcel doesn't: the driver is free to earn while
+               -- carrying it. The one exception is another parcel — nobody
+               -- should be holding two undelivered packages at once, so a
+               -- parked parcel still blocks parcel dispatch specifically.
+               OR (SELECT is_parcel FROM rides WHERE id = $2) = true
+             )
          )
          AND NOT EXISTS (
            SELECT 1 FROM hourly_bookings hb
            WHERE hb.driver_phone = u.phone AND hb.status IN ('matched','arrived','active')
          )`,
-      [rideType]
+      [rideType, rideId]
     ),
   ]);
 
@@ -409,6 +418,7 @@ async function activateQueuedRide(driverPhone) {
          SELECT 1 FROM rides r2
          WHERE r2.driver_id = (SELECT id FROM users WHERE phone = $1)
            AND r2.status IN ('matched', 'arrived', 'started')
+           AND r2.parcel_parked_at IS NULL
        )
      RETURNING id`,
     [driverPhone, pr.id]
@@ -606,7 +616,7 @@ async function getAvailableAlternatives(rideType) {
   const r = await db.query(
     `SELECT d.vehicle_type, COUNT(*) AS cnt FROM drivers d JOIN users u ON d.id = u.id
      WHERE d.vehicle_type = ANY($1) AND d.is_online = true AND d.verification_status = 'approved'
-       AND NOT EXISTS (SELECT 1 FROM rides r2 WHERE r2.driver_id = d.id AND r2.status IN ('matched','arrived','started'))
+       AND NOT EXISTS (SELECT 1 FROM rides r2 WHERE r2.driver_id = d.id AND r2.status IN ('matched','arrived','started') AND r2.parcel_parked_at IS NULL)
        AND NOT EXISTS (SELECT 1 FROM hourly_bookings hb WHERE hb.driver_phone = u.phone AND hb.status IN ('matched','arrived','active'))
      GROUP BY d.vehicle_type`,
     [alts]

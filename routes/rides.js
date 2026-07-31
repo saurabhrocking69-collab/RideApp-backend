@@ -1337,7 +1337,7 @@ router.get('/driver-eta', async (req, res) => {
          AND d.verification_status = 'approved'
          AND NOT EXISTS (
            SELECT 1 FROM rides r2
-           WHERE r2.driver_id = d.id AND r2.status IN ('matched','arrived','started')
+           WHERE r2.driver_id = d.id AND r2.status IN ('matched','arrived','started') AND r2.parcel_parked_at IS NULL
          )`
     );
 
@@ -1409,7 +1409,7 @@ router.get('/nearby-drivers', async (req, res) => {
          AND dl.updated_at > NOW() - INTERVAL '15 minutes'
          AND NOT EXISTS (
            SELECT 1 FROM rides r2
-           WHERE r2.driver_id = d.id AND r2.status IN ('matched','arrived','started')
+           WHERE r2.driver_id = d.id AND r2.status IN ('matched','arrived','started') AND r2.parcel_parked_at IS NULL
          )`
     );
     const drivers = drRes.rows

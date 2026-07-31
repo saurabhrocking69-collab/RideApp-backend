@@ -35,6 +35,12 @@ db.query('ALTER TABLE rides ADD COLUMN IF NOT EXISTS return_payment_method TEXT'
 // How many nudges the sender has already been sent while the decision sits
 // unanswered — so the reminder cron doesn't spam the same person every pass.
 db.query('ALTER TABLE rides ADD COLUMN IF NOT EXISTS return_reminders_sent INTEGER DEFAULT 0').catch(() => {});
+// Set once the undelivered parcel stops being the driver's active job and moves
+// to their background queue. See PARK_AFTER_MINUTES below.
+db.query('ALTER TABLE rides ADD COLUMN IF NOT EXISTS parcel_parked_at TIMESTAMPTZ').catch(() => {});
+// Set when the driver has been told their parked parcel is now closeable, so
+// that prompt fires exactly once.
+db.query('ALTER TABLE rides ADD COLUMN IF NOT EXISTS close_prompt_sent_at TIMESTAMPTZ').catch(() => {});
 
 // How long the sender gets to respond (retry / pay for a return) before the
 // driver may close the trip and stop waiting on them.
@@ -53,6 +59,20 @@ db.query('ALTER TABLE rides ADD COLUMN IF NOT EXISTS return_reminders_sent INTEG
 const RETURN_DECISION_TIMEOUT_HOURS = 5;
 // Sender nudges at these elapsed-hour marks before the window closes.
 const RETURN_REMINDER_HOURS = [2, 4];
+
+// After this long with no sender response, the parcel is "parked": it stops
+// being the driver's active job and moves to a background queue so they can
+// earn again, while still physically holding the package. Waiting 5h doing
+// nothing would otherwise cost the driver their whole evening.
+//
+// Deliberately implemented as a separate `parcel_parked_at` marker rather than
+// a new rides.status value: status stays 'started', so masked calling, live
+// tracking, ride history and the entire return sub-flow keep working with zero
+// changes. ONLY the "is this driver free for new work" checks learn about it —
+// which is the narrowest possible blast radius. (Introducing a new status
+// value is what broke dispatch when route batching shipped; see
+// services/parcelBatching.js.)
+const PARK_AFTER_MINUTES = 20;
 
 // ⚠️  Paid returns change what /return-decision does: instead of confirming
 // the return outright, it parks the ride in 'awaiting_payment' until the
@@ -652,6 +672,45 @@ router.post('/confirm-return', userAuth, async (req, res) => {
 
     res.json({ success: true, refund: legacyRefund, outbound_fare: outboundFare, return_fare: returnFare, earned: driverEarns, commission_amount: commissionTotal, paid_return: isPaidReturn, settlement_pending: !settlementOk });
   } catch (err) { console.error('[parcel] confirm-return', err.message); res.status(500).json({ error: 'Something went wrong — please try again' }); }
+});
+
+// ── GET /api/parcel/held?phone= — parcels the driver is still physically
+//    carrying but which are no longer their active job (parked after the
+//    sender went quiet). /api/driver/active-ride deliberately excludes these,
+//    so without this endpoint the package would be invisible in the app the
+//    moment it stopped blocking dispatch. Also drives the "close after 5h"
+//    countdown and tells the app when the sender has since replied. ──────────
+router.get('/held', async (req, res) => {
+  const { phone } = req.query;
+  if (!phone) return res.status(400).json({ error: 'phone required' });
+  try {
+    const r = await db.query(
+      `SELECT r.id, r.pickup, r.drop_location, r.receiver_name, r.receiver_phone,
+              r.package_size, r.package_note, r.fare, r.return_status, r.return_fare,
+              r.return_otp, r.delivery_fail_reason, r.parcel_parked_at, r.return_requested_at,
+              p.name AS sender_name, p.phone AS sender_phone,
+              EXTRACT(EPOCH FROM (NOW() - r.return_requested_at))/3600 AS hours_waited
+       FROM rides r JOIN users d ON r.driver_id = d.id LEFT JOIN users p ON r.passenger_id = p.id
+       WHERE d.phone = $1 AND r.status = 'started' AND r.is_parcel = true
+         AND r.parcel_parked_at IS NOT NULL
+       ORDER BY r.parcel_parked_at ASC`,
+      [phone]
+    );
+    const parcels = r.rows.map(row => {
+      const waited = parseFloat(row.hours_waited || 0);
+      return {
+        ...row,
+        hours_waited: Math.round(waited * 10) / 10,
+        // The sender came back and paid — this is now a real return trip to run,
+        // not something to close out.
+        awaiting_return_trip: row.return_status === 'accepted',
+        can_close: row.return_status !== 'accepted' && waited >= RETURN_DECISION_TIMEOUT_HOURS,
+        hours_until_close: Math.max(0, Math.round((RETURN_DECISION_TIMEOUT_HOURS - waited) * 10) / 10),
+        close_after_hours: RETURN_DECISION_TIMEOUT_HOURS,
+      };
+    });
+    res.json({ parcels, count: parcels.length });
+  } catch (err) { console.error('[parcel] held', err.message); res.status(500).json({ error: 'Something went wrong — please try again' }); }
 });
 
 // ── POST /api/parcel/close-unclaimed — the sender never responded (no retry,

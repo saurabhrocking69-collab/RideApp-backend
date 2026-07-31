@@ -255,7 +255,7 @@ app.get('/debug/worker-query', debugAuth, async (req, res) => {
         AND (d.vehicle_type = $1 OR (d.vehicle_type = 'ultra_luxury' AND $1 = 'luxury'))
         AND NOT EXISTS (
           SELECT 1 FROM rides r2
-          WHERE r2.driver_id = d.id AND r2.status IN ('matched','arrived','started')
+          WHERE r2.driver_id = d.id AND r2.status IN ('matched','arrived','started') AND r2.parcel_parked_at IS NULL
         )
     `, [rideType]);
 
@@ -1478,6 +1478,19 @@ setInterval(async () => {
            OR (is_intercity = true AND return_at IS NULL
               AND COALESCE(trip_started_at, created_at) < NOW() - INTERVAL '10 days')
          )
+         -- Undelivered parcels are NOT stuck rides. A parcel awaiting the
+         -- sender's decision, or parked with the driver, legitimately stays
+         -- 'started' for hours and has its own settlement path
+         -- (/api/parcel/close-unclaimed, which pays the driver and tells the
+         -- sender where their package is). Cancelling one here would strand
+         -- the sender's escrow on a cancelled ride AND rob the driver of a
+         -- delivery they actually performed — both parties lose money and
+         -- neither is told why.
+         AND NOT (
+           COALESCE(is_parcel, false) = true
+           AND (parcel_parked_at IS NOT NULL
+                OR return_status IN ('pending_decision','awaiting_payment','accepted'))
+         )
        RETURNING id, passenger_id`
     );
     for (const row of stuckStarted.rows) {
@@ -1562,15 +1575,61 @@ setInterval(async () => {
   try {
     const RETURN_REMINDER_HOURS = [2, 4];      // must match routes/parcel.js
     const RETURN_DECISION_TIMEOUT_HOURS = 5;
+    const PARK_AFTER_MINUTES = 20;             // must match routes/parcel.js
     const due = await db.query(
-      `SELECT r.id, r.return_reminders_sent, u.phone AS passenger_phone,
+      `SELECT r.id, r.return_reminders_sent, r.parcel_parked_at, r.close_prompt_sent_at,
+              u.phone AS passenger_phone, dv.phone AS driver_phone,
               EXTRACT(EPOCH FROM (NOW() - r.return_requested_at))/3600 AS hours_waited
        FROM rides r JOIN users u ON r.passenger_id = u.id
+       LEFT JOIN users dv ON r.driver_id = dv.id
        WHERE r.is_parcel = true AND r.status = 'started'
          AND r.return_status IN ('pending_decision','awaiting_payment')
          AND r.return_requested_at IS NOT NULL
          AND r.return_requested_at > NOW() - INTERVAL '24 hours'`
     );
+
+    // ── Park the parcel once the sender has gone quiet for PARK_AFTER_MINUTES.
+    // The driver keeps the package but stops being pinned to this job, so they
+    // can take rides again instead of sitting idle for hours waiting on someone
+    // who may never reply. Claimed conditionally so two passes can't both fire
+    // the notification.
+    for (const row of due.rows) {
+      if (row.parcel_parked_at) continue;
+      if (parseFloat(row.hours_waited || 0) * 60 < PARK_AFTER_MINUTES) continue;
+      const parked = await db.query(
+        'UPDATE rides SET parcel_parked_at = NOW() WHERE id = $1 AND parcel_parked_at IS NULL RETURNING id',
+        [row.id]
+      );
+      if (!parked.rows[0]) continue;
+      row.parcel_parked_at = new Date();
+      await clearRideCache(row.id).catch(() => {});
+      if (row.driver_phone) {
+        sendFCM(row.driver_phone, '✅ You can take rides again',
+          'The sender still hasn\'t replied, so this parcel has moved to your queue. Keep it safe with you — you\'re free to accept other rides now.',
+          { type: 'parcel_parked', ride_id: String(row.id) }, { role: 'driver' }).catch(() => {});
+      }
+      emitToRoom('ride_' + row.id, 'rideUpdate', { rideId: row.id, parcel_parked: true });
+      console.log(`[parcel] ride ${row.id} parked — driver released back to dispatch`);
+    }
+
+    // ── Tell the driver once their parked parcel can be closed. Without this a
+    // driver who parked one and moved on has no reason to look at it again —
+    // and an un-closed parked parcel keeps blocking them from NEW parcel jobs
+    // indefinitely, quietly costing them delivery income they'd never connect
+    // to the forgotten package.
+    for (const row of due.rows) {
+      if (!row.parcel_parked_at || row.close_prompt_sent_at || !row.driver_phone) continue;
+      if (parseFloat(row.hours_waited || 0) < RETURN_DECISION_TIMEOUT_HOURS) continue;
+      const claim = await db.query(
+        'UPDATE rides SET close_prompt_sent_at = NOW() WHERE id = $1 AND close_prompt_sent_at IS NULL RETURNING id',
+        [row.id]
+      );
+      if (!claim.rows[0]) continue;
+      sendFCM(row.driver_phone, '📦 Parcel still with you',
+        `The sender never replied. You can close this delivery now and get paid — keep the package safe in case they contact you.`,
+        { type: 'parcel_closeable', ride_id: String(row.id) }, { role: 'driver' }).catch(() => {});
+    }
+
     for (const row of due.rows) {
       const waited = parseFloat(row.hours_waited || 0);
       const sent = parseInt(row.return_reminders_sent || 0);
@@ -1593,7 +1652,7 @@ setInterval(async () => {
       console.log(`[parcel] reminder ${owed} sent for ride ${row.id} (${waited.toFixed(1)}h waited)`);
     }
   } catch (_e) {}
-}, 10 * 60 * 1000); // every 10 minutes — window is only 5h, so checks must be fine-grained
+}, 5 * 60 * 1000); // every 5 min — parking at 20min and a 5h window both need fine-grained checks
 
 // ── Cron: auto-resolve emergency ride disputes after 2 days ──
 // If admin hasn't decided within the 2-day hold, refund the full held advance
