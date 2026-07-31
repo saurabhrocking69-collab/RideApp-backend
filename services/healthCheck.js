@@ -149,6 +149,18 @@ async function checkRequestedRidesNotStuck() {
   if (stuck.rows.length > 0) throw new Error(`${stuck.rows.length} ride(s) stranded in 'requested' with no active broadcast window — re-queued`);
 }
 
+async function checkBatchOffersNotStuck() {
+  // 'batch_offered' parcels are released only by an in-process setTimeout in
+  // broadcastBatchOffer, which dies on restart — and the status is invisible
+  // to every other query here (driver available-rides, customer active-ride,
+  // stale-ride crons, and checkRequestedRidesNotStuck above, which filters on
+  // status='requested'). Without this, a restart mid-offer strands a paid
+  // parcel forever with no driver able to see it.
+  const { recoverStrandedBatchOffers } = require('./parcelBatching');
+  const recovered = await recoverStrandedBatchOffers();
+  if (recovered > 0) throw new Error(`${recovered} parcel batch offer(s) stranded in 'batch_offered' — released back to normal dispatch`);
+}
+
 // ─── Alert Helpers ────────────────────────────────────────────────────────────
 
 function alert(title, body, data = {}) {
@@ -165,6 +177,7 @@ const CHECKS = [
   { id: 'upi_column',     label: 'Driver UPI Column',           fn: checkDriverUpiColumn },
   { id: 'stuck_rides',    label: 'Stuck Rides',                 fn: checkStuckRides },
   { id: 'requested_stuck', label: 'Stranded Broadcast Recovery', fn: checkRequestedRidesNotStuck },
+  { id: 'batch_stuck',    label: 'Stranded Parcel Batch Offers', fn: checkBatchOffersNotStuck },
   { id: 'scheduled',      label: 'Scheduled Ride Dispatch',     fn: checkScheduledRidesNotStuck },
 ];
 

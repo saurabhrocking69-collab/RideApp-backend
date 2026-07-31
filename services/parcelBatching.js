@@ -34,6 +34,27 @@ const { emitToRoom } = require('../config/socket');
 const { sendFCM } = require('../config/firebase');
 const { assignRideToNextDriver } = require('../workers/rideWorker');
 
+// ⚠️  KILL SWITCH — batching stays OFF unless PARCEL_BATCHING=on is set.
+//
+// A batch offer reaches the driver ONLY via the 'batchOffer' socket event and
+// the 'batch_offer' FCM type — both of which are handled by driver-app code
+// that exists in the repo but is NOT in any installed build (neither app has
+// expo-updates/OTA, so pushed JS can't reach a phone without an EAS rebuild +
+// reinstall — see the pending-native-rebuild memory).
+//
+// With batching on and the apps un-rebuilt, two compatible parcels get moved
+// to status 'batch_offered', which NO other query in this codebase recognises:
+// not the driver's available-rides list (routes/drivers.js), not the
+// customer's active-ride lookup (server.js), not the stale-ride crons, and not
+// checkRequestedRidesNotStuck in healthCheck.js. Result: the delivery request
+// silently disappears from the driver app for the 30s offer window — and if
+// the server restarts inside that window (a Railway redeploy will do it), the
+// setTimeout that would have released them dies with it and both parcels are
+// stranded in 'batch_offered' permanently, invisible to every recovery path.
+//
+// Do NOT flip this on until both apps are rebuilt via EAS and reinstalled.
+const BATCHING_ENABLED = process.env.PARCEL_BATCHING === 'on';
+
 const BATCH_PICKUP_PROXIMITY_KM = 1.5;   // pickups must be this close to consider batching
 const BATCH_MATCH_WINDOW_MIN    = 10;    // only match against parcels requested within the last N minutes
 const BATCH_DISCOUNT_PERCENT    = 10;    // % refunded to each sender's wallet when a batch confirms
@@ -78,8 +99,42 @@ const VEHICLE_CLASS = {
     `);
     await db.query('ALTER TABLE rides ADD COLUMN IF NOT EXISTS batch_id INTEGER').catch(() => {});
     console.log('[batching] tables ready');
+    await recoverStrandedBatchOffers();
   } catch (e) { console.error('[batching] table init failed:', e.message); }
 })();
+
+// ── Recover parcels stranded in 'batch_offered' ─────────────────────────────
+// The only thing that normally moves a ride out of 'batch_offered' is the
+// in-process setTimeout in broadcastBatchOffer. That timer does not survive a
+// restart, and 'batch_offered' is recognised by NO other query in this
+// codebase — not the driver's available-rides list, not the customer's
+// active-ride lookup, not the stale-ride crons, not healthCheck.js's
+// checkRequestedRidesNotStuck. So a restart mid-offer strands both parcels
+// permanently: the sender is charged, no driver can ever see the job, and no
+// recovery path exists. Runs at startup (catching anything stranded by an
+// earlier deploy) and periodically from healthCheck.
+async function recoverStrandedBatchOffers() {
+  try {
+    const stale = await db.query(
+      `SELECT DISTINCT batch_id FROM rides
+       WHERE status='batch_offered' AND batch_id IS NOT NULL
+         AND created_at > NOW() - INTERVAL '24 hours'`
+    );
+    if (!stale.rows.length) return 0;
+    console.warn(`[batching] recovering ${stale.rows.length} stranded batch offer(s)`);
+    for (const row of stale.rows) {
+      // Force status back to 'offered' so expireBatchOffer's own guard passes
+      // even if the batch row was left mid-state, then let it do the normal
+      // release + re-dispatch of both legs.
+      await db.query(`UPDATE ride_batches SET status='offered' WHERE id=$1 AND status <> 'matched'`, [row.batch_id]);
+      await expireBatchOffer(row.batch_id).catch(e => console.error('[batching] recovery failed for batch', row.batch_id, e.message));
+    }
+    return stale.rows.length;
+  } catch (e) {
+    console.error('[batching] stranded-offer recovery failed:', e.message);
+    return 0;
+  }
+}
 
 // ── Find a still-unassigned, compatible, nearby parcel to batch with ────────
 async function findBatchPartner(rideId, vehicleType, packageSize, pickupLat, pickupLng) {
@@ -133,6 +188,7 @@ function sequenceStops(driverLat, driverLng, rideA, rideB) {
 //    run the normal single-ride broadcast); false means "no partner found,
 //    dispatch this normally." ────────────────────────────────────────────────
 async function tryBatchDispatch(rideId, vehicleType, packageSize, pickupLat, pickupLng) {
+  if (!BATCHING_ENABLED) return false; // see the BATCHING_ENABLED note above — off until both apps are rebuilt
   const partner = await findBatchPartner(rideId, vehicleType, packageSize, pickupLat, pickupLng);
   if (!partner) return false;
 
@@ -150,7 +206,12 @@ async function tryBatchDispatch(rideId, vehicleType, packageSize, pickupLat, pic
        RETURNING id`,
       [rideId, partner.id]
     );
-    if (claim.rows.length !== 2) { await client.query('ROLLBACK'); client.release(); return false; }
+    // NOTE: no client.release() in this path (or the catch below) — the
+    // finally block already releases. Releasing twice makes node-postgres
+    // throw "Release called on client which has already been released",
+    // and a throw from finally replaces the return value, so this function
+    // would reject instead of returning false.
+    if (claim.rows.length !== 2) { await client.query('ROLLBACK'); return false; }
 
     const bRes = await client.query(
       `INSERT INTO ride_batches (vehicle_type, package_size) VALUES ($1,$2) RETURNING id`,
@@ -161,7 +222,6 @@ async function tryBatchDispatch(rideId, vehicleType, packageSize, pickupLat, pic
     await client.query('COMMIT');
   } catch (e) {
     await client.query('ROLLBACK').catch(() => {});
-    client.release();
     console.error('[batching] claim failed:', e.message);
     return false;
   } finally { client.release(); }
@@ -371,4 +431,4 @@ async function applyBatchDiscount(batchId) {
   }
 }
 
-module.exports = { tryBatchDispatch, expireBatchOffer, acceptBatch, applyBatchDiscount, sequenceStops, BATCH_DISCOUNT_PERCENT };
+module.exports = { tryBatchDispatch, expireBatchOffer, acceptBatch, applyBatchDiscount, sequenceStops, recoverStrandedBatchOffers, BATCHING_ENABLED, BATCH_DISCOUNT_PERCENT };
