@@ -16,6 +16,7 @@ const { getSurgeMultiplier } = require('../services/locationIntelligence');
 const { calculateFare, getISTHour } = require('../services/pricing');
 const { useSubscriptionIfActive } = require('../services/subscription');
 const { requiresAdvance, verifyAdvancePayment, refundToWallet, logDriverTxn } = require('../services/advance');
+const { isGreen, co2SavedGrams, co2Equivalent, greenFactors } = require('../services/green');
 
 function emitRideUpdate(rideId, data) {
   emitToRoom('ride_' + rideId, 'rideUpdate', { rideId, ...data });
@@ -1422,17 +1423,66 @@ router.get('/nearby-drivers', async (req, res) => {
 });
 
 // GET /api/rides/history
+// ── GET /api/rides/green-summary?phone= — a rider's lifetime CO₂ saving ─────
+// Counts every completed electric ride they have ever taken. Computed live
+// from distance_km, so rides taken before this feature existed are included.
+router.get('/green-summary', async (req, res) => {
+  const { phone } = req.query;
+  if (!phone) return res.status(400).json({ error: 'phone required' });
+  try {
+    const r = await db.query(
+      `SELECT ride_type, distance_km FROM rides
+       WHERE passenger_id = (SELECT id FROM users WHERE phone = $1)
+         AND status = 'completed' AND distance_km IS NOT NULL`,
+      [phone]
+    );
+    let grams = 0, greenRides = 0, greenKm = 0, totalRides = 0;
+    for (const row of r.rows) {
+      totalRides++;
+      if (!isGreen(row.ride_type)) continue;
+      greenRides++;
+      greenKm += parseFloat(row.distance_km) || 0;
+      grams += co2SavedGrams(row.ride_type, row.distance_km);
+    }
+    res.json({
+      co2_saved_g: grams,
+      ...co2Equivalent(grams),
+      green_rides: greenRides,
+      green_km: Math.round(greenKm * 10) / 10,
+      total_rides: totalRides,
+      // Share of their rides that were electric — the number that actually
+      // nudges behaviour, since a lifetime total only ever goes up.
+      green_share_pct: totalRides ? Math.round((greenRides / totalRides) * 100) : 0,
+      // So the app can show "this choice saves ~Xg" at the moment of booking
+      // without holding its own copy of the emission factors.
+      factors: greenFactors(),
+      estimate: true,
+    });
+  } catch (err) {
+    console.error('[green-summary]', err.message);
+    res.status(500).json({ error: 'Something went wrong — please try again' });
+  }
+});
+
 router.get('/history', async (req, res) => {
   const { phone } = req.query;
   try {
     const result = await db.query(
       `SELECT r.id, r.pickup, r.drop_location, r.fare, r.ride_type, r.status, r.created_at,
+              r.distance_km, r.is_parcel,
               d.name AS driver_name, d.phone AS driver_phone, r.driver_id
        FROM rides r JOIN users u ON r.passenger_id = u.id LEFT JOIN users d ON r.driver_id = d.id
        WHERE u.phone = $1 ORDER BY r.created_at DESC LIMIT 50`,
       [phone]
     );
-    res.json({ rides: result.rows });
+    // Computed here rather than stored, so historical rides count too and a
+    // corrected factor corrects the whole history — see services/green.js.
+    const rides = result.rows.map(r => ({
+      ...r,
+      is_green: isGreen(r.ride_type),
+      co2_saved_g: r.status === 'completed' ? co2SavedGrams(r.ride_type, r.distance_km) : 0,
+    }));
+    res.json({ rides });
   } catch (err) { console.error('[rides]', err.message); res.status(500).json({ error: 'Something went wrong — please try again' }); }
 });
 
