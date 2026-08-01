@@ -86,7 +86,14 @@ async function sendFCM(phone, title, body, data = {}, options = {}) {
       android: {
         priority: 'high',
         notification: {
-          sound: 'default',
+          // Ride offers carry the custom alert tone, not the system default.
+          // On Android 8+ the CHANNEL's sound wins for a channel that already
+          // exists, so this mostly matters on the first notification after a
+          // fresh install (before the app has created its channels) — but
+          // sending 'default' there meant a driver's very first ride offer
+          // could arrive with an ordinary notification blip instead of the
+          // alarm tone, which is exactly the one that must not be missed.
+          sound: resolvedChannel.startsWith('ride_requests') ? 'ride_alert' : 'default',
           channelId: resolvedChannel,
           priority: 'max',
           visibility: 'public',
