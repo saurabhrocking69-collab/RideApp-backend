@@ -18,6 +18,7 @@ const { useSubscriptionIfActive } = require('../services/subscription');
 const { requiresAdvance, verifyAdvancePayment, refundToWallet, logDriverTxn } = require('../services/advance');
 const { isGreen, co2SavedGrams, co2Equivalent, greenFactors } = require('../services/green');
 const { shortRideId } = require('../services/rideId');
+const { recordSuccessfulPickup, landmarkFor } = require('../services/pickupPoints');
 
 function emitRideUpdate(rideId, data) {
   emitToRoom('ride_' + rideId, 'rideUpdate', { rideId, ...data });
@@ -142,7 +143,7 @@ async function processCashback(userId, phone, rideId, fare, paymentMethod) {
 
 // POST /api/rides/book
 router.post('/book', async (req, res) => {
-  const { passenger_phone, pickup, drop_location, ride_type, pickup_lat, pickup_lng, drop_lat, drop_lng, discount, promo_code, route_polyline, route_type, rider_name, rider_phone } = req.body;
+  const { passenger_phone, pickup, drop_location, ride_type, pickup_lat, pickup_lng, drop_lat, drop_lng, discount, promo_code, route_polyline, route_type, rider_name, rider_phone, pickup_landmark } = req.body;
   console.log(`[rides] 📥 book request: phone=${passenger_phone} type=${ride_type}`);
   if (!passenger_phone || String(passenger_phone).length !== 10) return res.status(400).json({ error: 'Valid phone do' });
   if (!pickup || !drop_location) return res.status(400).json({ error: 'Pickup and drop location required' });
@@ -202,6 +203,19 @@ router.post('/book', async (req, res) => {
     const netFare = Math.max(0, fare - disc);
     const _rideId = ride.rows[0].id, _pLat = pickup_lat || null, _pLng = pickup_lng || null;
     console.log(`[rides] ✅ booked ride=${_rideId} type=${ride_type} phone=${passenger_phone}`);
+
+    // Freeze a landmark onto the ride so the driver's screen can say "near X".
+    // Prefer whatever the customer actually saw and confirmed on the booking
+    // screen; fall back to resolving it here so rides from older app builds
+    // (which send nothing) still get one. Written as a separate UPDATE rather
+    // than a column on the INSERT above so a Places lookup can never delay, or
+    // fail, a booking — the ride is already committed by this point.
+    (async () => {
+      try {
+        const name = pickup_landmark || await landmarkFor(_pLat, _pLng);
+        if (name) await db.query(`UPDATE rides SET pickup_landmark=$1 WHERE id=$2`, [name, _rideId]);
+      } catch (_e) { /* cosmetic only */ }
+    })();
     res.json({ message: 'Searching for a driver...', fare: '₹' + fare, net_fare: netFare, discount: disc, distance: distance + ' km', ride_id: _rideId, status: 'requested', surge_multiplier: 1.0, platform_fee: platFee, dist_fare: fareCalc.dist_fare, time_fare: fareCalc.time_fare, base_fare: fareCalc.base_fare, is_night: fareCalc.is_night });
 
     // 2s delay: customer needs time to join the socket room before any rideUpdate events fire.
@@ -429,7 +443,7 @@ router.post('/reject-offer', async (req, res) => {
 
 // POST /api/rides/arrived
 router.post('/arrived', async (req, res) => {
-  const { ride_id, driver_phone } = req.body;
+  const { ride_id, driver_phone, driver_lat, driver_lng } = req.body;
   if (!driver_phone) return res.status(400).json({ error: 'driver_phone required' });
   try {
     const owner = await db.query(
@@ -442,7 +456,21 @@ router.post('/arrived', async (req, res) => {
       `SELECT pickup_lat, pickup_lng, ride_type, driver_matched_at, eta_estimate_min FROM rides WHERE id=$1`, [ride_id]
     ).catch(() => ({ rows: [] }));
 
-    await transitionRide(ride_id, 'arrived');
+    await transitionRide(ride_id, 'arrived', {
+      extraFields: {
+        driver_lat_at_pickup: driver_lat || null,
+        driver_lng_at_pickup: driver_lng || null,
+      },
+    });
+
+    // Learn this as a known-good boarding spot. Where the driver actually
+    // stopped is far better evidence than where the customer dropped the pin:
+    // it is by definition somewhere a vehicle could reach and wait. Strictly
+    // fire-and-forget — a suggestion feature must never delay or fail an
+    // arrival, which is a time-critical driver action.
+    if (driver_lat != null && driver_lng != null) {
+      recordSuccessfulPickup(driver_lat, driver_lng).catch(() => {});
+    }
 
     // Update dynamic ETA correction — fire and forget
     (async () => {

@@ -865,6 +865,15 @@ setTimeout(async () => {
   await db.query(`ALTER TABLE rides ADD COLUMN IF NOT EXISTS driver_lng_at_complete FLOAT`).catch(() => {});
   await db.query(`ALTER TABLE rides ADD COLUMN IF NOT EXISTS completion_dist_from_drop FLOAT`).catch(() => {});
   await db.query(`ALTER TABLE rides ADD COLUMN IF NOT EXISTS payment_not_received BOOLEAN DEFAULT FALSE`).catch(() => {});
+  // Where the driver actually was when they marked "arrived" — the training
+  // signal behind suggested pickup points (services/pickupPoints.js). Mirrors
+  // the driver_lat/lng_at_complete pair above.
+  await db.query(`ALTER TABLE rides ADD COLUMN IF NOT EXISTS driver_lat_at_pickup FLOAT`).catch(() => {});
+  await db.query(`ALTER TABLE rides ADD COLUMN IF NOT EXISTS driver_lng_at_pickup FLOAT`).catch(() => {});
+  // Human landmark for the pickup ("near Charbagh Metro Station"), resolved at
+  // booking time and frozen onto the ride so the driver sees the same phrase
+  // the customer confirmed, even if the cache is later refreshed.
+  await db.query(`ALTER TABLE rides ADD COLUMN IF NOT EXISTS pickup_landmark TEXT`).catch(() => {});
   // Customer account control columns
   await db.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS trust_score INTEGER DEFAULT 100`).catch(() => {});
   await db.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS booking_restricted BOOLEAN DEFAULT FALSE`).catch(() => {});

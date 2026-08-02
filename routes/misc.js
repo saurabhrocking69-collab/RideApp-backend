@@ -3,6 +3,7 @@ const router = express.Router();
 const db = require('../config/db');
 const { shortRideId } = require('../services/rideId');
 const { sendFCM } = require('../config/firebase');
+const { suggestPickupPoints, landmarkFor } = require('../services/pickupPoints');
 
 const ADMIN_ALERT_PHONE = process.env.ADMIN_ALERT_PHONE || '';
 
@@ -496,6 +497,31 @@ router.get('/customer/tier', async (req, res) => {
       progress_pct:  next ? Math.min(100, Math.round(((total - current.min) / (next.min - current.min)) * 100)) : 100,
     });
   } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// POST /api/pickup/suggest — boarding spots + a landmark hint for a dropped pin.
+//
+// Deliberately tolerant: this is an enhancement to the booking screen, so any
+// failure returns an empty suggestion set rather than an error the app has to
+// handle. The customer app treats {points: [], landmark: null} as "show
+// nothing extra", which is exactly the pre-feature behaviour.
+router.post('/pickup/suggest', async (req, res) => {
+  const { lat, lng } = req.body || {};
+  const la = parseFloat(lat), ln = parseFloat(lng);
+  if (!Number.isFinite(la) || !Number.isFinite(ln)) {
+    return res.json({ points: [], landmark: null });
+  }
+  try {
+    // Run both together — the landmark is a Google round-trip on a cache miss
+    // and there is no reason to make the DB lookup wait behind it.
+    const [points, landmark] = await Promise.all([
+      suggestPickupPoints(la, ln),
+      landmarkFor(la, ln),
+    ]);
+    res.json({ points, landmark });
+  } catch (_e) {
+    res.json({ points: [], landmark: null });
+  }
 });
 
 module.exports = router;
