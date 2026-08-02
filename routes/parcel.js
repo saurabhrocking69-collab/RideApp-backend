@@ -12,6 +12,7 @@ const { sendFCM } = require('../config/firebase');
 const { emitToRoom } = require('../config/socket');
 const { transitionRide } = require('../services/rideStateMachine');
 const { clearRide } = require('../services/rideCache');
+const { shortRideId } = require('../services/rideId');
 
 // Return-to-sender columns — a parcel whose delivery attempt failed
 // (receiver unreachable/refused) and the sender opted to get it back.
@@ -510,7 +511,7 @@ router.post('/return-pay', userAuth, async (req, res) => {
         }
         await client.query(
           "INSERT INTO transactions (user_id, type, amount, description) VALUES ($1,'debit',$2,$3)",
-          [ride.passenger_uid, amount, `Parcel return trip (ride ${ride_id})`]
+          [ride.passenger_uid, amount, `Parcel return trip (${shortRideId(ride_id)})`]
         );
         await client.query('COMMIT');
       } catch (e) {
@@ -526,7 +527,7 @@ router.post('/return-pay', userAuth, async (req, res) => {
       // wallet balance never moved, so the return charge is visible.
       await db.query(
         "INSERT INTO transactions (user_id, type, amount, description) VALUES ($1,'debit',$2,$3)",
-        [ride.passenger_uid, amount, `Parcel return trip, paid online (ride ${ride_id})`]
+        [ride.passenger_uid, amount, `Parcel return trip, paid online (${shortRideId(ride_id)})`]
       );
     }
 

@@ -5,6 +5,7 @@
 // refunds it (minus tiered penalty) on cancellation.
 const crypto = require('crypto');
 const db = require('../config/db');
+const { shortRideId } = require('./rideId');
 const razorpay = require('../config/razorpay');
 
 const ADVANCE_THRESHOLD = 3000;   // fare estimate above this requires an advance
@@ -154,7 +155,7 @@ async function refundToWallet(client, customerPhone, amount, rideId, note) {
   await q.query('INSERT INTO customer_wallet (user_id) VALUES ($1) ON CONFLICT (user_id) DO NOTHING', [userId]);
   await q.query('UPDATE customer_wallet SET balance = balance + $1, updated_at = NOW() WHERE user_id = $2', [amount, userId]);
   await q.query("INSERT INTO transactions (user_id, type, amount, description) VALUES ($1,'credit',$2,$3)",
-    [userId, amount, `${note} (ride ${rideId})`]);
+    [userId, amount, `${note} (${shortRideId(rideId)})`]);
   return true;
 }
 

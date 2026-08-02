@@ -17,6 +17,7 @@ const { calculateFare, getISTHour } = require('../services/pricing');
 const { useSubscriptionIfActive } = require('../services/subscription');
 const { requiresAdvance, verifyAdvancePayment, refundToWallet, logDriverTxn } = require('../services/advance');
 const { isGreen, co2SavedGrams, co2Equivalent, greenFactors } = require('../services/green');
+const { shortRideId } = require('../services/rideId');
 
 function emitRideUpdate(rideId, data) {
   emitToRoom('ride_' + rideId, 'rideUpdate', { rideId, ...data });
@@ -952,7 +953,7 @@ router.post('/complete', async (req, res) => {
         // Warn driver
         sendFCM(ride.dphone,
           '⚠️ Early Trip Completion Detected',
-          `You completed ride #${ride_id} ${(distFromDrop||0).toFixed(1)}km away from the drop location. This is against platform policy.`,
+          `You completed ride ${shortRideId(ride_id)} ${(distFromDrop||0).toFixed(1)}km away from the drop location. This is against platform policy.`,
           { type: 'early_completion_warning', ride_id: String(ride_id) },
           { channelId: 'ride_requests', role: 'driver' }
         ).catch(() => {});
@@ -1284,7 +1285,7 @@ router.post('/payment-not-received', async (req, res) => {
     // FCM to customer — warning
     sendFCM(ride.passenger_phone,
       '⚠️ Payment Issue Reported',
-      `Driver reported that you did not pay ₹${netFareDisplay} cash for ride #${ride_id}. Please contact support.`,
+      `Driver reported that you did not pay ₹${netFareDisplay} cash for ride ${shortRideId(ride_id)}. Please contact support.`,
       { type: 'payment_dispute', ride_id: String(ride_id) },
       { role: 'customer' }
     ).catch(() => {});

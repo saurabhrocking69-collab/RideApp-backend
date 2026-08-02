@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const db = require('../config/db');
+const { shortRideId } = require('../services/rideId');
 const { sendFCM } = require('../config/firebase');
 
 const ADMIN_ALERT_PHONE = process.env.ADMIN_ALERT_PHONE || '';
@@ -124,7 +125,7 @@ router.post('/sos', async (req, res) => {
       sendFCM(
         ADMIN_ALERT_PHONE,
         `🆘 SOS — ${user.rows[0]?.name || phone}`,
-        `${phone} pressed the emergency button${ride_id ? ` during ride #${String(ride_id).slice(-6)}` : ''}. ${mapLink}`,
+        `${phone} pressed the emergency button${ride_id ? ` during ride ${shortRideId(ride_id)}` : ''}. ${mapLink}`,
         { type: 'sos_alert', sos_id: String(alert.rows[0].id), phone, ride_id: ride_id || '' },
         {}
       ).catch(() => {});
