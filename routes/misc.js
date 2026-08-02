@@ -3,7 +3,7 @@ const router = express.Router();
 const db = require('../config/db');
 const { shortRideId } = require('../services/rideId');
 const { sendFCM } = require('../config/firebase');
-const { suggestPickupPoints, landmarkFor, venueFor } = require('../services/pickupPoints');
+const { suggestPickupPoints, suggestDropPoints, landmarkFor, venueFor } = require('../services/pickupPoints');
 
 const ADMIN_ALERT_PHONE = process.env.ADMIN_ALERT_PHONE || '';
 
@@ -529,6 +529,24 @@ router.post('/pickup/suggest', async (req, res) => {
     res.json({ points, landmark, venue });
   } catch (_e) {
     res.json({ points: [], landmark: null, venue: null });
+  }
+});
+
+// POST /api/drop/suggest — where trips near this pin actually ended.
+//
+// The mirror of /pickup/suggest, from a different signal: real completion
+// positions. These are inherently vehicle-reachable, which matters more here
+// than for pickup — a customer choosing a drop is picking somewhere they are
+// NOT, often from memory, and can easily land on a pedestrian-only lane.
+router.post('/drop/suggest', async (req, res) => {
+  const { lat, lng } = req.body || {};
+  const la = parseFloat(lat), ln = parseFloat(lng);
+  if (!Number.isFinite(la) || !Number.isFinite(ln)) return res.json({ points: [] });
+  try {
+    const points = await suggestDropPoints(la, ln);
+    res.json({ points });
+  } catch (_e) {
+    res.json({ points: [] });
   }
 });
 

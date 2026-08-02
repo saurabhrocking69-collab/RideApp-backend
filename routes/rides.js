@@ -18,7 +18,7 @@ const { useSubscriptionIfActive } = require('../services/subscription');
 const { requiresAdvance, verifyAdvancePayment, refundToWallet, logDriverTxn } = require('../services/advance');
 const { isGreen, co2SavedGrams, co2Equivalent, greenFactors } = require('../services/green');
 const { shortRideId } = require('../services/rideId');
-const { recordSuccessfulPickup, landmarkFor } = require('../services/pickupPoints');
+const { recordSuccessfulPickup, recordSuccessfulDrop, landmarkFor } = require('../services/pickupPoints');
 
 function emitRideUpdate(rideId, data) {
   emitToRoom('ride_' + rideId, 'rideUpdate', { rideId, ...data });
@@ -143,7 +143,7 @@ async function processCashback(userId, phone, rideId, fare, paymentMethod) {
 
 // POST /api/rides/book
 router.post('/book', async (req, res) => {
-  const { passenger_phone, pickup, drop_location, ride_type, pickup_lat, pickup_lng, drop_lat, drop_lng, discount, promo_code, route_polyline, route_type, rider_name, rider_phone, pickup_landmark } = req.body;
+  const { passenger_phone, pickup, drop_location, ride_type, pickup_lat, pickup_lng, drop_lat, drop_lng, discount, promo_code, route_polyline, route_type, rider_name, rider_phone, pickup_landmark, drop_note } = req.body;
   console.log(`[rides] 📥 book request: phone=${passenger_phone} type=${ride_type}`);
   if (!passenger_phone || String(passenger_phone).length !== 10) return res.status(400).json({ error: 'Valid phone do' });
   if (!pickup || !drop_location) return res.status(400).json({ error: 'Pickup and drop location required' });
@@ -263,6 +263,13 @@ router.post('/book', async (req, res) => {
       try {
         const name = pickup_landmark || await landmarkFor(_pLat, _pLng);
         if (name) await db.query(`UPDATE rides SET pickup_landmark=$1 WHERE id=$2`, [name, _rideId]);
+        // The customer's own words for the last 100 metres. Trimmed and length
+        // capped here as well as client-side — the client cap is a courtesy,
+        // this one is the actual guarantee.
+        if (drop_note && String(drop_note).trim()) {
+          await db.query(`UPDATE rides SET drop_note=$1 WHERE id=$2`,
+            [String(drop_note).trim().slice(0, 140), _rideId]);
+        }
       } catch (_e) { /* cosmetic only */ }
     })();
     res.json({ message: 'Searching for a driver...', fare: '₹' + fare, net_fare: netFare, discount: disc, distance: distance + ' km', ride_id: _rideId, status: 'requested', surge_multiplier: 1.0, platform_fee: platFee, dist_fare: fareCalc.dist_fare, time_fare: fareCalc.time_fare, base_fare: fareCalc.base_fare, is_night: fareCalc.is_night });
@@ -963,6 +970,7 @@ router.post('/complete', async (req, res) => {
         early_completion: earlyCompletion,
         driver_lat_at_complete: driver_lat || null,
         driver_lng_at_complete: driver_lng || null,
+        // (learned as a drop point below, once the transition has succeeded)
         completion_dist_from_drop: distFromDrop,
         fare: finalFare,
         platform_fee: finalPlatFee,
@@ -972,6 +980,19 @@ router.post('/complete', async (req, res) => {
       custPhone:  ride.passenger_phone,
       drvPhone:   ride.dphone,
     });
+
+    // Learn where this trip ACTUALLY ended as a known-good drop point. Same
+    // engine as boarding points, different signal — the driver's position at
+    // completion is by definition somewhere a vehicle could reach and stop.
+    //
+    // Only when the driver finished CLOSE to the booked drop. A completion
+    // 900m short is exactly the failure this whole feature exists to prevent,
+    // and learning from it would teach the system to recommend the bad spot.
+    // distFromDrop is already computed above for the early-completion check.
+    if (driver_lat != null && driver_lng != null &&
+        (distFromDrop == null || distFromDrop <= 0.25)) {
+      recordSuccessfulDrop(driver_lat, driver_lng).catch(() => {});
+    }
 
     // Parcel: the sender already paid in full at booking (held in escrow,
     // rides.payment_status='escrowed') — release it to the driver's wallet

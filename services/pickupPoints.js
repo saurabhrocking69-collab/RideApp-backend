@@ -84,6 +84,23 @@ const DDL = [
      created_at   TIMESTAMPTZ DEFAULT NOW()
    )`,
   `CREATE INDEX IF NOT EXISTS idx_pickup_points_latlng ON pickup_points(lat, lng)`,
+  // Drop points are learned exactly like pickup points, from a different
+  // signal: rides.driver_lat/lng_at_complete, which has been recorded for a
+  // long time already. Kept in its own table rather than a `kind` column on
+  // pickup_points because the two are asymmetric — a good place to WAIT is not
+  // automatically a good place to be LEFT, and mixing them would let one
+  // pollute the other's suggestions.
+  `CREATE TABLE IF NOT EXISTS drop_points (
+     cell         TEXT PRIMARY KEY,
+     lat          DOUBLE PRECISION NOT NULL,
+     lng          DOUBLE PRECISION NOT NULL,
+     label        TEXT,
+     source       TEXT NOT NULL DEFAULT 'learned',
+     use_count    INTEGER NOT NULL DEFAULT 1,
+     last_used_at TIMESTAMPTZ DEFAULT NOW(),
+     created_at   TIMESTAMPTZ DEFAULT NOW()
+   )`,
+  `CREATE INDEX IF NOT EXISTS idx_drop_points_latlng ON drop_points(lat, lng)`,
   `CREATE TABLE IF NOT EXISTS landmark_cache (
      cell       TEXT PRIMARY KEY,
      name       TEXT,
@@ -252,7 +269,17 @@ async function landmarkFor(lat, lng) {
 // ── Learning ─────────────────────────────────────────────────────────────────
 // Called when a driver marks "arrived" — their GPS is a spot a vehicle actually
 // reached and waited at. Fire-and-forget: never block the arrival response.
-async function recordSuccessfulPickup(lat, lng) {
+// Table names cannot be bound as query parameters, so they are whitelisted
+// rather than interpolated from anything a caller could influence.
+const TABLES = { pickup: 'pickup_points', drop: 'drop_points' };
+function tableFor(kind) {
+  const t = TABLES[kind];
+  if (!t) throw new Error(`unknown point kind: ${kind}`);
+  return t;
+}
+
+async function recordSuccessfulPickup(lat, lng, kind = 'pickup') {
+  const TBL = tableFor(kind);
   if (lat == null || lng == null) return;
   const la = parseFloat(lat), ln = parseFloat(lng);
   if (!Number.isFinite(la) || !Number.isFinite(ln)) return;
@@ -267,7 +294,7 @@ async function recordSuccessfulPickup(lat, lng) {
     const dLat = MERGE_RADIUS_M / 111320;
     const dLng = MERGE_RADIUS_M / (111320 * Math.max(0.2, Math.cos(la * Math.PI / 180)));
     const near = await db.query(
-      `SELECT cell, lat, lng FROM pickup_points
+      `SELECT cell, lat, lng FROM ${TBL}
         WHERE lat BETWEEN $1 AND $2 AND lng BETWEEN $3 AND $4 LIMIT 40`,
       [la - dLat, la + dLat, ln - dLng, ln + dLng]
     );
@@ -282,7 +309,7 @@ async function recordSuccessfulPickup(lat, lng) {
       // incremental mean. use_count on the right-hand side is the pre-update
       // value, which is what makes this a correct running average.
       await db.query(
-        `UPDATE pickup_points SET
+        `UPDATE ${TBL} SET
            lat = (lat * use_count + $2) / (use_count + 1),
            lng = (lng * use_count + $3) / (use_count + 1),
            use_count = use_count + 1,
@@ -296,10 +323,10 @@ async function recordSuccessfulPickup(lat, lng) {
     // New spot. ON CONFLICT covers the narrow race where two arrivals in the
     // same cell both find nothing and insert together.
     await db.query(
-      `INSERT INTO pickup_points (cell, lat, lng, use_count)
+      `INSERT INTO ${TBL} (cell, lat, lng, use_count)
        VALUES ($1, $2, $3, 1)
        ON CONFLICT (cell) DO UPDATE SET
-         use_count = pickup_points.use_count + 1,
+         use_count = ${TBL}.use_count + 1,
          last_used_at = NOW()`,
       [cellKey(la, ln, POINT_CELL), la, ln]
     );
@@ -310,7 +337,8 @@ async function recordSuccessfulPickup(lat, lng) {
 
 // ── Suggestion ───────────────────────────────────────────────────────────────
 // Boarding spots near a requested pin, best first. Always returns an array.
-async function suggestPickupPoints(lat, lng) {
+async function suggestPickupPoints(lat, lng, kind = 'pickup') {
+  const TBL = tableFor(kind);
   if (lat == null || lng == null) return [];
   const la = parseFloat(lat), ln = parseFloat(lng);
   if (!Number.isFinite(la) || !Number.isFinite(ln)) return [];
@@ -323,7 +351,7 @@ async function suggestPickupPoints(lat, lng) {
     const dLng = SUGGEST_RADIUS_M / (111320 * Math.max(0.2, Math.cos(la * Math.PI / 180)));
     const rows = await db.query(
       `SELECT cell, lat, lng, label, source, use_count
-         FROM pickup_points
+         FROM ${TBL}
         WHERE lat BETWEEN $1 AND $2
           AND lng BETWEEN $3 AND $4
           AND (use_count >= $5 OR source = 'admin')
@@ -360,7 +388,7 @@ async function suggestPickupPoints(lat, lng) {
       const name = await landmarkFor(p.lat, p.lng);
       if (name) {
         p.label = name;
-        db.query(`UPDATE pickup_points SET label=$1 WHERE cell=$2`,
+        db.query(`UPDATE ${TBL} SET label=$1 WHERE cell=$2`,
           [name, cellKey(p.lat, p.lng, POINT_CELL)]).catch(() => {});
       }
     }));
@@ -394,9 +422,18 @@ async function venueFor(lat, lng) {
   }
 }
 
+// Drop-side wrappers. Same learning engine, different signal: a drop point is
+// learned from where the driver actually was when they completed the trip
+// (rides.driver_lat/lng_at_complete), which is by definition somewhere a
+// vehicle could reach and stop.
+const recordSuccessfulDrop = (lat, lng) => recordSuccessfulPickup(lat, lng, 'drop');
+const suggestDropPoints    = (lat, lng) => suggestPickupPoints(lat, lng, 'drop');
+
 module.exports = {
   suggestPickupPoints,
   recordSuccessfulPickup,
+  suggestDropPoints,
+  recordSuccessfulDrop,
   landmarkFor,
   venueFor,
   // exported for tests / admin tooling

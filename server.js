@@ -874,6 +874,10 @@ setTimeout(async () => {
   // booking time and frozen onto the ride so the driver sees the same phrase
   // the customer confirmed, even if the cache is later refreshed.
   await db.query(`ALTER TABLE rides ADD COLUMN IF NOT EXISTS pickup_landmark TEXT`).catch(() => {});
+  // The customer's own words for the last 100 metres ("gali 3, behind Sharma
+  // Medical"). Indian addresses are landmark-relative, and that sentence gets
+  // a driver to the door when even a rooftop-accurate pin leaves them circling.
+  await db.query(`ALTER TABLE rides ADD COLUMN IF NOT EXISTS drop_note TEXT`).catch(() => {});
   // Customer account control columns
   await db.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS trust_score INTEGER DEFAULT 100`).catch(() => {});
   await db.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS booking_restricted BOOLEAN DEFAULT FALSE`).catch(() => {});
