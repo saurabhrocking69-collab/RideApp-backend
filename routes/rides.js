@@ -156,6 +156,55 @@ router.post('/book', async (req, res) => {
       return res.status(403).json({ error: '🚫 Your account is temporarily on hold due to a pending payment from a previous ride. Please contact support: help@sppero.com', restricted: true });
     }
 
+    // ── Supersede the customer's own abandoned search ────────────────────────
+    // A customer can only be on one trip, but nothing stopped them holding two
+    // rides in 'requested' at once. Real sequence this caused: ride A is
+    // booked, the driver dismisses the offer, the customer app then dies before
+    // it can cancel — so A is left sitting in 'requested' with nobody watching
+    // it. The customer reopens the app, books ride B, gets a driver. Minutes
+    // later A's dispatch escalation fires, checks A's OWN status, finds it
+    // still 'requested', and pushes "😔 No Driver Found" — to a customer whose
+    // driver is already on the way. Alarming and completely wrong.
+    //
+    // The escalation guard could not catch this: it asks "is this ride still
+    // requested?", never "has this customer moved on?". Fixing it here instead
+    // means the stale ride is genuinely gone rather than merely silenced, so
+    // every other consumer (cron sweeps, admin lists, the customer's own ride
+    // history) sees a consistent picture too.
+    //
+    // Deliberately ONLY 'requested': a ride with a driver already committed
+    // ('matched'/'arrived'/'started') must never be cancelled out from under a
+    // driver who is en route, and 'scheduled' rides are future bookings that
+    // legitimately coexist with a ride happening right now.
+    //
+    // The is_scheduled exclusion is NOT redundant with that. A scheduled ride
+    // does not stay in 'scheduled' — rideWorker's _bmqDispatchScheduledRide
+    // flips it to 'requested' when its departure time arrives (rideWorker.js
+    // ~643) so the normal dispatch loop can pick it up. Without this clause, a
+    // customer booking an instant ride during that dispatch window would
+    // silently cancel their own scheduled ride. Matching on scheduled_at too,
+    // since is_scheduled was added later and older rows may predate it.
+    try {
+      const superseded = await db.query(
+        `UPDATE rides SET status='cancelled', cancelled_by='system',
+                cancel_reason='Superseded by a newer booking'
+          WHERE passenger_id=$1 AND status='requested'
+            AND COALESCE(is_scheduled, FALSE) = FALSE
+            AND scheduled_at IS NULL
+          RETURNING id`,
+        [passenger.rows[0].id]
+      );
+      for (const row of superseded.rows) {
+        // Same invalidation every other cancel path performs — without it the
+        // old ride keeps being served from Redis as if it were still live.
+        clearRideCache(row.id).catch(() => {});
+        console.log(`[rides] 🧹 superseded stale requested ride=${row.id} for phone=${passenger_phone}`);
+      }
+    } catch (e) {
+      // Never block a booking on cleanup of an old one.
+      console.warn('[rides] supersede check failed:', e.message);
+    }
+
     const distance = parseFloat(req.body.distance) || 5;
     const durationMin = parseFloat(req.body.duration_min) || (distance / 20) * 60;
     const fareRes = await db.query('SELECT * FROM fare_settings WHERE vehicle_type = $1', [ride_type]);
