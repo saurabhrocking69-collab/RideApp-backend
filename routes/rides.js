@@ -880,7 +880,7 @@ router.post('/report-cancel', async (req, res) => {
 
 // POST /api/rides/complete
 // Accepts optional driver_lat/driver_lng for early-completion detection.
-// If driver is >800m from drop point, marks early_completion=true and logs an incident.
+// If driver is >300m from drop point, marks early_completion=true and logs an incident.
 router.post('/complete', async (req, res) => {
   const { ride_id, driver_phone, driver_lat, driver_lng, delivery_otp } = req.body;
   try {
@@ -951,7 +951,13 @@ router.post('/complete', async (req, res) => {
     // ── Early completion detection ───────────────────────────
     let earlyCompletion = false;
     let distFromDrop = null;
-    const EARLY_THRESHOLD_KM = 0.8; // 800m — flag if driver completes too far from drop
+    // 300m, lowered from 800m so it matches the driver-side warning. At 800m a
+    // completion 300-400m short — the exact "dropped me at the chowk, not my
+    // shop" complaint — was invisible to both the driver and the admin
+    // incident log. Viable only because ride-time GPS is now
+    // BestForNavigation (~5-10m) rather than Balanced (~100m).
+    // Expect noticeably more early_completion incidents; that is the point.
+    const EARLY_THRESHOLD_KM = 0.3;
 
     if (driver_lat && driver_lng && ride.drop_lat && ride.drop_lng) {
       distFromDrop = haversineKm(
@@ -985,13 +991,33 @@ router.post('/complete', async (req, res) => {
     // engine as boarding points, different signal — the driver's position at
     // completion is by definition somewhere a vehicle could reach and stop.
     //
-    // Only when the driver finished CLOSE to the booked drop. A completion
-    // 900m short is exactly the failure this whole feature exists to prevent,
-    // and learning from it would teach the system to recommend the bad spot.
-    // distFromDrop is already computed above for the early-completion check.
-    if (driver_lat != null && driver_lng != null &&
-        (distFromDrop == null || distFromDrop <= 0.25)) {
-      recordSuccessfulDrop(driver_lat, driver_lng).catch(() => {});
+    // Which completions are worth learning from:
+    //
+    //  - Finished NEAR the booked drop (<=250m): the ordinary good case.
+    //  - Finished FAR but FARTHER FROM PICKUP than the booked drop: the driver
+    //    carried on past the pin, which happens precisely when the pin was an
+    //    area centroid and the customer's real destination lay beyond it. That
+    //    is the single most valuable point we can learn — it is where the
+    //    customer actually wanted to go, and a vehicle demonstrably reached it.
+    //  - Finished FAR but CLOSER TO PICKUP than the booked drop: stopped short.
+    //    This is the failure the whole feature exists to prevent, and learning
+    //    from it would teach the system to recommend the bad spot to the next
+    //    customer, entrenching it.
+    //
+    // Distance alone cannot tell the last two apart — both are simply "far from
+    // the drop". Comparing against the PICKUP is what separates "went beyond"
+    // from "gave up early". An earlier version only kept the <=250m case and so
+    // silently discarded the best data of the three.
+    if (driver_lat != null && driver_lng != null) {
+      let learn = distFromDrop == null || distFromDrop <= 0.25;
+      if (!learn && ride.pickup_lat && ride.pickup_lng && ride.drop_lat && ride.drop_lng) {
+        const pickToEnd  = haversineKm(parseFloat(ride.pickup_lat), parseFloat(ride.pickup_lng),
+                                       parseFloat(driver_lat),      parseFloat(driver_lng));
+        const pickToDrop = haversineKm(parseFloat(ride.pickup_lat), parseFloat(ride.pickup_lng),
+                                       parseFloat(ride.drop_lat),   parseFloat(ride.drop_lng));
+        learn = pickToEnd > pickToDrop;   // went beyond, not stopped short
+      }
+      if (learn) recordSuccessfulDrop(driver_lat, driver_lng).catch(() => {});
     }
 
     // Parcel: the sender already paid in full at booking (held in escrow,
