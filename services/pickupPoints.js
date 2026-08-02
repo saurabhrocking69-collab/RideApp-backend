@@ -89,6 +89,12 @@ const DDL = [
      name       TEXT,
      updated_at TIMESTAMPTZ DEFAULT NOW()
    )`,
+  // Venue classification is cached alongside the name so deciding "is this a
+  // place with gates?" costs no extra Places call. Added as ALTERs because the
+  // table already exists in production from the first release.
+  `ALTER TABLE landmark_cache ADD COLUMN IF NOT EXISTS types    TEXT`,
+  `ALTER TABLE landmark_cache ADD COLUMN IF NOT EXISTS span_m   INTEGER`,
+  `ALTER TABLE landmark_cache ADD COLUMN IF NOT EXISTS dist_m   INTEGER`,
 ];
 
 let ready = null;
@@ -116,7 +122,37 @@ const NOT_A_LANDMARK = new Set([
   'neighborhood', 'geocode',
 ]);
 
-async function fetchLandmark(lat, lng) {
+// ── What makes a place worth offering an entry-point choice for ──────────────
+// Showing "Pickup near <some shop>" on every booking is noise: outside your own
+// house the nearest named place is a random storefront, it is not actionable,
+// and there is no second entrance to choose between. The choice only earns its
+// place where a venue genuinely HAS multiple entrances a driver could go to the
+// wrong one of — stations, airports, malls, hospitals, campuses, big temples.
+const MAJOR_VENUE_TYPES = new Set([
+  'airport', 'train_station', 'subway_station', 'transit_station',
+  'light_rail_station', 'bus_station', 'shopping_mall', 'hospital',
+  'university', 'stadium', 'amusement_park', 'zoo', 'museum',
+  'tourist_attraction', 'convention_center', 'campground',
+]);
+
+// Size is the second, type-independent signal. Places returns a viewport per
+// result, and a viewport spanning a couple of hundred metres means a compound
+// with a perimeter — which is exactly when "which gate?" becomes a real
+// question. This catches the heritage sites, big temples and government
+// campuses that no type list would ever fully enumerate.
+const VENUE_MIN_SPAN_M = 180;
+// The customer has to plausibly be AT the venue, not merely near it. Past this
+// the "you're at X" framing is simply wrong.
+const VENUE_MAX_DIST_M = 250;
+
+function placeSpanM(geometry) {
+  const vp = geometry?.viewport;
+  if (!vp?.northeast || !vp?.southwest) return 0;
+  return distanceM(vp.southwest.lat, vp.southwest.lng, vp.northeast.lat, vp.northeast.lng);
+}
+
+// Returns the best nearby place as {name, types, span_m, dist_m} or null.
+async function fetchPlace(lat, lng) {
   if (!KEY) {
     if (!warnedMissingKey) {
       console.warn('[pickupPoints] GOOGLE_MAPS_SERVER_KEY not set — landmark hints disabled');
@@ -128,43 +164,86 @@ async function fetchLandmark(lat, lng) {
     // Default (prominence) ranking, not rankby=distance: we want the landmark a
     // human would name, which is the well-known station rather than whichever
     // unnamed shopfront happens to be three metres closer.
-    const url = `https://maps.googleapis.com/maps/api/place/nearbysearch/json?location=${lat},${lng}&radius=200&key=${KEY}`;
+    const url = `https://maps.googleapis.com/maps/api/place/nearbysearch/json?location=${lat},${lng}&radius=250&key=${KEY}`;
     const res = await fetch(url, { signal: AbortSignal.timeout(5000) });
     const data = await res.json();
     if (!Array.isArray(data.results)) return null;
+
+    let best = null;
     for (const r of data.results) {
       if (!r.name) continue;
       const types = r.types || [];
       if (types.some(t => NOT_A_LANDMARK.has(t))) continue;
       // A name that is just a plus-code or a bare number helps nobody.
       if (!/[a-zA-Z]{3}/.test(r.name)) continue;
-      return r.name.slice(0, 80);
+      const loc = r.geometry?.location;
+      const cand = {
+        name: String(r.name).slice(0, 80),
+        types,
+        span_m: placeSpanM(r.geometry),
+        dist_m: loc ? distanceM(lat, lng, loc.lat, loc.lng) : 9999,
+      };
+      // Prefer a real venue even if a smaller shop ranked above it — a station
+      // 90m away is far more useful than the tea stall at its gate.
+      const candIsVenue = isVenue(cand);
+      if (!best) { best = cand; if (candIsVenue) break; }
+      else if (candIsVenue) { best = cand; break; }
     }
-    return null;
+    return best;
   } catch (_e) {
     return null;
   }
 }
 
-// Nearest recognisable landmark to a coordinate, cached permanently per cell.
-// Returns null (never throws) when unavailable.
-async function landmarkFor(lat, lng) {
+function isVenue(p) {
+  if (!p) return false;
+  if (p.dist_m > VENUE_MAX_DIST_M) return false;
+  if (p.types.some(t => MAJOR_VENUE_TYPES.has(t))) return true;
+  return p.span_m >= VENUE_MIN_SPAN_M;
+}
+
+// The cached place for a coordinate — {name, types, span_m, dist_m} or null.
+// One Places call per ~110m cell, ever.
+async function placeFor(lat, lng) {
   if (lat == null || lng == null) return null;
   try {
     await ensureSchema();
     const cell = cellKey(lat, lng, LANDMARK_CELL);
-    const hit = await db.query(`SELECT name FROM landmark_cache WHERE cell=$1`, [cell]);
-    if (hit.rows[0]) return hit.rows[0].name;
+    const hit = await db.query(
+      `SELECT name, types, span_m, dist_m FROM landmark_cache WHERE cell=$1`, [cell]
+    );
+    if (hit.rows[0]) {
+      const r = hit.rows[0];
+      if (!r.name) return null;   // cached negative
+      return {
+        name: r.name,
+        types: r.types ? String(r.types).split(',').filter(Boolean) : [],
+        span_m: r.span_m || 0,
+        dist_m: r.dist_m == null ? 0 : r.dist_m,
+      };
+    }
 
-    const name = await fetchLandmark(lat, lng);
+    const p = await fetchPlace(lat, lng);
     // Cache negatives too — a cell with no landmark will still have none
     // tomorrow, and re-asking Google on every booking there costs real money.
     await db.query(
-      `INSERT INTO landmark_cache (cell, name) VALUES ($1, $2)
-       ON CONFLICT (cell) DO UPDATE SET name = $2, updated_at = NOW()`,
-      [cell, name]
+      `INSERT INTO landmark_cache (cell, name, types, span_m, dist_m) VALUES ($1,$2,$3,$4,$5)
+       ON CONFLICT (cell) DO UPDATE SET name=$2, types=$3, span_m=$4, dist_m=$5, updated_at=NOW()`,
+      [cell, p?.name || null, p ? p.types.join(',') : null, p?.span_m || null, p?.dist_m || null]
     ).catch(() => {});
-    return name;
+    return p;
+  } catch (_e) {
+    return null;
+  }
+}
+
+// Short landmark name. Still used for the DRIVER's card — "near <local shop>"
+// is genuinely how addresses work on the ground here, even when it would be
+// useless as a customer-facing prompt.
+async function landmarkFor(lat, lng) {
+  try {
+    const p = await placeFor(lat, lng);
+    return p?.name || null;
   } catch (_e) {
     return null;
   }
@@ -293,10 +372,33 @@ async function suggestPickupPoints(lat, lng) {
   }
 }
 
+// The venue a coordinate sits AT, when there is one worth choosing an entrance
+// for — {name, kind} — else null. This is what gates the customer-facing entry
+// point picker, so it never appears on an ordinary residential road.
+async function venueFor(lat, lng) {
+  try {
+    const p = await placeFor(lat, lng);
+    if (!isVenue(p)) return null;
+    // A coarse kind, so the app can word the prompt correctly: you pick a
+    // "gate" at a station and a "terminal" at an airport.
+    const t = p.types;
+    const kind =
+      t.includes('airport') ? 'terminal'
+      : t.some(x => ['train_station', 'subway_station', 'transit_station', 'light_rail_station', 'bus_station'].includes(x)) ? 'gate'
+      : t.includes('shopping_mall') ? 'entrance'
+      : t.includes('hospital') ? 'entrance'
+      : 'entry point';
+    return { name: p.name, kind };
+  } catch (_e) {
+    return null;
+  }
+}
+
 module.exports = {
   suggestPickupPoints,
   recordSuccessfulPickup,
   landmarkFor,
+  venueFor,
   // exported for tests / admin tooling
   _internals: { cellKey, distanceM, POINT_CELL, SUGGEST_RADIUS_M, MIN_USES },
 };

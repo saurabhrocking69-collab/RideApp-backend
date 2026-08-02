@@ -3,7 +3,7 @@ const router = express.Router();
 const db = require('../config/db');
 const { shortRideId } = require('../services/rideId');
 const { sendFCM } = require('../config/firebase');
-const { suggestPickupPoints, landmarkFor } = require('../services/pickupPoints');
+const { suggestPickupPoints, landmarkFor, venueFor } = require('../services/pickupPoints');
 
 const ADMIN_ALERT_PHONE = process.env.ADMIN_ALERT_PHONE || '';
 
@@ -512,15 +512,23 @@ router.post('/pickup/suggest', async (req, res) => {
     return res.json({ points: [], landmark: null });
   }
   try {
-    // Run both together — the landmark is a Google round-trip on a cache miss
-    // and there is no reason to make the DB lookup wait behind it.
-    const [points, landmark] = await Promise.all([
+    // Run together — the place lookup is a Google round-trip on a cache miss
+    // and there is no reason to make the DB lookup wait behind it. landmarkFor
+    // and venueFor share one cached place, so this is not two API calls.
+    const [points, landmark, venue] = await Promise.all([
       suggestPickupPoints(la, ln),
       landmarkFor(la, ln),
+      venueFor(la, ln),
     ]);
-    res.json({ points, landmark });
+    // `landmark` is for the DRIVER's card ("near <local shop>" is how addresses
+    // actually work here). `venue` is the only thing the customer sees, and it
+    // is null unless the pin is at a place that genuinely has multiple
+    // entrances — a station, airport, mall, hospital, campus or large heritage
+    // site. On an ordinary road the customer gets nothing, which is correct:
+    // there is no second gate to choose between outside your own house.
+    res.json({ points, landmark, venue });
   } catch (_e) {
-    res.json({ points: [], landmark: null });
+    res.json({ points: [], landmark: null, venue: null });
   }
 });
 
