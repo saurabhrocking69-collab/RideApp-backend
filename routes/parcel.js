@@ -227,6 +227,113 @@ router.post('/payment-order', userAuth, async (req, res) => {
 // sender id supplied by the client. Without that, this endpoint would let
 // anyone type a phone number and read back where that person lives, which is
 // a far worse problem than the typing it saves.
+// ── Receiver address book ────────────────────────────────────────────────────
+// Autofill only helps from the SECOND parcel to a person onwards. The first one
+// to a place you already know — your mother's house, your shop — still means
+// typing everything. A named list closes that gap, and doubles as the fix for
+// the case where someone sends to a place they have not used in months.
+//
+// Own table rather than saved_places: that stores a coordinate and a label for
+// the sender's OWN locations, while this carries a receiver (name + phone) and
+// the door-level detail an agent needs. Overloading one table would leave half
+// its columns null for every row.
+db.query(`
+  CREATE TABLE IF NOT EXISTS parcel_addresses (
+    id             SERIAL PRIMARY KEY,
+    owner_phone    TEXT NOT NULL,
+    label          TEXT NOT NULL,
+    receiver_name  TEXT,
+    receiver_phone TEXT,
+    drop_location  TEXT,
+    lat            DOUBLE PRECISION,
+    lng            DOUBLE PRECISION,
+    building       TEXT,
+    floor          TEXT,
+    landmark       TEXT,
+    used_count     INTEGER NOT NULL DEFAULT 0,
+    created_at     TIMESTAMPTZ DEFAULT NOW()
+  )
+`).catch(() => {});
+db.query(`CREATE INDEX IF NOT EXISTS idx_parcel_addresses_owner ON parcel_addresses(owner_phone)`).catch(() => {});
+
+// Every route below is scoped to req.user.phone — the AUTHENTICATED sender.
+// An address book is a list of where the people you know live; a client-supplied
+// owner id would turn it into a lookup service for other people's homes.
+router.get('/addresses', userAuth, async (req, res) => {
+  try {
+    const r = await db.query(
+      `SELECT id, label, receiver_name, receiver_phone, drop_location, lat, lng,
+              building, floor, landmark
+         FROM parcel_addresses
+        WHERE owner_phone = $1
+        ORDER BY used_count DESC, created_at DESC
+        LIMIT 25`,
+      [req.user.phone]
+    );
+    res.json({ addresses: r.rows.map(a => ({ ...a, lat: a.lat != null ? parseFloat(a.lat) : null, lng: a.lng != null ? parseFloat(a.lng) : null })) });
+  } catch (_e) { res.json({ addresses: [] }); }
+});
+
+router.post('/addresses/save', userAuth, async (req, res) => {
+  const b = req.body || {};
+  const label = String(b.label || '').trim().slice(0, 40);
+  if (!label) return res.status(400).json({ error: 'Name this address' });
+  const rphone = String(b.receiver_phone || '').replace(/[^0-9]/g, '');
+  try {
+    // Same label from the same sender updates in place rather than piling up
+    // near-duplicates — people re-save "Shop" after correcting a floor number.
+    const existing = await db.query(
+      `SELECT id FROM parcel_addresses WHERE owner_phone=$1 AND LOWER(label)=LOWER($2) LIMIT 1`,
+      [req.user.phone, label]
+    );
+    const vals = [
+      label,
+      String(b.receiver_name || '').trim().slice(0, 60) || null,
+      rphone.length === 10 ? rphone : null,
+      String(b.drop_location || '').trim().slice(0, 200) || null,
+      b.lat != null ? parseFloat(b.lat) : null,
+      b.lng != null ? parseFloat(b.lng) : null,
+      String(b.building || '').trim().slice(0, 80) || null,
+      String(b.floor    || '').trim().slice(0, 40) || null,
+      String(b.landmark || '').trim().slice(0, 80) || null,
+    ];
+    if (existing.rows[0]) {
+      await db.query(
+        `UPDATE parcel_addresses SET label=$1, receiver_name=$2, receiver_phone=$3,
+                drop_location=$4, lat=$5, lng=$6, building=$7, floor=$8, landmark=$9
+          WHERE id=$10 AND owner_phone=$11`,
+        [...vals, existing.rows[0].id, req.user.phone]
+      );
+      return res.json({ success: true, id: existing.rows[0].id, updated: true });
+    }
+    const ins = await db.query(
+      `INSERT INTO parcel_addresses
+         (owner_phone, label, receiver_name, receiver_phone, drop_location, lat, lng, building, floor, landmark)
+       VALUES ($10,$1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING id`,
+      [...vals, req.user.phone]
+    );
+    res.json({ success: true, id: ins.rows[0].id });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+router.post('/addresses/delete', userAuth, async (req, res) => {
+  try {
+    // owner_phone in the WHERE clause is the authorisation check — without it
+    // any authenticated user could delete any row by guessing an id.
+    await db.query(`DELETE FROM parcel_addresses WHERE id=$1 AND owner_phone=$2`,
+      [req.body?.id, req.user.phone]);
+    res.json({ success: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+router.post('/addresses/used', userAuth, async (req, res) => {
+  try {
+    await db.query(`UPDATE parcel_addresses SET used_count = used_count + 1 WHERE id=$1 AND owner_phone=$2`,
+      [req.body?.id, req.user.phone]);
+    res.json({ success: true });
+  } catch (_e) { res.json({ success: true }); }
+});
+
 router.get('/receiver-address', userAuth, async (req, res) => {
   const receiver = String(req.query.receiver || '').replace(/[^0-9]/g, '');
   if (receiver.length !== 10) return res.json({ address: null });
