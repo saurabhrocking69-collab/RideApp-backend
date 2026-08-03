@@ -215,11 +215,60 @@ router.post('/payment-order', userAuth, async (req, res) => {
 // wallet automatically when delivery is confirmed (see rides.js /complete).
 // No cash-on-delivery: the sender has already paid, so there's nothing left
 // for the driver to collect from the receiver.
+// GET /api/parcel/receiver-address?receiver=<10-digit>
+// The last delivery address THIS sender used for THIS receiver.
+//
+// Parcels repeat far more than rides do — the same shop, the same relative,
+// the same office. Re-typing the building, floor and landmark every time is
+// where the details get dropped, and a missing floor number is what turns a
+// delivery into a phone call and then into a return.
+//
+// PRIVACY: scoped to req.user.phone, the AUTHENTICATED sender — never to a
+// sender id supplied by the client. Without that, this endpoint would let
+// anyone type a phone number and read back where that person lives, which is
+// a far worse problem than the typing it saves.
+router.get('/receiver-address', userAuth, async (req, res) => {
+  const receiver = String(req.query.receiver || '').replace(/[^0-9]/g, '');
+  if (receiver.length !== 10) return res.json({ address: null });
+  try {
+    const r = await db.query(
+      `SELECT r.drop_location, r.drop_lat, r.drop_lng, r.receiver_name,
+              r.drop_building, r.drop_floor, r.drop_landmark
+         FROM rides r
+         JOIN users u ON r.passenger_id = u.id
+        WHERE u.phone = $1
+          AND r.is_parcel = true
+          AND r.receiver_phone = $2
+          AND r.drop_lat IS NOT NULL
+        ORDER BY r.created_at DESC
+        LIMIT 1`,
+      [req.user.phone, receiver]
+    );
+    if (!r.rows[0]) return res.json({ address: null });
+    const a = r.rows[0];
+    res.json({
+      address: {
+        drop_location: a.drop_location,
+        lat: a.drop_lat != null ? parseFloat(a.drop_lat) : null,
+        lng: a.drop_lng != null ? parseFloat(a.drop_lng) : null,
+        receiver_name: a.receiver_name,
+        building: a.drop_building,
+        floor: a.drop_floor,
+        landmark: a.drop_landmark,
+      },
+    });
+  } catch (e) {
+    // Never let a convenience lookup break the booking form.
+    res.json({ address: null });
+  }
+});
+
 router.post('/book', userAuth, async (req, res) => {
   const {
     passenger_phone, pickup, drop_location, vehicle_type, package_size, package_note,
     pickup_lat, pickup_lng, drop_lat, drop_lng,
     discount, promo_code, receiver_name, receiver_phone, payment,
+    drop_building, drop_floor, drop_landmark, drop_note,
   } = req.body;
 
   if (req.user.phone !== String(passenger_phone)) return res.status(403).json({ error: 'You can only book as yourself' });
@@ -296,8 +345,9 @@ router.post('/book', userAuth, async (req, res) => {
           is_parcel, package_size, package_note,
           pickup_lat, pickup_lng, drop_lat, drop_lng,
           discount, promo_code, distance_km, platform_fee,
-          receiver_name, receiver_phone, payment_status, payment_method)
-       VALUES ($1,$2,$3,$4,$5,'requested',true,$6,$7,$8,$9,$10,$11,$12,$13,$14,0,$15,$16,'escrowed',$17)
+          receiver_name, receiver_phone, payment_status, payment_method,
+          drop_building, drop_floor, drop_landmark, drop_note)
+       VALUES ($1,$2,$3,$4,$5,'requested',true,$6,$7,$8,$9,$10,$11,$12,$13,$14,0,$15,$16,'escrowed',$17,$18,$19,$20,$21)
        RETURNING *`,
       [
         passenger.id, pickup, drop_location, vehicle_type, fare,
@@ -305,6 +355,11 @@ router.post('/book', userAuth, async (req, res) => {
         pickup_lat || null, pickup_lng || null, drop_lat || null, drop_lng || null,
         discount || 0, promo_code || null, distKm,
         receiverNameVal, receiverPhoneVal, paymentMethod,
+        // Trimmed and capped server-side; the client caps are a courtesy.
+        (drop_building || '').trim().slice(0, 80) || null,
+        (drop_floor    || '').trim().slice(0, 40) || null,
+        (drop_landmark || '').trim().slice(0, 80) || null,
+        (drop_note     || '').trim().slice(0, 140) || null,
       ]
     );
     await client.query('COMMIT');

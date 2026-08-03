@@ -878,6 +878,14 @@ setTimeout(async () => {
   // Medical"). Indian addresses are landmark-relative, and that sentence gets
   // a driver to the door when even a rooftop-accurate pin leaves them circling.
   await db.query(`ALTER TABLE rides ADD COLUMN IF NOT EXISTS drop_note TEXT`).catch(() => {});
+  // Structured delivery address. Kept as separate columns rather than one blob
+  // so the driver's screen can render them as a checklist, and — the reason
+  // that actually matters — so a repeat parcel to the same receiver can be
+  // auto-filled from the last one. A free-text blob can be shown but not
+  // reused.
+  await db.query(`ALTER TABLE rides ADD COLUMN IF NOT EXISTS drop_building TEXT`).catch(() => {});
+  await db.query(`ALTER TABLE rides ADD COLUMN IF NOT EXISTS drop_floor    TEXT`).catch(() => {});
+  await db.query(`ALTER TABLE rides ADD COLUMN IF NOT EXISTS drop_landmark TEXT`).catch(() => {});
   // Customer account control columns
   await db.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS trust_score INTEGER DEFAULT 100`).catch(() => {});
   await db.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS booking_restricted BOOLEAN DEFAULT FALSE`).catch(() => {});
