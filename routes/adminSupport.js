@@ -270,21 +270,57 @@ router.post('/tickets/:id/action', async (req, res) => {
 
     // Execute enforcement
     if (action === 'refund' && amount) {
+      const amt = parseFloat(amount);
+      if (!Number.isFinite(amt) || amt <= 0) {
+        return res.status(400).json({ error: 'Refund amount must be a positive number' });
+      }
       const userRes = await db.query(`SELECT id FROM users WHERE phone=$1 LIMIT 1`, [target_phone]);
       const uid = userRes.rows[0]?.id;
-      if (uid) {
-        const walletTable = role === 'driver' ? 'driver_wallet' : 'customer_wallet';
-        const idCol       = role === 'driver' ? 'driver_id'     : 'user_id';
-        await db.query(`UPDATE ${walletTable} SET balance=balance+$1, updated_at=NOW() WHERE ${idCol}=$2`, [parseFloat(amount), uid]).catch(() => {});
+      if (!uid) {
+        return res.status(404).json({ error: 'No account found for that phone — refund not issued' });
+      }
+      // Create the wallet row before crediting it. This was a bare UPDATE
+      // wrapped in .catch(() => {}), so a user who had never held a wallet row
+      // matched ZERO rows: the money went nowhere, yet the ticket recorded a
+      // refund, the API returned success, and the customer got a "Refund
+      // Credited" push. Every other credit path in this codebase ensures the
+      // row first (see rides.js / payments.js / misc.js) — so does this now,
+      // and a genuine DB failure is no longer swallowed.
+      if (role === 'driver') {
+        await db.query(`INSERT INTO driver_wallet (driver_id) VALUES ($1) ON CONFLICT (driver_id) DO NOTHING`, [uid]);
+        await db.query(`UPDATE driver_wallet SET balance = balance + $1, updated_at = NOW() WHERE driver_id = $2`, [amt, uid]);
+      } else {
+        await db.query(`INSERT INTO customer_wallet (user_id) VALUES ($1) ON CONFLICT (user_id) DO NOTHING`, [uid]);
+        await db.query(`UPDATE customer_wallet SET balance = balance + $1, updated_at = NOW() WHERE user_id = $2`, [amt, uid]);
       }
       sendFCM(target_phone, `Refund Credited: ₹${amount}`, reason, { type: 'refund' }, { role }).catch(() => {});
     } else if (action === 'warn') {
       sendFCM(target_phone, 'Sppero Support: Warning', reason, { type: 'warning' }, { role }).catch(() => {});
     } else if (action === 'suspend' || action === 'ban') {
+      // Suspension lives on users.is_suspended for BOTH roles: that is the
+      // column routes/auth.js checks at login and the one
+      // /api/admin/users/unsuspend reverses.
+      //
+      // The driver branch used to write drivers.approved / .message / .phone —
+      // none of which exist on that table (it keys off users.id and uses
+      // verification_status / admin_message). So the UPDATE threw, the
+      // .catch(() => {}) swallowed it, and support got {success:true} while
+      // the driver received a suspension push and carried on taking rides.
+      const supRes = await db.query(
+        `UPDATE users SET is_suspended=true, suspend_reason=$1, suspended_until=NULL WHERE phone=$2`,
+        [reason, target_phone]
+      );
+      if (supRes.rowCount === 0) {
+        return res.status(404).json({ error: 'No account found for that phone — nothing was suspended' });
+      }
+      // A driver who is already online stays in the dispatch pool until they
+      // go offline (rideWorker requires is_online=true), so the suspension
+      // wouldn't bite until their next logout. Drop them out of it now.
       if (role === 'driver') {
-        await db.query(`UPDATE drivers SET approved='suspended', message=$1 WHERE phone=$2`, [reason, target_phone]).catch(() => {});
-      } else {
-        await db.query(`UPDATE users SET is_suspended=true, suspend_reason=$1, suspended_until=NULL WHERE phone=$2`, [reason, target_phone]).catch(() => {});
+        await db.query(
+          `UPDATE drivers SET is_online=false WHERE id=(SELECT id FROM users WHERE phone=$1)`,
+          [target_phone]
+        );
       }
       sendFCM(target_phone, 'Account Suspended', reason, { type: 'account_restricted' }, { role }).catch(() => {});
     }
