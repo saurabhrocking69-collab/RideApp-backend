@@ -5,6 +5,7 @@ const HOURLY_FARES = {
   auto:          { 2:{fare:180,km:20}, 4:{fare:320,km:40}, 6:{fare:460,km:60}, 8:{fare:580,km:80},  24:{fare:1500,km:200}, 48:{fare:2800,km:400}, 72:{fare:4000,km:600}, extra:8  },
   bike:          { 2:{fare:120,km:20}, 4:{fare:210,km:40}, 6:{fare:300,km:60}, 8:{fare:380,km:80},  24:{fare:1000,km:200}, 48:{fare:1800,km:400}, 72:{fare:2600,km:600}, extra:5  },
   car:           { 2:{fare:260,km:20}, 4:{fare:460,km:40}, 6:{fare:660,km:60}, 8:{fare:840,km:80},  24:{fare:2200,km:200}, 48:{fare:4000,km:400}, 72:{fare:5800,km:600}, extra:12 },
+  car_7:         { 2:{fare:350,km:20}, 4:{fare:620,km:40}, 6:{fare:890,km:60}, 8:{fare:1130,km:80}, 24:{fare:2950,km:200}, 48:{fare:5400,km:400}, 72:{fare:7800,km:600}, extra:16 },
   eriksha:       { 2:{fare:150,km:20}, 4:{fare:270,km:40}, 6:{fare:390,km:60}, 8:{fare:490,km:80},  24:{fare:1200,km:200}, 48:{fare:2200,km:400}, 72:{fare:3200,km:600}, extra:7  },
   ultra_luxury:  { 2:{fare:800,km:20}, 4:{fare:1400,km:40}, 6:{fare:2000,km:60}, 8:{fare:2600,km:80}, 24:{fare:6000,km:200}, 48:{fare:10000,km:400}, 72:{fare:14000,km:600}, extra:25 },
   green_bike:    { 2:{fare:100,km:20}, 4:{fare:180,km:40}, 6:{fare:260,km:60}, 8:{fare:330,km:80},  24:{fare:850,km:200},  48:{fare:1500,km:400}, 72:{fare:2200,km:600}, extra:4  },
@@ -18,16 +19,27 @@ const HOURLY_FARES = {
 // customer pays those to the driver directly (shown as a note in both apps).
 const INTERCITY_FARES = {
   car: {
-    label: 'Intercity Economy', vehicle_desc: 'Wagon R, Dzire or similar',
+    label: 'Intercity 5 Seater', vehicle_desc: 'Wagon R, Dzire or similar',
     base_fare: 200, per_km_oneway: 14, per_km_round: 11,
     driver_allowance_per_day: 400, night_halt: 300,
     min_km: 80, seats: 4,
   },
+  car_7: {
+    label: 'Intercity 7 Seater', vehicle_desc: 'Ertiga, Innova, Marazzo or similar',
+    base_fare: 300, per_km_oneway: 18, per_km_round: 14,
+    driver_allowance_per_day: 500, night_halt: 350,
+    min_km: 80, seats: 6,
+  },
+  // NOTE: this tier dispatches to drivers registered as Ultra Luxury, i.e.
+  // BMW / Mercedes / Audi / Land Rover / Lexus. It used to be labelled
+  // "Intercity Premium — Innova, Ertiga or similar / 6 seats", which described
+  // a vehicle class that never actually took these trips. The real Innova
+  // tier is car_7 above, so this one now says what it truly sends.
   luxury: {
-    label: 'Intercity Premium', vehicle_desc: 'Innova, Ertiga or similar',
+    label: 'Intercity Luxury', vehicle_desc: 'BMW, Mercedes, Audi or similar',
     base_fare: 350, per_km_oneway: 20, per_km_round: 16,
     driver_allowance_per_day: 600, night_halt: 400,
-    min_km: 80, seats: 6,
+    min_km: 80, seats: 4,
   },
 };
 
@@ -75,6 +87,7 @@ const PARCEL_FARES = {
   eriksha:       { base_fare: 22, per_km_rate: 6,  min_fare: 35 },
   electric_auto: { base_fare: 22, per_km_rate: 6,  min_fare: 35 },
   car:           { base_fare: 40, per_km_rate: 11, min_fare: 65 },
+  car_7:         { base_fare: 50, per_km_rate: 13, min_fare: 80 },
 };
 const PARCEL_SIZE_SURCHARGE = { small: 0, medium: 10, large: 25 };
 // Return-to-sender: if the receiver can't be reached and the sender opts to

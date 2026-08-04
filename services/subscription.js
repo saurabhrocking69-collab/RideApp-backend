@@ -5,7 +5,7 @@ function vehicleCategoryFor(vehicleType) {
   const vt = (vehicleType || '').toLowerCase();
   if (['bike', 'green_bike'].includes(vt)) return 'bike';
   if (['auto', 'electric_auto', 'e_riksha', 'eriksha'].includes(vt)) return 'auto';
-  if (['car', 'luxury', 'ultra_luxury'].includes(vt)) return 'car';
+  if (['car', 'car_7', 'luxury', 'ultra_luxury'].includes(vt)) return 'car';
   return null;
 }
 

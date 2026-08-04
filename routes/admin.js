@@ -845,7 +845,7 @@ router.post('/hourly-fares', (req, res) => {
 router.get('/intercity-fares', async (req, res) => {
   try {
     const comm = await db.query(
-      `SELECT vehicle_type, intercity_commission_rate FROM fare_settings WHERE vehicle_type IN ('car','luxury')`
+      `SELECT vehicle_type, intercity_commission_rate FROM fare_settings WHERE vehicle_type IN ('car','car_7','luxury')`
     ).catch(() => ({ rows: [] }));
     const commissions = {};
     comm.rows.forEach(r => { commissions[r.vehicle_type] = parseFloat(r.intercity_commission_rate ?? 10); });

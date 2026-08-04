@@ -30,7 +30,7 @@ require('./config/cloudinary');
 const { rideQueue, assignRideToNextDriver, broadcastToRadius } = require('./workers/rideWorker');
 
 // ── Services ────────────────────────────────────
-const { driverLocations } = require('./services/matching');
+const { driverLocations, vehicleServesSql } = require('./services/matching');
 const { startLocationJobs } = require('./services/locationIntelligence');
 const db                  = require('./config/db');
 const { clearRide: clearRideCache } = require('./services/rideCache');
@@ -252,7 +252,7 @@ app.get('/debug/worker-query', debugAuth, async (req, res) => {
       LEFT JOIN driver_locations dl ON dl.phone = u.phone
       WHERE d.verification_status = 'approved'
         AND d.is_online = true
-        AND (d.vehicle_type = $1 OR (d.vehicle_type = 'ultra_luxury' AND $1 = 'luxury'))
+        AND ${vehicleServesSql('d.vehicle_type', '$1')}
         AND NOT EXISTS (
           SELECT 1 FROM rides r2
           WHERE r2.driver_id = d.id AND r2.status IN ('matched','arrived','started') AND r2.parcel_parked_at IS NULL
@@ -501,7 +501,7 @@ app.get('/track/:rideId', (req, res) => {
 const RIDE_ID  = ${JSON.stringify(rideId)};
 const API_BASE = ${JSON.stringify(BACKEND)};
 
-const VEHICLE_EMOJI = { bike:'🏍️', auto:'🛺', car:'🚕', eriksha:'🛵', green_bike:'⚡', electric_auto:'🌿', luxury:'🚙', ultra_luxury:'🚙' };
+const VEHICLE_EMOJI = { bike:'🏍️', auto:'🛺', car:'🚕', car_7:'🚐', eriksha:'🛵', green_bike:'⚡', electric_auto:'🌿', luxury:'🚙', ultra_luxury:'🚙' };
 
 let map, driverMarker, pickupMarker, dropMarker;
 let rideData = null;
@@ -1003,6 +1003,7 @@ setTimeout(async () => {
       ('bike',          15,  8, 1.3),
       ('auto',          25, 12, 1.5),
       ('car',           40, 15, 1.8),
+      ('car_7',         55, 19, 1.8),
       ('eriksha',       20, 10, 1.4),
       ('green_bike',    12,  6, 1.2),
       ('electric_auto', 20,  9, 1.3),
@@ -1014,6 +1015,7 @@ setTimeout(async () => {
     UPDATE fare_settings SET
       per_km_rate = CASE vehicle_type
         WHEN 'bike' THEN 8 WHEN 'auto' THEN 12 WHEN 'car' THEN 15
+        WHEN 'car_7' THEN 19
         WHEN 'eriksha' THEN 10 WHEN 'green_bike' THEN 6
         WHEN 'electric_auto' THEN 9 WHEN 'luxury' THEN 25
         ELSE 10 END
@@ -1023,6 +1025,7 @@ setTimeout(async () => {
     UPDATE fare_settings SET
       base_fare = CASE vehicle_type
         WHEN 'bike' THEN 15 WHEN 'auto' THEN 25 WHEN 'car' THEN 40
+        WHEN 'car_7' THEN 55
         WHEN 'eriksha' THEN 20 WHEN 'green_bike' THEN 12
         WHEN 'electric_auto' THEN 20 WHEN 'luxury' THEN 80
         ELSE 20 END
@@ -1048,23 +1051,28 @@ setTimeout(async () => {
         WHEN 'bike'          THEN 0.5  WHEN 'green_bike'    THEN 0.4
         WHEN 'auto'          THEN 0.75 WHEN 'electric_auto' THEN 0.6
         WHEN 'eriksha'       THEN 0.65 WHEN 'car'           THEN 1.0
+        WHEN 'car_7'         THEN 1.3
         WHEN 'luxury'        THEN 1.5  ELSE 0.5 END,
       platform_fee = CASE vehicle_type
-        WHEN 'car'    THEN 2.5 WHEN 'luxury' THEN 3.0 ELSE 2.0 END,
+        WHEN 'car'    THEN 2.5 WHEN 'car_7' THEN 2.5
+        WHEN 'luxury' THEN 3.0 ELSE 2.0 END,
       min_fare = CASE vehicle_type
         WHEN 'bike'          THEN 30  WHEN 'green_bike'    THEN 25
         WHEN 'auto'          THEN 45  WHEN 'electric_auto' THEN 38
         WHEN 'eriksha'       THEN 35  WHEN 'car'           THEN 65
+        WHEN 'car_7'         THEN 85
         WHEN 'luxury'        THEN 120 ELSE 30 END,
       per_km_rate_t2 = CASE vehicle_type
         WHEN 'bike'          THEN 9   WHEN 'green_bike'    THEN 7
         WHEN 'auto'          THEN 14  WHEN 'electric_auto' THEN 11
         WHEN 'eriksha'       THEN 11  WHEN 'car'           THEN 17
+        WHEN 'car_7'         THEN 21
         WHEN 'luxury'        THEN 28  ELSE per_km_rate END,
       per_km_rate_t3 = CASE vehicle_type
         WHEN 'bike'          THEN 10  WHEN 'green_bike'    THEN 8
         WHEN 'auto'          THEN 15  WHEN 'electric_auto' THEN 12
         WHEN 'eriksha'       THEN 12  WHEN 'car'           THEN 18
+        WHEN 'car_7'         THEN 22
         WHEN 'luxury'        THEN 30  ELSE per_km_rate END,
       commission_rate = CASE vehicle_type
         WHEN 'green_bike' THEN 12 WHEN 'electric_auto' THEN 12 ELSE 15 END

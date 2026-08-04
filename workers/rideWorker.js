@@ -3,7 +3,7 @@ const db = require('../config/db');
 const { makeBmqConn } = require('../config/redis');
 const { sendFCM } = require('../config/firebase');
 const { emitToRoom } = require('../config/socket');
-const { haversineKm } = require('../services/matching');
+const { haversineKm, vehicleServesSql } = require('../services/matching');
 const { getSurgeMultiplier } = require('../services/locationIntelligence');
 
 const rideQueue = new Queue('ride-assignment', { connection: makeBmqConn() });
@@ -23,8 +23,9 @@ const VEHICLE_ALTERNATIVES = {
   bike:          ['auto', 'car'],
   eriksha:       ['auto', 'bike'],
   auto:          ['car'],
-  car:           ['auto'],
-  luxury:        ['car'],
+  car:           ['car_7', 'auto'],
+  car_7:         ['car', 'auto'],
+  luxury:        ['car_7', 'car'],
   ultra_luxury:  ['car'],
   green_bike:    ['bike', 'auto'],
   electric_auto: ['auto', 'eriksha'],
@@ -67,7 +68,7 @@ async function broadcastToRadius(rideId, pickupLat, pickupLng, rideType, radiusM
        LEFT JOIN driver_locations dl ON dl.phone = u.phone
        WHERE d.verification_status = 'approved'
          AND d.is_online = true
-         AND (d.vehicle_type = $1 OR (d.vehicle_type = 'ultra_luxury' AND $1 = 'luxury'))
+         AND ${vehicleServesSql('d.vehicle_type', '$1')}
          AND NOT EXISTS (
            SELECT 1 FROM rides r2
            WHERE r2.driver_id = d.id AND r2.status IN ('matched','arrived','started')
@@ -255,7 +256,7 @@ async function findPreAssignableDriver(pickupLat, pickupLng, rideType, excludePh
      JOIN drivers d ON d.id = u.id
      LEFT JOIN driver_locations dl ON dl.phone = u.phone
      WHERE r.status IN ('matched','arrived','started')
-       AND d.vehicle_type = $1
+       AND ${vehicleServesSql('d.vehicle_type', '$1')}
        AND d.is_online = true
        AND d.verification_status = 'approved'
        AND dl.lat IS NOT NULL

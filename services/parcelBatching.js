@@ -67,7 +67,7 @@ const BATCH_OFFER_WINDOW_SEC    = 30;
 const VEHICLE_CLASS = {
   bike: 'two_wheeler', green_bike: 'two_wheeler',
   auto: 'three_wheeler', eriksha: 'three_wheeler', electric_auto: 'three_wheeler',
-  car: 'four_wheeler',
+  car: 'four_wheeler', car_7: 'four_wheeler',
 };
 
 // Schema init. Every statement is run and reported INDEPENDENTLY.

@@ -6,7 +6,7 @@ const { emitToRoom } = require('../config/socket');
 const { assignRideToNextDriver, activateQueuedRide, rideQueue } = require('../workers/rideWorker');
 const { driverLocations } = require('../services/matching');
 const { maskPhone } = require('../services/phone');
-const { haversineKm } = require('../services/matching');
+const { haversineKm, VEHICLE_UPGRADES } = require('../services/matching');
 const { directFavouriteRideIds } = require('./favourites');
 const { transitionRide } = require('../services/rideStateMachine');
 const { getRideStatus, getDriverLoc, setRideStatus, setRideData, getRideData, clearRide: clearRideCache } = require('../services/rideCache');
@@ -86,7 +86,7 @@ function _etaGeoCell(lat, lng) {
   const zLng = Math.round(parseFloat(lng) / 0.018) * 0.018;
   return `${zLat.toFixed(3)}_${zLng.toFixed(3)}`;
 }
-const AVG_SPEED_KMH_ETA = { bike: 20, auto: 16, car: 22, eriksha: 15, green_bike: 18, electric_auto: 16, luxury: 25, ultra_luxury: 25 };
+const AVG_SPEED_KMH_ETA = { bike: 20, auto: 16, car: 22, car_7: 21, eriksha: 15, green_bike: 18, electric_auto: 16, luxury: 25, ultra_luxury: 25 };
 
 async function addLoyaltyPoints(userId, points) {
   try {
@@ -147,7 +147,7 @@ router.post('/book', async (req, res) => {
   console.log(`[rides] 📥 book request: phone=${passenger_phone} type=${ride_type}`);
   if (!passenger_phone || String(passenger_phone).length !== 10) return res.status(400).json({ error: 'Valid phone do' });
   if (!pickup || !drop_location) return res.status(400).json({ error: 'Pickup and drop location required' });
-  if (!['auto', 'bike', 'car', 'eriksha', 'luxury', 'green_bike', 'electric_auto'].includes(ride_type)) return res.status(400).json({ error: 'Invalid ride type' });
+  if (!['auto', 'bike', 'car', 'car_7', 'eriksha', 'luxury', 'green_bike', 'electric_auto'].includes(ride_type)) return res.status(400).json({ error: 'Invalid ride type' });
   try {
     const passenger = await db.query('SELECT * FROM users WHERE phone = $1', [passenger_phone]);
     if (passenger.rows.length === 0) { console.log(`[rides] ❌ book blocked: phone=${passenger_phone} reason=passenger_not_found`); return res.status(404).json({ error: 'Passenger not found' }); }
@@ -1450,7 +1450,7 @@ router.get('/driver-eta', async (req, res) => {
   const lng = parseFloat(pickup_lng);
   if (isNaN(lat) || isNaN(lng)) return res.status(400).json({ error: 'Invalid coordinates' });
 
-  const AVG_SPEED_KMH = { bike: 20, auto: 16, car: 22, eriksha: 15, green_bike: 18, electric_auto: 16, luxury: 25 };
+  const AVG_SPEED_KMH = { bike: 20, auto: 16, car: 22, car_7: 21, eriksha: 15, green_bike: 18, electric_auto: 16, luxury: 25 };
 
   try {
     const drRes = await db.query(
@@ -1491,6 +1491,21 @@ router.get('/driver-eta', async (req, res) => {
         // Driver online but location unknown/stale — mark available without ETA
         nearest[dr.vehicle_type] = { dist_km: null, eta_min: null };
       }
+    }
+
+    // A bigger vehicle also serves the smaller request (car_7 → car,
+    // ultra_luxury → luxury), and the dispatcher really does broadcast those
+    // drivers. So the smaller tab must count them as available too — otherwise
+    // the customer sees "no driver" on 5 Seater while a 7-seater sitting round
+    // the corner would in fact have been offered the ride.
+    // Only fills a gap or a genuinely nearer driver; never worsens a real one.
+    for (const [bigger, smaller] of Object.entries(VEHICLE_UPGRADES)) {
+      const up = nearest[bigger];
+      if (!up) continue;
+      const cur = nearest[smaller];
+      const upIsBetter = !cur || cur.dist_km === null ||
+        (up.dist_km !== null && up.dist_km < cur.dist_km);
+      if (upIsBetter) nearest[smaller] = { ...up };
     }
 
     // Apply dynamic ETA correction factors per zone
@@ -1652,7 +1667,7 @@ router.get('/driver-location/:rideId', async (req, res) => {
 // POST /api/rides/switch-vehicle — customer switches vehicle type while searching
 router.post('/switch-vehicle', async (req, res) => {
   const { ride_id, new_vehicle_type } = req.body;
-  if (!['auto', 'bike', 'car', 'eriksha', 'luxury', 'green_bike', 'electric_auto'].includes(new_vehicle_type))
+  if (!['auto', 'bike', 'car', 'car_7', 'eriksha', 'luxury', 'green_bike', 'electric_auto'].includes(new_vehicle_type))
     return res.status(400).json({ error: 'Invalid vehicle type' });
   try {
     const r = await db.query(

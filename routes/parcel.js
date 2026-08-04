@@ -134,7 +134,7 @@ async function parcelCommission(rideType, amount) {
 const SIZE_VEHICLES = {
   small:  ['bike', 'green_bike'],
   medium: ['auto', 'eriksha', 'electric_auto', 'car'],
-  large:  ['car'],
+  large:  ['car', 'car_7'],
 };
 
 // Admin-editable parcel rates — persisted here, hydrated into the in-memory

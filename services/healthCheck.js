@@ -28,7 +28,7 @@ async function checkFareSettingsIntegrity() {
   const rows = res.rows;
 
   // Required vehicle types must exist
-  const required = ['bike', 'auto', 'car', 'eriksha'];
+  const required = ['bike', 'auto', 'car', 'car_7', 'eriksha'];
   const missing = required.filter(v => !rows.find(r => r.vehicle_type === v));
   if (missing.length > 0) throw new Error(`fare_settings rows missing: ${missing.join(', ')}`);
 

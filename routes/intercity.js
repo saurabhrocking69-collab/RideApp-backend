@@ -39,7 +39,7 @@ db.query(`
 // Intercity only makes sense for genuinely long trips. Client switches at 80km;
 // server accepts a little under to tolerate route-recalculation drift.
 const MIN_INTERCITY_KM = 70;
-const INTERCITY_VEHICLES = ['car', 'luxury'];
+const INTERCITY_VEHICLES = ['car', 'car_7', 'luxury'];
 
 // Calendar days a round trip spans in IST (inclusive) — drives allowance/night-halt
 function tripDaysIST(leaveAt, returnAt) {

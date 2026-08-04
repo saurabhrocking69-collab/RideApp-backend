@@ -3,7 +3,7 @@ const router = express.Router();
 const db = require('../config/db');
 const cloudinary = require('../config/cloudinary');
 const { sendFCM } = require('../config/firebase');
-const { driverLocations, encodeGeohash, haversineKm } = require('../services/matching');
+const { driverLocations, encodeGeohash, haversineKm, vehicleServesSql } = require('../services/matching');
 const { maskPhone } = require('../services/phone');
 const { emitToRoom, getIO } = require('../config/socket');
 const { directFavouriteRideIds } = require('./favourites');
@@ -141,12 +141,19 @@ router.get('/pending-ride', async (req, res) => {
       return res.json({ ride: { ...r, seconds_to_accept: secLeft, distance: tripKm ? tripKm.toFixed(1) : null, is_favourite_request: isFavRequest }, pending_commission: pendingComm });
     }
 
-    const vehicleType = dr.vehicle_type === 'ultra_luxury' ? 'luxury' : dr.vehicle_type;
     // Fallback: truly orphaned rides (>2 min, no active BullMQ assignment).
     // MUST exclude this driver if they already rejected — offered_phones tracks rejections.
+    //
+    // This used to collapse the driver's type (ultra_luxury → luxury) before
+    // matching on equality. That cannot express car_7: collapsing it to 'car'
+    // would let a 7-seater rescue orphaned 5-seater rides but hide orphaned
+    // 7-seater ones — its own bookings. The shared predicate keeps the driver's
+    // real type and asks the question the right way round: which orphaned rides
+    // can THIS vehicle serve.
+    const vehicleType = dr.vehicle_type;
     const fallback = await db.query(
       `SELECT r.*, COALESCE(NULLIF(r.rider_name,''), p.name) AS passenger_name, COALESCE(NULLIF(r.rider_phone,''), p.phone) AS passenger_phone FROM rides r JOIN users p ON r.passenger_id::text = p.id::text
-       WHERE r.status='requested' AND r.driver_id IS NULL AND r.ride_type=$1
+       WHERE r.status='requested' AND r.driver_id IS NULL AND ${vehicleServesSql('$1', 'r.ride_type')}
          AND (r.assigned_to_phone IS NULL OR r.assignment_expires_at < NOW())
          AND r.created_at < NOW() - INTERVAL '2 minutes'
          AND NOT (COALESCE(r.offered_phones, '{}') @> ARRAY[$2::text])

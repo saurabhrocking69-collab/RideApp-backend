@@ -50,7 +50,7 @@ db.query('ALTER TABLE rides ADD COLUMN IF NOT EXISTS cancel_reason TEXT').catch(
 db.query('ALTER TABLE rides ADD COLUMN IF NOT EXISTS is_scheduled BOOLEAN DEFAULT FALSE').catch(() => {});
 db.query('ALTER TABLE rides ADD COLUMN IF NOT EXISTS scheduled_at TIMESTAMPTZ').catch(() => {});
 
-const VALID_TYPES = ['auto', 'bike', 'car', 'eriksha', 'luxury', 'green_bike', 'electric_auto'];
+const VALID_TYPES = ['auto', 'bike', 'car', 'car_7', 'eriksha', 'luxury', 'green_bike', 'electric_auto'];
 
 const DEFAULT_FARES = {
   luxury:        { base_fare: 80,  per_km_rate: 25, per_km_rate_t2: 28, per_km_rate_t3: 30, time_rate: 1.5,  platform_fee: 3.0, min_fare: 120, night_multiplier: 1.8, night_start: '22:00', night_end: '06:00' },

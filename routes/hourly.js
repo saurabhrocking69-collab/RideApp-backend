@@ -5,6 +5,7 @@ const { sendFCM } = require('../config/firebase');
 const { emitToRoom, getIO } = require('../config/socket');
 const { HOURLY_FARES, getSurge } = require('../services/pricing');
 const { useSubscriptionIfActive } = require('../services/subscription');
+const { vehicleServesSql } = require('../services/matching');
 
 async function doCompleteHourly(booking_id, actual_km) {
   const client = await db.connect();
@@ -93,7 +94,7 @@ router.post('/book', async (req, res) => {
         const io = getIO();
         const onlineDrivers = await db.query(
           `SELECT u.phone FROM drivers d JOIN users u ON d.id=u.id
-           WHERE d.vehicle_type=$1 AND d.is_online=true AND d.verification_status='approved'
+           WHERE ${vehicleServesSql('d.vehicle_type', '$1')} AND d.is_online=true AND d.verification_status='approved'
              AND NOT EXISTS (
                SELECT 1 FROM hourly_bookings hb
                WHERE hb.driver_phone = u.phone AND hb.status IN ('matched','arrived','active')
@@ -155,7 +156,10 @@ router.get('/driver-pending', async (req, res) => {
     const dr = await db.query('SELECT d.vehicle_type FROM drivers d JOIN users u ON d.id = u.id WHERE u.phone = $1', [phone]);
     if (!dr.rows[0]) return res.json({ booking: null });
     const r = await db.query(
-      `SELECT * FROM hourly_bookings WHERE status='pending' AND driver_phone IS NULL AND vehicle_type=$1
+      // $1 is the DRIVER's vehicle, so the comparison is the other way round
+      // here: find bookings this driver's vehicle can serve.
+      `SELECT * FROM hourly_bookings WHERE status='pending' AND driver_phone IS NULL
+       AND ${vehicleServesSql('$1', 'vehicle_type')}
        AND NOT ($2 = ANY(COALESCE(rejected_drivers, '{}')))
        AND ((scheduled_at IS NULL AND created_at > NOW() - INTERVAL '30 minutes') OR (scheduled_at IS NOT NULL AND scheduled_at BETWEEN NOW() - INTERVAL '15 minutes' AND NOW() + INTERVAL '75 minutes'))
        ORDER BY CASE WHEN scheduled_at IS NULL THEN 0 ELSE 1 END, COALESCE(scheduled_at, created_at) ASC LIMIT 1`,

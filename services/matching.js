@@ -46,7 +46,41 @@ function scoreDriver(driver, distKm, now) {
   return distScore + idleScore + accScore + ratScore;
 }
 
+// ── Vehicle upgrades: bigger vehicle serves the smaller request ──────────────
+// A driver whose vehicle strictly covers what the customer asked for may take
+// the smaller job too (their choice — they see the smaller fare on the offer):
+//   ultra_luxury → luxury   (pre-existing rule)
+//   car_7        → car      (a 7-seater can obviously do a 5-seater trip)
+// NOT the reverse: a 5-seater must never be offered a 7-seater request, because
+// the customer booked those extra seats.
+//
+// This lives in ONE place on purpose. The same filter appears in the broadcast
+// query, the pre-assignment query, the hourly-booking queries and the debug
+// endpoint — a rule applied to only some of them leaves paths where 7-seater
+// drivers are silently invisible.
+const VEHICLE_UPGRADES = { ultra_luxury: 'luxury', car_7: 'car' };
+
+// SQL predicate: "<col> can serve the ride type in <param>".
+// Both arguments are caller-supplied literals (a column name and a $n
+// placeholder) and the vehicle names are hardcoded constants above — no
+// user input reaches the generated string.
+function vehicleServesSql(col, param) {
+  const upgrades = Object.entries(VEHICLE_UPGRADES)
+    .map(([bigger, smaller]) => `(${col} = '${bigger}' AND ${param} = '${smaller}')`)
+    .join(' OR ');
+  return `(${col} = ${param} OR ${upgrades})`;
+}
+
+// JS equivalent of the predicate above, for in-memory checks.
+function vehicleServes(driverType, requestedType) {
+  if (driverType === requestedType) return true;
+  return VEHICLE_UPGRADES[driverType] === requestedType;
+}
+
 // In-memory driver locations (supplemental to DB)
 const driverLocations = {};
 
-module.exports = { encodeGeohash, getNearbyCells, haversineKm, scoreDriver, driverLocations };
+module.exports = {
+  encodeGeohash, getNearbyCells, haversineKm, scoreDriver, driverLocations,
+  VEHICLE_UPGRADES, vehicleServesSql, vehicleServes,
+};

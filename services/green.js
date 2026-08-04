@@ -36,6 +36,7 @@ const EMISSIONS = {
   electric_auto: { petrol: 85,  ev: Math.round(0.050 * GRID_KG_PER_KWH * 1000) }, // ~36
   green_bike:    { petrol: 55,  ev: Math.round(0.025 * GRID_KG_PER_KWH * 1000) }, // ~18
   car:           { petrol: 145, ev: null },
+  car_7:         { petrol: 175, ev: null },
   luxury:        { petrol: 190, ev: null },
   ultra_luxury:  { petrol: 190, ev: null },
 };

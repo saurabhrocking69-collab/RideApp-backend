@@ -574,7 +574,7 @@ input,select,textarea{outline:none}
         <div class="card-title">📋 Hourly Fare Editor</div>
         <p style="font-size:12px;color:#666;margin-bottom:10px">Vehicle + package ke liye fare update karo (instantly)</p>
         <select id="fare-vehicle" class="input-sm" style="margin-bottom:8px">
-          <option value="auto">Auto</option><option value="bike">Bike</option><option value="car">Car</option><option value="eriksha">E-Riksha</option><option value="green_bike">⚡ Green Bike</option><option value="electric_auto">⚡ Electric Auto</option>
+          <option value="auto">Auto</option><option value="bike">Bike</option><option value="car">Car — 5 Seater</option><option value="car_7">Car — 7 Seater</option><option value="eriksha">E-Riksha</option><option value="green_bike">⚡ Green Bike</option><option value="electric_auto">⚡ Electric Auto</option>
         </select>
         <select id="fare-hours" class="input-sm" style="margin-bottom:8px">
           <option value="2">2 Hours</option><option value="4">4 Hours</option><option value="6">6 Hours</option><option value="8">Full Day (8h)</option>
@@ -1862,7 +1862,7 @@ function vStatusBorder(st){
   return '#9ca3af';
 }
 function vVehicleLabel(dr){
-  var icons={bike:'&#x1F3CD;',auto:'&#x1F6FA;',car:'&#x1F695;',eriksha:'&#x1F6F5;',ultra_luxury:'&#x1F48E;'};
+  var icons={bike:'&#x1F3CD;',auto:'&#x1F6FA;',car:'&#x1F695;',car_7:'&#x1F690;',eriksha:'&#x1F6F5;',ultra_luxury:'&#x1F48E;'};
   var ic=icons[dr.vehicle_type]||'&#x1F697;';
   var s=ic+' '+(dr.vehicle_type||'-');
   if(dr.vehicle_brand) s+=' &middot; '+esc(dr.vehicle_brand);
@@ -2232,7 +2232,7 @@ async function resolveParcelDispute(id){
 }
 
 // ── Intercity Fares ─────────────────────────────────
-var _icLabels={car:'🚕 Intercity Economy (Car)',luxury:'🚙 Intercity Premium (Luxury)'};
+var _icLabels={car:'🚕 Intercity 5 Seater',car_7:'🚐 Intercity 7 Seater',luxury:'🚙 Intercity Luxury'};
 async function loadIntercityFares(){
   var el=document.getElementById('intercity-fares-container');
   if(el) el.innerHTML='<div class="loading">Loading...</div>';
@@ -2240,7 +2240,7 @@ async function loadIntercityFares(){
     const d=await aJson('/api/admin/intercity-fares');
     if(d.error) throw new Error(d.error);
     var html='<div style="overflow-x:auto"><table style="font-size:12px"><thead><tr><th>Vehicle</th><th>Base ₹</th><th>One-way ₹/km</th><th>Round ₹/km</th><th>Allowance/day ₹</th><th>Night halt ₹</th><th>Min km</th><th>Comm %</th><th></th></tr></thead><tbody>';
-    ['car','luxury'].forEach(function(v){
+    ['car','car_7','luxury'].forEach(function(v){
       var f=(d.fares||{})[v]||{};
       var cr=(d.commissions||{})[v]!=null?d.commissions[v]:10;
       html+='<tr><td style="font-weight:700;white-space:nowrap">'+_icLabels[v]+'</td>'
@@ -2300,7 +2300,7 @@ async function loadParcelBatches(){
 }
 
 // ── Parcel Fares ─────────────────────────────────
-var _pcLabels={bike:'🏍️ Bike',green_bike:'⚡ Green Bike',auto:'🛺 Auto',eriksha:'🛵 E-Rickshaw',electric_auto:'🌿 E-Auto',car:'🚗 Car'};
+var _pcLabels={bike:'🏍️ Bike',green_bike:'⚡ Green Bike',auto:'🛺 Auto',eriksha:'🛵 E-Rickshaw',electric_auto:'🌿 E-Auto',car:'🚗 Car — 5 Seater',car_7:'🚐 Car — 7 Seater'};
 var _pcSizeLabels={small:'👜 Small',medium:'📦 Medium',large:'🗄️ Large'};
 var _pcSizeLimits={small:'up to 2 kg',medium:'up to 10 kg',large:'up to 25 kg'};
 async function loadParcelFares(){
@@ -2363,13 +2363,14 @@ var _fareVehicleDefs={
   bike:         {b:15, k:8,  k2:9,  k3:10, tr:0.5,  pf:2,   mf:30,  n:1.3, ns:'22:00',ne:'06:00',cr:15,hcr:12},
   auto:         {b:25, k:12, k2:14, k3:15, tr:0.75, pf:2,   mf:45,  n:1.5, ns:'22:00',ne:'06:00',cr:15,hcr:12},
   car:          {b:40, k:15, k2:17, k3:18, tr:1.0,  pf:2.5, mf:65,  n:1.5, ns:'22:00',ne:'06:00',cr:15,hcr:12},
+  car_7:        {b:55, k:19, k2:21, k3:22, tr:1.3,  pf:2.5, mf:85,  n:1.8, ns:'22:00',ne:'06:00',cr:15,hcr:12},
   eriksha:      {b:20, k:10, k2:11, k3:12, tr:0.65, pf:2,   mf:35,  n:1.3, ns:'22:00',ne:'06:00',cr:15,hcr:12},
   luxury:       {b:80, k:25, k2:28, k3:30, tr:1.5,  pf:3,   mf:120, n:1.8, ns:'22:00',ne:'06:00',cr:15,hcr:12},
   green_bike:   {b:12, k:6,  k2:7,  k3:8,  tr:0.4,  pf:2,   mf:25,  n:1.2, ns:'22:00',ne:'06:00',cr:12,hcr:10},
   electric_auto:{b:20, k:9,  k2:11, k3:12, tr:0.6,  pf:2,   mf:38,  n:1.3, ns:'22:00',ne:'06:00',cr:12,hcr:10}
 };
 var _fareVehicleLabels={
-  bike:'🏍️ Bike', auto:'🛺 Auto', car:'🚕 Car', eriksha:'🛵 E-Riksha',
+  bike:'🏍️ Bike', auto:'🛺 Auto', car:'🚕 Car — 5 Seater', car_7:'🚐 Car — 7 Seater', eriksha:'🛵 E-Riksha',
   luxury:'🚙 Ultra Luxury', green_bike:'⚡🏍️ Green Bike', electric_auto:'⚡🛺 Electric Auto'
 };
 async function loadStdFares(){
@@ -2392,7 +2393,7 @@ async function loadStdFares(){
 function renderFareTable(){
   var el=document.getElementById('fare-table-container');
   if(!el) return;
-  var types=['bike','auto','car','eriksha','luxury','green_bike','electric_auto'];
+  var types=['bike','auto','car','car_7','eriksha','luxury','green_bike','electric_auto'];
   var rows='';
   types.forEach(function(v){
     var f=stdFaresCache[v];
@@ -3393,7 +3394,7 @@ function refreshActive(){
 // ── COMMISSION RATES ─────────────────────────────────────────────────
 var commRatesCache = [];
 const COMM_LABELS = {
-  bike:'🏍️ Bike', auto:'🛺 Auto', car:'🚕 Car', eriksha:'🛵 E-Riksha',
+  bike:'🏍️ Bike', auto:'🛺 Auto', car:'🚕 Car — 5 Seater', car_7:'🚐 Car — 7 Seater', eriksha:'🛵 E-Riksha',
   luxury:'🚙 Luxury', green_bike:'⚡🏍️ Green Bike', electric_auto:'⚡🛺 Electric Auto'
 };
 
