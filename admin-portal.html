@@ -1026,6 +1026,20 @@ input,select,textarea{outline:none}
       <div style="font-size:18px;font-weight:700">🎫 Support Tickets</div>
       <button class="refresh-btn" onclick="loadSupport()">⟳ Refresh All</button>
     </div>
+
+    <!-- Account deletion queue (Google Play requirement). Raised from inside
+         either app; must be actioned within the review window. -->
+    <div class="card" style="margin-bottom:18px">
+      <div class="card-title">🗑️ Account Deletion Requests
+        <button class="refresh-btn" onclick="loadDeletionRequests()">⟳ Reload</button>
+      </div>
+      <div style="font-size:12px;color:#666;margin-bottom:10px">
+        Raised by riders/drivers in-app. Delete anonymises the account — trip and
+        payment records stay, all personal data is scrubbed. This cannot be undone.
+      </div>
+      <div id="deletion-requests-container"><div class="loading">Loading...</div></div>
+    </div>
+
     <div class="stats" style="grid-template-columns:repeat(4,1fr);margin-bottom:16px">
       <div class="stat-card" style="cursor:default"><div class="stat-icon">📂</div><div class="stat-value" id="sup-val-open">—</div><div class="stat-label">Open</div></div>
       <div class="stat-card" style="cursor:default"><div class="stat-icon">🔄</div><div class="stat-value" id="sup-val-prog">—</div><div class="stat-label">In Progress</div></div>
@@ -1141,7 +1155,7 @@ function showSection(id,btn){
   if(id==='incidents'){loadIncidents();}
   if(id==='rewards'){loadRewardSettings();}
   if(id==='location'){loadLocationIntel();}
-  if(id==='support'){loadSupport();}
+  if(id==='support'){loadSupport();loadDeletionRequests();}
 }
 
 // ── Location Intelligence ────────────────────────────────────
@@ -4058,6 +4072,48 @@ async function loadRevenueChart(){
       +'</div>';
     wrap.innerHTML=html;
   }catch(e){wrap.innerHTML='<div class="loading" style="color:#aaa;font-size:12px">Revenue chart unavailable</div>';}
+}
+
+
+// ── Account deletion requests ────────────────────────────────────────────
+async function loadDeletionRequests(){
+  var el=document.getElementById('deletion-requests-container');
+  if(!el) return;
+  el.innerHTML='<div class="loading">Loading...</div>';
+  try{
+    const d=await aJson('/api/admin/deletion-requests?status=pending');
+    const rows=d.requests||[];
+    if(!rows.length){ el.innerHTML='<div style="font-size:13px;color:#666;padding:8px">No pending requests.</div>'; return; }
+    var html='<div style="overflow-x:auto"><table style="font-size:12px"><thead><tr><th>Who</th><th>Role</th><th>Reason</th><th>Due</th><th>Action</th></tr></thead><tbody>';
+    rows.forEach(function(r){
+      var due = r.due_now ? '<span style="color:#c62828;font-weight:700">DUE NOW</span>'
+                          : (r.days_left+' day'+(r.days_left==1?'':'s')+' left');
+      html+='<tr>'
+        +'<td><b>'+esc(r.name||'—')+'</b><br><span style="color:#666">'+esc(r.user_phone)+'</span></td>'
+        +'<td>'+esc(r.role)+'</td>'
+        +'<td style="max-width:220px">'+(r.reason?esc(r.reason):'<i style="color:#999">none given</i>')+'</td>'
+        +'<td>'+due+'</td>'
+        +'<td style="white-space:nowrap">'
+          +'<button class="btn-sm" style="background:#c62828;color:#fff" onclick="actionDeletion(''+r.id+'','delete')">Delete</button> '
+          +'<button class="btn-sm" onclick="actionDeletion(''+r.id+'','reject')">Reject</button>'
+        +'</td></tr>';
+    });
+    el.innerHTML=html+'</tbody></table></div>';
+  }catch(e){ el.innerHTML='<div style="color:#c62828;font-size:12px">❌ '+e.message+'</div>'; }
+}
+async function actionDeletion(id, action){
+  var msg = action==='delete'
+    ? 'Permanently anonymise this account? Personal data is scrubbed and they can never sign in again. This cannot be undone.'
+    : 'Reject this deletion request?';
+  if(!confirm(msg)) return;
+  var note = prompt(action==='delete' ? 'Note (optional)' : 'Reason shown to the user (optional)') || '';
+  try{
+    const r = await aJson('/api/admin/deletion-requests/action', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ id: id, action: action, note: note, admin_name: 'admin' })
+    });
+    if(r.error) alert('❌ '+r.error); else loadDeletionRequests();
+  }catch(e){ alert('❌ '+e.message); }
 }
 
 </script>

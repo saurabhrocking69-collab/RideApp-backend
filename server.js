@@ -46,6 +46,7 @@ const chatRouter    = require('./routes/chat');
 const promoRouter   = require('./routes/promo');
 const referralRouter = require('./routes/referral');
 const miscRouter    = require('./routes/misc');
+const accountRouter = require('./routes/account');
 const walletRouter  = require('./routes/wallet');
 const paymentsRouter = require('./routes/payments');
 const ridesRouter   = require('./routes/rides');
@@ -646,6 +647,7 @@ app.use('/api/call',     callRouter);
 app.use('/api/chat',     chatRouter);
 app.use('/api/promo',    promoRouter);
 app.use('/api/referral', referralRouter);
+app.use('/api/account',  accountRouter); // Play-required in-app account deletion
 app.use('/api',          miscRouter);      // /api/fare-settings, /api/sos, etc.
 app.use('/api/wallet',   walletRouter);
 app.use('/api/payment',  paymentsRouter);

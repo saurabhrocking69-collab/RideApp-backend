@@ -1997,4 +1997,71 @@ router.get('/driver-diag', async (req, res) => {
   }
 });
 
+// ── Account deletion requests (Google Play requirement) ──────────────────────
+// The rider/driver raises these from inside the app; this is where they are
+// reviewed and carried out. See routes/account.js for why "delete" anonymises
+// rather than dropping the row.
+const { anonymiseAccount, REVIEW_DAYS } = require('./account');
+
+// GET /api/admin/deletion-requests?status=pending
+router.get('/deletion-requests', async (req, res) => {
+  const status = req.query.status || 'pending';
+  try {
+    const r = await db.query(
+      `SELECT d.*, u.name,
+              (d.scheduled_for <= NOW()) AS due_now,
+              GREATEST(0, CEIL(EXTRACT(EPOCH FROM (d.scheduled_for - NOW())) / 86400)) AS days_left
+       FROM account_deletion_requests d
+       LEFT JOIN users u ON u.phone = d.user_phone
+       WHERE ($1 = 'all' OR d.status = $1)
+       ORDER BY d.scheduled_for ASC LIMIT 200`,
+      [status]
+    );
+    res.json({ requests: r.rows, review_days: REVIEW_DAYS });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// POST /api/admin/deletion-requests/action  { id, action: 'reject' | 'delete', note }
+router.post('/deletion-requests/action', async (req, res) => {
+  const { id, action, note, admin_name } = req.body || {};
+  if (!id || !['reject', 'delete'].includes(action))
+    return res.status(400).json({ error: "id and action ('reject' | 'delete') required" });
+  try {
+    const cur = await db.query(
+      `SELECT * FROM account_deletion_requests WHERE id = $1 AND status = 'pending'`, [id]
+    );
+    if (!cur.rows[0]) return res.status(404).json({ error: 'No pending request with that id' });
+    const reqRow = cur.rows[0];
+
+    if (action === 'reject') {
+      await db.query(
+        `UPDATE account_deletion_requests
+         SET status='rejected', admin_note=$2, reviewed_by=$3, reviewed_at=NOW(), updated_at=NOW()
+         WHERE id=$1`, [id, note || null, admin_name || 'admin']
+      );
+      sendFCM(reqRow.user_phone, 'Account deletion not processed',
+        note || 'Please contact support for details.',
+        { type: 'account_deletion' }, { role: reqRow.role }).catch(() => {});
+      return res.json({ success: true, status: 'rejected' });
+    }
+
+    // Tell them BEFORE the phone number is tombstoned — afterwards there is no
+    // number left to send anything to.
+    await sendFCM(reqRow.user_phone, 'Account deleted',
+      'Your Sppero account and personal details have been deleted as requested.',
+      { type: 'account_deletion' }, { role: reqRow.role }).catch(() => {});
+
+    const out = await anonymiseAccount(reqRow.user_phone);
+    if (!out.ok) return res.status(404).json({ error: 'Account no longer exists' });
+
+    await db.query(
+      `UPDATE account_deletion_requests
+       SET status='completed', admin_note=$2, reviewed_by=$3, reviewed_at=NOW(),
+           completed_at=NOW(), updated_at=NOW()
+       WHERE id=$1`, [id, note || null, admin_name || 'admin']
+    );
+    res.json({ success: true, status: 'completed' });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
 module.exports = router;
