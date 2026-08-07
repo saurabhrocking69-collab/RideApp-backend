@@ -4094,8 +4094,8 @@ async function loadDeletionRequests(){
         +'<td style="max-width:220px">'+(r.reason?esc(r.reason):'<i style="color:#999">none given</i>')+'</td>'
         +'<td>'+due+'</td>'
         +'<td style="white-space:nowrap">'
-          +'<button class="btn-sm" style="background:#c62828;color:#fff" onclick="actionDeletion(''+r.id+'','delete')">Delete</button> '
-          +'<button class="btn-sm" onclick="actionDeletion(''+r.id+'','reject')">Reject</button>'
+          +'<button class="btn-sm" style="background:#c62828;color:#fff" onclick="actionDeletion('+r.id+',&quot;delete&quot;)">Delete</button> '
+          +'<button class="btn-sm" onclick="actionDeletion('+r.id+',&quot;reject&quot;)">Reject</button>'
         +'</td></tr>';
     });
     el.innerHTML=html+'</tbody></table></div>';
