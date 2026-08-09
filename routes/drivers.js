@@ -26,9 +26,17 @@ router.post('/register', async (req, res) => {
   const { phone, name, vehicle_type, vehicle_no, license_no } = req.body;
   try {
     let user = await db.query('SELECT * FROM users WHERE phone = $1', [phone]);
-    if (user.rows.length === 0)
+    let freshDriver = false;
+    if (user.rows.length === 0) {
       user = await db.query("INSERT INTO users (phone, name, role) VALUES ($1, $2, 'driver') RETURNING *", [phone, name]);
+      freshDriver = true;
+    }
     const userId = user.rows[0].id;
+    // Partner attribution on a genuinely new driver only — a driver is the
+    // valuable half of this programme, so this is the field that matters most.
+    if (freshDriver && req.body.partner_code) {
+      require('./partner').attributeSignup(userId, phone, 'driver', req.body.partner_code, 'code').catch(() => {});
+    }
     const driver = await db.query('INSERT INTO drivers (id, vehicle_type, vehicle_no, license_no) VALUES ($1, $2, $3, $4) RETURNING *', [userId, vehicle_type, vehicle_no, license_no]);
     await db.query('INSERT INTO driver_wallet (driver_id) VALUES ($1)', [userId]);
     res.json({ message: 'Driver registered!', driver: driver.rows[0] });
@@ -41,12 +49,17 @@ router.post('/register-buddy', async (req, res) => {
   try {
     let user = await db.query('SELECT id FROM users WHERE phone = $1', [phone]);
     let userId;
+    let freshDriver = false;
     if (user.rows.length === 0) {
       const newUser = await db.query("INSERT INTO users (name, phone, role) VALUES ($1, $2, 'driver') RETURNING id", [name || dl_name, phone]);
       userId = newUser.rows[0].id;
+      freshDriver = true;
     } else {
       userId = user.rows[0].id;
       await db.query("UPDATE users SET role = 'driver', name = $1 WHERE id = $2", [name || dl_name, userId]);
+    }
+    if (freshDriver && req.body.partner_code) {
+      require('./partner').attributeSignup(userId, phone, 'driver', req.body.partner_code, 'code').catch(() => {});
     }
     const existing = await db.query('SELECT id FROM drivers WHERE id = $1', [userId]);
     if (existing.rows.length === 0) {

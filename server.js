@@ -659,6 +659,11 @@ app.use('/api/advance',   require('./routes/advance'));
 app.use('/api/driver',   driversRouter);
 app.use('/api/hourly',   hourlyRouter);
 app.use('/api/admin/support', adminAuth, adminSupportRouter);
+// Partner programme. The public half carries its own token auth; the admin
+// half sits behind adminAuth like every other admin surface. Mounted BEFORE
+// the general admin router so /api/admin/partners is not swallowed by it.
+app.use('/api/partner',          require('./routes/partner'));
+app.use('/api/admin/partners',   adminAuth, require('./routes/partner').adminRouter);
 app.use('/api/admin',         adminAuth, adminRouter);
 app.use('/api/subscriptions', require('./routes/subscriptions'));
 app.use('/api/buddy-fund',    require('./routes/buddyFund'));

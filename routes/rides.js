@@ -12,6 +12,7 @@ const { transitionRide } = require('../services/rideStateMachine');
 const { getRideStatus, getDriverLoc, setRideStatus, setRideData, getRideData, clearRide: clearRideCache } = require('../services/rideCache');
 const { creditPeakBonusIfApplicable } = require('./bonus');
 const { maybeGrantReferralReward } = require('./referral');
+const { accruePartnerEarnings } = require('./partner');
 const { getSurgeMultiplier } = require('../services/locationIntelligence');
 const { calculateFare, getISTHour } = require('../services/pricing');
 const { useSubscriptionIfActive } = require('../services/subscription');
@@ -1242,6 +1243,13 @@ async function completeRidePayment({ ride_id, payment_method, phone }) {
       }
     } catch (_e) {}
 
+    // Partner share of this ride's commission. `commission` is post-subscription,
+    // so a driver on a ride pack pays nothing and their partner earns nothing —
+    // 60% of zero. Idempotent by unique index, so the retry paths above cannot
+    // double-pay, and it never throws: a partner-ledger problem must not undo
+    // a driver's settlement.
+    accruePartnerEarnings(ride_id, commission).catch(() => {});
+
   // Socket: customer's payment screen listens for this instead of polling
   emitToRoom('ride_' + ride_id, 'paymentConfirmed', { ride_id, status: 'completed', payment_method, cashbacks });
   // Activate any pre-assigned ride this driver has queued (fire-and-forget)
@@ -1340,6 +1348,10 @@ router.post('/cash-confirm', async (req, res) => {
         }
       }
     } catch (_e) {}
+
+    // The cash/UPI settlement path — the second of the two places a ride
+    // finishes paying. Missing this one would silently halve the programme.
+    accruePartnerEarnings(ride_id, commission).catch(() => {});
     // Notify customer's payment screen via socket so it can advance to post-ride without polling.
     // No FCM push for this event by design — the customer app's own
     // reconciliation (cold-launch restore + AppState resume, which check

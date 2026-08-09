@@ -72,6 +72,14 @@ router.post('/verify-otp', async (req, res) => {
     let user = await db.query('SELECT * FROM users WHERE phone = $1', [phone]);
     if (user.rows.length === 0) {
       user = await db.query("INSERT INTO users (phone, name, role) VALUES ($1, $2, 'passenger') RETURNING *", [phone, name || 'User']);
+      // Partner attribution, only ever on a genuinely NEW account. Attaching
+      // an existing rider to a partner would let anyone claim the whole
+      // existing user base by entering a code on a later login.
+      if (req.body.partner_code) {
+        require('./partner')
+          .attributeSignup(user.rows[0].id, phone, 'passenger', req.body.partner_code, 'code')
+          .catch(() => {});
+      }
     } else {
       if (name && name.trim() !== '' && name !== 'Rider') {
         await db.query('UPDATE users SET name = $1 WHERE phone = $2', [name.trim(), phone]);
