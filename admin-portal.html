@@ -261,6 +261,7 @@ input,select,textarea{outline:none}
     <button class="tab" onclick="showSection('marketing',this)">📣 Marketing</button>
     <button class="tab" onclick="showSection('settings',this)">⚙️ Settings</button>
     <button class="tab" onclick="showSection('payouts',this)">💰 Payouts</button>
+    <button class="tab" onclick="showSection('partners',this)">🤝 Partners</button>
     <button class="tab" onclick="showSection('sos',this);loadSosAlerts()">🆘 SOS Alerts</button>
     <button class="tab" onclick="showSection('complaints',this);loadComplaints()">⚠️ Complaints</button>
     <button class="tab" onclick="showSection('incidents',this);loadIncidents()">🚨 Incidents</button>
@@ -772,6 +773,83 @@ input,select,textarea{outline:none}
 
   <!-- INCIDENTS -->
   <!-- SOS ALERTS -->
+  <!-- ══ PARTNERS — Earn with Sppero ══════════════════════════════════════
+       Reads the same tables the partner's own dashboard reads. Nothing is
+       synced or copied, so what a partner sees and what is approved here
+       cannot drift apart. -->
+  <div id="partners" class="section">
+    <div style="display:flex;gap:8px;margin-bottom:14px">
+      <button class="ptab active" id="nt-list"     onclick="setPartnerTab('list',this)">🤝 Partners</button>
+      <button class="ptab"        id="nt-claims"   onclick="setPartnerTab('claims',this)">📝 Claims</button>
+      <button class="ptab"        id="nt-payouts"  onclick="setPartnerTab('payouts',this)">💸 Withdrawals</button>
+      <button class="ptab"        id="nt-daily"    onclick="setPartnerTab('daily',this)">📊 Daily</button>
+      <button class="ptab"        id="nt-settings" onclick="setPartnerTab('settings',this)">⚙️ Programme</button>
+    </div>
+
+    <div id="pn-list-sec">
+      <div class="card">
+        <div class="card-title">🤝 Partners
+          <button class="refresh-btn" style="margin-left:0" onclick="loadPartners()">Reload</button>
+        </div>
+        <div style="overflow-x:auto"><table><thead><tr>
+          <th>Partner</th><th>Code</th><th>Brought</th><th>Commission generated</th>
+          <th>Owed now</th><th>In holding</th><th>Paid</th><th>KYC</th><th></th>
+        </tr></thead>
+        <tbody id="pn-list-body"><tr><td colspan=9 class=loading>Loading...</td></tr></tbody></table></div>
+      </div>
+      <div id="pn-detail"></div>
+    </div>
+
+    <div id="pn-claims-sec" style="display:none">
+      <div class="card">
+        <div class="card-title">📝 Numbers submitted for verification
+          <button class="refresh-btn" style="margin-left:0" onclick="loadPartnerClaims()">Reload</button>
+        </div>
+        <div style="overflow-x:auto"><table><thead><tr>
+          <th>Submitted</th><th>Partner</th><th>Number</th><th>Sppero account</th>
+          <th>Joined</th><th>Rides</th><th>Action</th>
+        </tr></thead>
+        <tbody id="pn-claims-body"><tr><td colspan=7 class=loading>Loading...</td></tr></tbody></table></div>
+      </div>
+    </div>
+
+    <div id="pn-payouts-sec" style="display:none">
+      <div class="card">
+        <div class="card-title">💸 Withdrawal requests
+          <button class="refresh-btn" style="margin-left:0" onclick="loadPartnerPayouts()">Reload</button>
+        </div>
+        <div style="overflow-x:auto"><table><thead><tr>
+          <th>Requested</th><th>Partner</th><th>Gross</th><th>TDS</th><th>Net</th>
+          <th>Pay to</th><th>Checks</th><th>Action</th>
+        </tr></thead>
+        <tbody id="pn-payouts-body"><tr><td colspan=8 class=loading>Loading...</td></tr></tbody></table></div>
+      </div>
+    </div>
+
+    <div id="pn-daily-sec" style="display:none">
+      <div class="card">
+        <div class="card-title">📊 Day by day
+          <button class="refresh-btn" style="margin-left:0" onclick="loadPartnerDaily()">Reload</button>
+        </div>
+        <div style="overflow-x:auto"><table><thead><tr>
+          <th>Day</th><th>Rides</th><th>Partners earning</th>
+          <th>Commission</th><th>Partner share</th><th>Sppero kept</th>
+        </tr></thead>
+        <tbody id="pn-daily-body"><tr><td colspan=6 class=loading>Loading...</td></tr></tbody></table></div>
+      </div>
+    </div>
+
+    <div id="pn-settings-sec" style="display:none">
+      <div class="card" style="max-width:560px">
+        <div class="card-title">⚙️ Programme settings</div>
+        <p style="color:#8b8ba7;font-size:13px;margin:0 0 14px">
+          These take effect immediately, on rides settled from now on. Earnings already accrued are not changed.
+        </p>
+        <div id="pn-settings-form"><div class="loading">Loading...</div></div>
+      </div>
+    </div>
+  </div>
+
   <div id="sos" class="section">
     <div class="stats" id="sos-stats-row" style="margin-bottom:18px"></div>
     <div class="card" style="padding:14px">
@@ -1156,6 +1234,7 @@ function showSection(id,btn){
   if(id==='rewards'){loadRewardSettings();}
   if(id==='location'){loadLocationIntel();}
   if(id==='support'){loadSupport();loadDeletionRequests();}
+  if(id==='partners'){loadPartners();}
 }
 
 // ── Location Intelligence ────────────────────────────────────
@@ -4113,6 +4192,268 @@ async function actionDeletion(id, action){
       body: JSON.stringify({ id: id, action: action, note: note, admin_name: 'admin' })
     });
     if(r.error) alert('❌ '+r.error); else loadDeletionRequests();
+  }catch(e){ alert('❌ '+e.message); }
+}
+
+/* ══ PARTNERS — Earn with Sppero ══════════════════════════════════════════
+   Every number here is read from partner_earnings, the same rows the partner
+   sees on sppero.com. Nothing is recomputed for display, so the two views
+   cannot disagree about money.
+   ═══════════════════════════════════════════════════════════════════════ */
+function setPartnerTab(which, btn){
+  ['list','claims','payouts','daily','settings'].forEach(function(t){
+    document.getElementById('pn-'+t+'-sec').style.display = (t===which) ? '' : 'none';
+  });
+  document.querySelectorAll('#partners .ptab').forEach(function(b){ b.classList.remove('active'); });
+  if(btn) btn.classList.add('active');
+  if(which==='list') loadPartners();
+  if(which==='claims') loadPartnerClaims();
+  if(which==='payouts') loadPartnerPayouts();
+  if(which==='daily') loadPartnerDaily();
+  if(which==='settings') loadPartnerSettings();
+}
+
+async function loadPartners(){
+  var b = document.getElementById('pn-list-body');
+  b.innerHTML = '<tr><td colspan=9 class=loading>Loading...</td></tr>';
+  try{
+    var rows = await aJson('/api/admin/partners');
+    if(!rows.length){ b.innerHTML = '<tr><td colspan=9 class=loading>No partners yet.</td></tr>'; return; }
+    b.innerHTML = rows.map(function(p){
+      var kyc = p.pan ? '<span style="color:#4ade80">PAN ✓</span>'
+                      : '<span style="color:#fbbf24">no PAN</span>';
+      var bank = (p.bank_account || p.upi_id) ? '' : ' <span style="color:#8b8ba7">· no bank</span>';
+      return '<tr>'
+        + '<td>'+esc(p.name)+'<br><span style="color:#8b8ba7;font-size:11px">'+esc(p.phone)+'</span></td>'
+        + '<td><code>'+esc(p.code)+'</code></td>'
+        + '<td>'+p.people+' <span style="color:#8b8ba7;font-size:11px">('+p.drivers+' drivers)</span></td>'
+        + '<td>'+rupee(p.commission_generated)+'</td>'
+        + '<td style="color:#4ade80;font-weight:700">'+rupee(p.available)+'</td>'
+        + '<td style="color:#8b8ba7">'+rupee(p.holding)+'</td>'
+        + '<td>'+rupee(p.paid)+'</td>'
+        + '<td>'+kyc+bank+'</td>'
+        + '<td><button class="refresh-btn" onclick="openPartner('+p.id+')">View</button>'
+        + ' <button class="refresh-btn" style="background:#1a1a2e" onclick="togglePartner('+p.id+',\''+(p.status==='active'?'blocked':'active')+'\')">'
+        + (p.status==='active'?'Block':'Unblock')+'</button></td>'
+        + '</tr>';
+    }).join('');
+  }catch(e){ b.innerHTML = '<tr><td colspan=9 class=loading>'+esc(e.message)+'</td></tr>'; }
+}
+
+/* The screen you asked for: which driver or customer this partner brought,
+   their number, how many rides they did, what Sppero earned from them, and
+   what the partner is owed for it. */
+async function openPartner(id){
+  var box = document.getElementById('pn-detail');
+  box.innerHTML = '<div class="card"><div class="loading">Loading...</div></div>';
+  try{
+    var d = await aJson('/api/admin/partners/'+id);
+    var b = d.balances || {};
+    var people = (d.people||[]).map(function(x){
+      return '<tr>'
+        + '<td>'+esc((x.name||'User'))+'<br><span style="color:#8b8ba7;font-size:11px">'+esc(x.user_phone||'')+'</span></td>'
+        + '<td>'+(x.role==='driver'?'🚗 Driver':'👤 Customer')+'</td>'
+        + '<td>'+esc(x.source)+'</td>'
+        + '<td>'+fmt(x.created_at)+'</td>'
+        + '<td style="text-align:right">'+x.rides+'</td>'
+        + '<td style="text-align:right">'+rupee(x.commission)+'</td>'
+        + '<td style="text-align:right;color:#4ade80;font-weight:700">'+rupee(x.partner_share)+'</td>'
+        + '</tr>';
+    }).join('') || '<tr><td colspan=7 class=loading>Nobody attributed yet.</td></tr>';
+
+    var events = (d.events||[]).map(function(e){
+      return '<div style="font-size:12px;color:#8b8ba7">'+fmt(e.created_at)+' — '+esc(e.kind)
+           + (e.detail? ' ('+esc(e.detail)+')':'')+'</div>';
+    }).join('');
+
+    box.innerHTML =
+      '<div class="card">'
+      + '<div class="card-title">'+esc(d.partner.name)+' · <code>'+esc(d.partner.code)+'</code>'
+      + '<button class="refresh-btn" style="margin-left:10px" onclick="document.getElementById(\'pn-detail\').innerHTML=\'\'">Close</button></div>'
+      + '<div style="display:flex;gap:18px;flex-wrap:wrap;margin-bottom:14px">'
+        + '<div><div style="color:#8b8ba7;font-size:11px">LIFETIME</div><div style="font-size:19px;font-weight:700">'+rupee(b.lifetime)+'</div></div>'
+        + '<div><div style="color:#8b8ba7;font-size:11px">OWED NOW</div><div style="font-size:19px;font-weight:700;color:#4ade80">'+rupee(b.available)+'</div></div>'
+        + '<div><div style="color:#8b8ba7;font-size:11px">IN HOLDING</div><div style="font-size:19px;font-weight:700">'+rupee(b.holding)+'</div></div>'
+        + '<div><div style="color:#8b8ba7;font-size:11px">PAID</div><div style="font-size:19px;font-weight:700">'+rupee(b.paid)+'</div></div>'
+        + '<div><div style="color:#8b8ba7;font-size:11px">RIDES</div><div style="font-size:19px;font-weight:700">'+(b.rides||0)+'</div></div>'
+      + '</div>'
+      + '<div style="overflow-x:auto"><table><thead><tr>'
+        + '<th>Person</th><th>Type</th><th>How</th><th>Joined</th>'
+        + '<th style="text-align:right">Rides</th><th style="text-align:right">Sppero commission</th>'
+        + '<th style="text-align:right">Partner share</th>'
+      + '</tr></thead><tbody>'+people+'</tbody></table></div>'
+      + (events ? '<div style="margin-top:14px"><div style="color:#8b8ba7;font-size:11px;margin-bottom:4px">ACCOUNT ACTIVITY</div>'+events+'</div>' : '')
+      + '</div>';
+    box.scrollIntoView({behavior:'smooth', block:'nearest'});
+  }catch(e){ box.innerHTML = '<div class="card"><div class="loading">'+esc(e.message)+'</div></div>'; }
+}
+
+async function togglePartner(id, status){
+  if(!confirm('Set this partner to '+status+'?')) return;
+  try{
+    var r = await aJson('/api/admin/partners/'+id+'/status', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ status: status })
+    });
+    if(r.error) alert('❌ '+r.error); else loadPartners();
+  }catch(e){ alert('❌ '+e.message); }
+}
+
+/* Claims. Each submitted number is shown beside the real Sppero account so
+   the person ticking it can see what they are approving — and a warning if
+   somebody already holds that person. */
+async function loadPartnerClaims(){
+  var b = document.getElementById('pn-claims-body');
+  b.innerHTML = '<tr><td colspan=7 class=loading>Loading...</td></tr>';
+  try{
+    var rows = await aJson('/api/admin/partners/claims/pending');
+    if(!rows.length){ b.innerHTML = '<tr><td colspan=7 class=loading>Nothing waiting.</td></tr>'; return; }
+    b.innerHTML = rows.map(function(c){
+      var acct = c.user_id
+        ? esc(c.user_name||'User')+' <span style="color:#8b8ba7">('+(c.user_role==='driver'?'driver':'customer')+')</span>'
+        : '<span style="color:#f87171">no Sppero account for this number</span>';
+      var taken = c.already_held_by
+        ? '<div style="color:#fbbf24;font-size:11px">already attributed to another partner</div>' : '';
+      var canApprove = c.user_id && !c.already_held_by;
+      return '<tr>'
+        + '<td>'+fmt(c.created_at)+'</td>'
+        + '<td>'+esc(c.partner_name)+'<br><code style="font-size:11px">'+esc(c.code)+'</code></td>'
+        + '<td>'+esc(c.phone)+'</td>'
+        + '<td>'+acct+taken+'</td>'
+        + '<td>'+(c.user_joined?fmt(c.user_joined):'-')+'</td>'
+        + '<td>'+(c.rides!=null?c.rides:'-')+'</td>'
+        + '<td>'
+          + (canApprove ? '<button class="refresh-btn" onclick="decideClaim('+c.id+',true)">Approve</button> ' : '')
+          + '<button class="refresh-btn" style="background:#7f1d1d" onclick="decideClaim('+c.id+',false)">Reject</button>'
+        + '</td></tr>';
+    }).join('');
+  }catch(e){ b.innerHTML = '<tr><td colspan=7 class=loading>'+esc(e.message)+'</td></tr>'; }
+}
+
+async function decideClaim(id, approve){
+  var note = approve ? '' : (prompt('Reason (optional)') || '');
+  try{
+    var r = await aJson('/api/admin/partners/claims/'+id+'/decide', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ approve: approve, note: note, by: 'admin' })
+    });
+    if(r.error) alert('❌ '+r.error); else loadPartnerClaims();
+  }catch(e){ alert('❌ '+e.message); }
+}
+
+/* Withdrawals. The "Checks" column is the point of this screen: a payout to a
+   bank account added hours ago, on an account whose password was just reset,
+   is the one to look at twice. */
+async function loadPartnerPayouts(){
+  var b = document.getElementById('pn-payouts-body');
+  b.innerHTML = '<tr><td colspan=8 class=loading>Loading...</td></tr>';
+  try{
+    var rows = await aJson('/api/admin/partners/payouts/pending');
+    if(!rows.length){ b.innerHTML = '<tr><td colspan=8 class=loading>No requests waiting.</td></tr>'; return; }
+    b.innerHTML = rows.map(function(p){
+      var flags = [];
+      if(p.recent_resets > 0) flags.push('<span style="color:#f87171">password reset in last 7 days</span>');
+      if(p.bank_hold_until && new Date(p.bank_hold_until) > new Date())
+        flags.push('<span style="color:#fbbf24">bank changed — still on hold</span>');
+      if(!p.pan) flags.push('<span style="color:#f87171">no PAN</span>');
+      var payTo = p.upi_id ? ('UPI '+esc(p.upi_id))
+                : (esc(p.bank_account||'-')+'<br><span style="color:#8b8ba7;font-size:11px">'+esc(p.bank_ifsc||'')+'</span>');
+      return '<tr>'
+        + '<td>'+fmt(p.requested_at)+'</td>'
+        + '<td>'+esc(p.name)+'<br><span style="color:#8b8ba7;font-size:11px">'+esc(p.phone)+'</span></td>'
+        + '<td>'+rupee(p.gross)+'</td>'
+        + '<td>'+(parseFloat(p.tds)>0?rupee(p.tds):'-')+'</td>'
+        + '<td style="font-weight:700;color:#4ade80">'+rupee(p.net)+'</td>'
+        + '<td>'+payTo+'</td>'
+        + '<td>'+(flags.length?flags.join('<br>'):'<span style="color:#4ade80">clear</span>')+'</td>'
+        + '<td>'
+          + '<button class="refresh-btn" onclick="settlePartnerPayout('+p.id+',\'razorpay\')">Send via Razorpay</button><br>'
+          + '<button class="refresh-btn" style="background:#1a1a2e;margin-top:4px" onclick="settlePartnerPayout('+p.id+',\'manual\')">Mark paid</button> '
+          + '<button class="refresh-btn" style="background:#7f1d1d;margin-top:4px" onclick="settlePartnerPayout('+p.id+',\'reject\')">Reject</button>'
+        + '</td></tr>';
+    }).join('');
+  }catch(e){ b.innerHTML = '<tr><td colspan=8 class=loading>'+esc(e.message)+'</td></tr>'; }
+}
+
+async function settlePartnerPayout(id, how){
+  var body = { action: 'pay' };
+  if(how === 'reject'){
+    if(!confirm('Reject this withdrawal? The money goes back to the partner as available.')) return;
+    body = { action: 'reject', note: prompt('Reason (optional)') || '' };
+  } else if(how === 'razorpay'){
+    if(!confirm('Send this payout through Razorpay now?')) return;
+    body.send_via_razorpay = true;
+  } else {
+    var ref = prompt('Reference for this manual payment (UTR, screenshot id, anything)');
+    if(ref === null) return;
+    body.reference = ref;
+  }
+  try{
+    var r = await aJson('/api/admin/partners/payouts/'+id+'/settle', {
+      method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)
+    });
+    if(r.error) alert('❌ '+r.error); else { alert('✅ '+r.status); loadPartnerPayouts(); }
+  }catch(e){ alert('❌ '+e.message); }
+}
+
+async function loadPartnerDaily(){
+  var b = document.getElementById('pn-daily-body');
+  b.innerHTML = '<tr><td colspan=6 class=loading>Loading...</td></tr>';
+  try{
+    var rows = await aJson('/api/admin/partners/report/daily?days=30');
+    if(!rows.length){ b.innerHTML = '<tr><td colspan=6 class=loading>No partner rides yet.</td></tr>'; return; }
+    b.innerHTML = rows.map(function(d){
+      return '<tr>'
+        + '<td>'+new Date(d.day).toLocaleDateString('en-IN',{day:'2-digit',month:'short'})+'</td>'
+        + '<td>'+d.rides+'</td><td>'+d.partners+'</td>'
+        + '<td>'+rupee(d.commission)+'</td>'
+        + '<td style="color:#fbbf24">'+rupee(d.partner_share)+'</td>'
+        + '<td style="color:#4ade80;font-weight:700">'+rupee(d.sppero_share)+'</td>'
+        + '</tr>';
+    }).join('');
+  }catch(e){ b.innerHTML = '<tr><td colspan=6 class=loading>'+esc(e.message)+'</td></tr>'; }
+}
+
+var PN_FIELDS = [
+  ['partner_enabled',         'Programme on (1) / off (0)'],
+  ['partner_rate_percent',    'Partner share of commission (%)'],
+  ['partner_min_payout',      'Minimum withdrawal (₹)'],
+  ['partner_hold_days',       'Hold earnings for (days)'],
+  ['partner_bank_hold_hours', 'Hold withdrawals after a bank change (hours)'],
+  ['partner_tds_percent',     'TDS on payouts (%)'],
+  ['partner_tds_threshold',   'TDS threshold per year (₹)']
+];
+var PN_KEYMAP = {
+  partner_enabled:'enabled', partner_rate_percent:'rate', partner_min_payout:'minPayout',
+  partner_hold_days:'holdDays', partner_bank_hold_hours:'bankHoldHrs',
+  partner_tds_percent:'tdsPercent', partner_tds_threshold:'tdsThreshold'
+};
+async function loadPartnerSettings(){
+  var box = document.getElementById('pn-settings-form');
+  try{
+    var s = await aJson('/api/admin/partners/settings/all');
+    box.innerHTML = PN_FIELDS.map(function(f){
+      var v = s[PN_KEYMAP[f[0]]];
+      if(f[0]==='partner_enabled') v = s.enabled ? 1 : 0;
+      return '<div style="margin-bottom:10px">'
+        + '<label style="display:block;color:#8b8ba7;font-size:12px;margin-bottom:3px">'+f[1]+'</label>'
+        + '<input id="pns-'+f[0]+'" type="number" step="0.01" value="'+v+'" '
+        + 'style="width:100%;padding:8px;border-radius:6px;border:1px solid #2a2a45;background:#12121e;color:#fff">'
+        + '</div>';
+    }).join('') + '<button class="refresh-btn" onclick="savePartnerSettings()">Save</button>';
+  }catch(e){ box.innerHTML = '<div class="loading">'+esc(e.message)+'</div>'; }
+}
+async function savePartnerSettings(){
+  var body = {};
+  PN_FIELDS.forEach(function(f){
+    var el = document.getElementById('pns-'+f[0]);
+    if(el) body[f[0]] = el.value;
+  });
+  try{
+    var r = await aJson('/api/admin/partners/settings/all', {
+      method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)
+    });
+    if(r.error) alert('❌ '+r.error); else { alert('✅ Saved'); loadPartnerSettings(); }
   }catch(e){ alert('❌ '+e.message); }
 }
 
