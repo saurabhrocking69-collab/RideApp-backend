@@ -59,18 +59,30 @@ const supportRouter      = require('./routes/support');
 const adminSupportRouter = require('./routes/adminSupport');
 const healthCheck      = require('./services/healthCheck');
 
-// ── Allowed browser origins (mobile apps don't send Origin, so this only gates web clients) ──
-// When ALLOWED_ORIGINS is not set, all origins are allowed (admin key still required for admin routes).
-const ALLOWED_ORIGINS = process.env.ALLOWED_ORIGINS
-  ? process.env.ALLOWED_ORIGINS.split(',').map(o => o.trim())
-  : null;
+/* ── Allowed browser origins ──────────────────────────────────────────────
+   Mobile apps send no Origin header, so this only ever gates web clients.
+
+   It now defaults to the Sppero web properties rather than to "everything".
+   That was tolerable while only the apps called this API; it stopped being
+   tolerable when the partner portal put a logged-in dashboard with bank
+   details and a withdraw button in a browser, because any page a partner
+   visited could then make requests carrying their session.
+
+   ALLOWED_ORIGINS still overrides it, so a new front end is one env var away
+   and nobody has to edit this file under pressure. */
+const DEFAULT_ORIGINS = [
+  'https://sppero.com', 'https://www.sppero.com', 'https://api.sppero.com',
+];
+const _envOrigins = (process.env.ALLOWED_ORIGINS || '').split(',').map(o => o.trim()).filter(Boolean);
+// An env var set to an empty string falls back to the defaults rather than
+// denying every browser — otherwise one stray edit takes the partner portal
+// down with a CORS error that names nothing.
+const ALLOWED_ORIGINS = _envOrigins.length ? _envOrigins : DEFAULT_ORIGINS;
 
 const corsOptions = {
   origin: (origin, cb) => {
     // No origin = native mobile app / server-to-server / curl — allow
     if (!origin) return cb(null, true);
-    // No allowlist configured → open (admin key guards sensitive endpoints)
-    if (!ALLOWED_ORIGINS) return cb(null, true);
     if (ALLOWED_ORIGINS.includes(origin)) return cb(null, true);
     cb(new Error(`CORS: origin not allowed — ${origin}`));
   },
