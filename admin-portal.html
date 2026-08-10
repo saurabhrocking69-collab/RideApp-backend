@@ -4314,12 +4314,18 @@ async function loadPartnerClaims(){
         : '<span style="color:#f87171">no Sppero account for this number</span>';
       var taken = c.already_held_by
         ? '<div style="color:#fbbf24;font-size:11px">already attributed to another partner</div>' : '';
-      var canApprove = c.user_id && !c.already_held_by;
+      // Someone who was already riding before this partner signed up cannot
+      // have been brought by them. Shown here so the reason is visible before
+      // the click, not as an error after it.
+      var early = c.predates_partner
+        ? '<div style="color:#f87171;font-size:11px">was already on Sppero before this partner joined '
+          + '(' + fmt(c.partner_joined) + ')</div>' : '';
+      var canApprove = c.user_id && !c.already_held_by && !c.predates_partner;
       return '<tr>'
         + '<td>'+fmt(c.created_at)+'</td>'
         + '<td>'+esc(c.partner_name)+'<br><code style="font-size:11px">'+esc(c.code)+'</code></td>'
         + '<td>'+esc(c.phone)+'</td>'
-        + '<td>'+acct+taken+'</td>'
+        + '<td>'+acct+taken+early+'</td>'
         + '<td>'+(c.user_joined?fmt(c.user_joined):'-')+'</td>'
         + '<td>'+(c.rides!=null?c.rides:'-')+'</td>'
         + '<td>'

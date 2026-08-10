@@ -79,14 +79,25 @@ const _envOrigins = (process.env.ALLOWED_ORIGINS || '').split(',').map(o => o.tr
 // down with a CORS error that names nothing.
 const ALLOWED_ORIGINS = _envOrigins.length ? _envOrigins : DEFAULT_ORIGINS;
 
-const corsOptions = {
-  origin: (origin, cb) => {
-    // No origin = native mobile app / server-to-server / curl — allow
-    if (!origin) return cb(null, true);
-    if (ALLOWED_ORIGINS.includes(origin)) return cb(null, true);
-    cb(new Error(`CORS: origin not allowed — ${origin}`));
-  },
-  credentials: true,
+/* Takes (req, cb) rather than (origin, cb) so it can see the host the request
+   actually arrived on. That matters because the admin portal is SERVED BY this
+   same server, and browsers attach an Origin header to same-origin POSTs too —
+   so locking the allowlist to the sppero.com domains blocked the admin portal
+   from talking to its own backend, on whatever domain it happened to be opened
+   from. Comparing against the request's own host fixes it without hard-coding
+   a Railway URL that will change the day the project is renamed. */
+const corsOptions = (req, cb) => {
+  const origin = req.headers.origin;
+  let ok = false;
+  if (!origin) {
+    ok = true;                                   // native app, server-to-server, curl
+  } else if (ALLOWED_ORIGINS.includes(origin)) {
+    ok = true;
+  } else {
+    try { ok = new URL(origin).host === req.headers.host; } catch (_) { ok = false; }
+  }
+  cb(ok ? null : new Error(`CORS: origin not allowed — ${origin}`),
+     { origin: ok ? origin || true : false, credentials: true });
 };
 
 // ── App + HTTP + Socket.io ───────────────────────

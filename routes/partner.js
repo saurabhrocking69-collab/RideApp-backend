@@ -784,10 +784,13 @@ adminRouter.get('/claims/pending', async (_req, res) => {
   try {
     const r = await db.query(
       `SELECT c.id, c.phone, c.role_claimed, c.created_at,
-              p.id AS partner_id, p.name AS partner_name, p.code,
+              p.id AS partner_id, p.name AS partner_name, p.code, p.created_at AS partner_joined,
               u.id::text AS user_id, u.name AS user_name, u.role AS user_role, u.created_at AS user_joined,
               (SELECT COUNT(*) FROM rides r WHERE r.passenger_id = u.id OR r.driver_id = u.id)::int AS rides,
-              held.partner_id AS already_held_by
+              held.partner_id AS already_held_by,
+              -- Decided here rather than in the browser, so the list and the
+              -- approval endpoint can never disagree about what is allowed.
+              (u.id IS NOT NULL AND u.created_at < p.created_at) AS predates_partner
          FROM partner_claims c
          JOIN partners p ON p.id = c.partner_id
          LEFT JOIN users u ON u.phone = c.phone
@@ -807,8 +810,24 @@ adminRouter.post('/claims/:id/decide', async (req, res) => {
     if (!c.rows[0]) return res.status(404).json({ error: 'Claim not found or already decided' });
 
     if (approve) {
-      const u = await db.query('SELECT id, role FROM users WHERE phone = $1', [c.rows[0].phone]);
+      const u = await db.query('SELECT id, role, created_at FROM users WHERE phone = $1', [c.rows[0].phone]);
       if (!u.rows[0]) return res.status(400).json({ error: 'No Sppero account exists for that number yet' });
+
+      /* You cannot have brought someone who was already using Sppero before
+         you were a partner. Without this the programme pays out on the
+         existing user base: every partner's first move would be to submit the
+         numbers of people already riding, and Sppero would start paying 60%
+         of commission it was already earning, for nothing.
+
+         Keyed on the PARTNER's join date rather than a fixed launch date, so
+         it stays correct for everyone who joins later too. */
+      const p = await db.query('SELECT created_at FROM partners WHERE id = $1', [c.rows[0].partner_id]);
+      if (p.rows[0] && new Date(u.rows[0].created_at) < new Date(p.rows[0].created_at)) {
+        const joined = new Date(u.rows[0].created_at).toLocaleDateString('en-IN', { day:'numeric', month:'short', year:'numeric' });
+        return res.status(400).json({
+          error: `This person joined Sppero on ${joined}, before this partner signed up. Only people who join after a partner does can be added to them.`,
+        });
+      }
       // The same one-attribution rule the code path obeys. If somebody already
       // holds this person, approving must fail rather than silently do nothing.
       const ins = await db.query(
