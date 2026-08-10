@@ -7,6 +7,7 @@ const { haversineKm } = require('../services/matching');
 const { assignRideToNextDriver } = require('../workers/rideWorker');
 const { tryBatchDispatch, acceptBatch } = require('../services/parcelBatching');
 const userAuth = require('../middleware/userAuth');
+const ownPhone = require('../middleware/ownPhone');
 const { verifyOnlinePayment, razorpay, refundToWallet, creditDriverWallet } = require('../services/advance');
 const { sendFCM } = require('../config/firebase');
 const { emitToRoom } = require('../config/socket');
@@ -843,7 +844,7 @@ router.post('/confirm-return', userAuth, async (req, res) => {
 //    so without this endpoint the package would be invisible in the app the
 //    moment it stopped blocking dispatch. Also drives the "close after 5h"
 //    countdown and tells the app when the sender has since replied. ──────────
-router.get('/held', async (req, res) => {
+router.get('/held', userAuth, ownPhone(), async (req, res) => {
   const { phone } = req.query;
   if (!phone) return res.status(400).json({ error: 'phone required' });
   try {
@@ -1079,7 +1080,7 @@ router.post('/batch-accept', userAuth, async (req, res) => {
 // ── GET /api/parcel/batch/active?phone=X — driver's current batch + ordered
 //    stop sequence, each stop carrying its ride's full detail so the driver
 //    app doesn't need a second round-trip per stop. ─────────────────────────
-router.get('/batch/active', async (req, res) => {
+router.get('/batch/active', userAuth, ownPhone(), async (req, res) => {
   const { phone } = req.query;
   if (!phone) return res.status(400).json({ error: 'phone required' });
   try {
@@ -1134,7 +1135,7 @@ router.get('/batch/active', async (req, res) => {
 //    still waiting on their own pickup gets a live "N stops before you"
 //    update instead of a stale count from match time. Never gates or
 //    verifies anything — the actual state change already happened. ────────
-router.post('/batch-stop-complete', async (req, res) => {
+router.post('/batch-stop-complete', userAuth, async (req, res) => {
   const { ride_id } = req.body;
   try {
     const rideRes = await db.query(`SELECT batch_id FROM rides WHERE id=$1`, [ride_id]);
