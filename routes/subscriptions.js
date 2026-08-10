@@ -4,6 +4,8 @@ const router   = express.Router();
 const db       = require('../config/db');
 const razorpay = require('../config/razorpay');
 const { vehicleCategoryFor, activateQueuedSubscription } = require('../services/subscription');
+const userAuth = require('../middleware/userAuth');
+const ownPhone = require('../middleware/ownPhone');
 
 // GET /api/subscriptions/plans?vehicle_category=auto
 router.get('/plans', async (req, res) => {
@@ -19,7 +21,7 @@ router.get('/plans', async (req, res) => {
 
 // GET /api/subscriptions/my?phone=xxx
 // Returns active plan, queued plan, savings so far, and vehicle_category
-router.get('/my', async (req, res) => {
+router.get('/my', userAuth, ownPhone(), async (req, res) => {
   try {
     const { phone } = req.query;
     if (!phone) return res.status(400).json({ error: 'phone required' });
@@ -71,7 +73,7 @@ router.get('/my', async (req, res) => {
 
 // POST /api/subscriptions/create-order
 // Body: { phone, plan_id }
-router.post('/create-order', async (req, res) => {
+router.post('/create-order', userAuth, ownPhone(), async (req, res) => {
   try {
     const { phone, plan_id } = req.body || {};
     if (!phone || !plan_id) return res.status(400).json({ error: 'phone aur plan_id required hai' });
@@ -117,7 +119,7 @@ router.post('/create-order', async (req, res) => {
 
 // POST /api/subscriptions/verify
 // Body: { phone, razorpay_order_id, razorpay_payment_id, razorpay_signature }
-router.post('/verify', async (req, res) => {
+router.post('/verify', userAuth, ownPhone(), async (req, res) => {
   try {
     const { phone, razorpay_order_id, razorpay_payment_id, razorpay_signature } = req.body || {};
     if (!phone || !razorpay_order_id || !razorpay_payment_id || !razorpay_signature) {

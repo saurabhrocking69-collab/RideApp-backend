@@ -3,6 +3,9 @@ const crypto  = require('crypto');
 const router  = express.Router();
 const db      = require('../config/db');
 const razorpay = require('../config/razorpay');
+const userAuth = require('../middleware/userAuth');
+const ownPhone = require('../middleware/ownPhone');
+const adminAuth = require('../middleware/adminAuth');
 
 // GET /api/buddy-fund/stats
 router.get('/stats', async (req, res) => {
@@ -21,7 +24,7 @@ router.get('/stats', async (req, res) => {
 });
 
 // POST /api/buddy-fund/create-order
-router.post('/create-order', async (req, res) => {
+router.post('/create-order', userAuth, ownPhone(), async (req, res) => {
   try {
     const { phone, amount } = req.body || {};
     const amt = parseFloat(amount);
@@ -52,7 +55,7 @@ router.post('/create-order', async (req, res) => {
 });
 
 // POST /api/buddy-fund/verify
-router.post('/verify', async (req, res) => {
+router.post('/verify', userAuth, ownPhone(), async (req, res) => {
   try {
     const { phone, razorpay_order_id, razorpay_payment_id, razorpay_signature } = req.body || {};
     if (!razorpay_order_id || !razorpay_payment_id || !razorpay_signature)
@@ -94,7 +97,7 @@ router.post('/verify', async (req, res) => {
 });
 
 // GET /api/buddy-fund/admin/stats — detailed for admin panel
-router.get('/admin/stats', async (req, res) => {
+router.get('/admin/stats', adminAuth, async (req, res) => {
   try {
     const overview = await db.query(
       `SELECT

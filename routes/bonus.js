@@ -1,6 +1,8 @@
 const express = require('express');
 const router  = express.Router();
 const db      = require('../config/db');
+const userAuth = require('../middleware/userAuth');
+const ownPhone = require('../middleware/ownPhone');
 
 // Vehicle type → group mapping
 function vehicleGroup(type) {
@@ -31,7 +33,7 @@ async function hasActiveSubscription(phone, client = db) {
 const EXCLUDE_SUBSCRIPTION_RIDES = `AND NOT EXISTS (SELECT 1 FROM subscription_ride_log srl WHERE srl.ride_id = r.id::text)`;
 
 // GET /api/bonus/dashboard?phone=X
-router.get('/dashboard', async (req, res) => {
+router.get('/dashboard', userAuth, ownPhone(), async (req, res) => {
   const { phone } = req.query;
   try {
     const drRes = await db.query(
@@ -112,7 +114,7 @@ router.get('/dashboard', async (req, res) => {
 });
 
 // POST /api/bonus/claim-daily { phone, rule_id, tier_index }
-router.post('/claim-daily', async (req, res) => {
+router.post('/claim-daily', userAuth, ownPhone(), async (req, res) => {
   const { phone, rule_id, tier_index } = req.body;
   const client = await db.connect();
   try {
@@ -158,7 +160,7 @@ router.post('/claim-daily', async (req, res) => {
 });
 
 // POST /api/bonus/claim-streak { phone }
-router.post('/claim-streak', async (req, res) => {
+router.post('/claim-streak', userAuth, ownPhone(), async (req, res) => {
   const { phone } = req.body;
   const client = await db.connect();
   try {
@@ -209,7 +211,7 @@ router.post('/claim-streak', async (req, res) => {
 });
 
 // POST /api/bonus/redeem { phone, amount }
-router.post('/redeem', async (req, res) => {
+router.post('/redeem', userAuth, ownPhone(), async (req, res) => {
   const { phone, amount } = req.body;
   const redeemAmt = parseFloat(amount);
   if (isNaN(redeemAmt) || redeemAmt < 50) return res.json({ success: false, error: 'Minimum ₹50 required to redeem' });
@@ -249,7 +251,7 @@ router.post('/redeem', async (req, res) => {
 });
 
 // GET /api/bonus/history?phone=X&page=1
-router.get('/history', async (req, res) => {
+router.get('/history', userAuth, ownPhone(), async (req, res) => {
   const { phone, page = '1' } = req.query;
   const offset = (parseInt(page) - 1) * 20;
   try {
