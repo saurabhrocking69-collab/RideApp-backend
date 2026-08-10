@@ -308,16 +308,38 @@ router.get('/cancellation-stats', async (req, res) => {
 });
 
 // GET /api/admin/users
+// GET /api/admin/users — paged, newest first. Was unbounded: it returned every
+// customer with a per-row ride aggregate on each open of the tab, which only
+// stays comfortable while the customer count is small.
+//
+// Search is done HERE rather than in the browser. The portal used to filter the
+// rendered rows client-side, which is fine when every row is present and
+// silently wrong the moment the list is paged — typing a name would search only
+// the first page and report "koi result nahi mila" for a customer who exists.
 router.get('/users', async (req, res) => {
+  const { search } = req.query;
+  const limit  = Math.min(parseInt(req.query.limit, 10) || 50, 200);
+  const offset = Math.max(parseInt(req.query.offset, 10) || 0, 0);
   try {
+    const params = [];
+    let where = 'WHERE NOT EXISTS (SELECT 1 FROM drivers d WHERE d.id = u.id)';
+    if (search && String(search).trim()) {
+      params.push(`%${String(search).trim()}%`);
+      where += ` AND (u.name ILIKE $${params.length} OR u.phone ILIKE $${params.length})`;
+    }
     const users = await db.query(
       `SELECT u.*, COALESCE(r.total_rides, 0) as total_rides, COALESCE(r.total_fare, 0) as total_fare, cm.trust_score, cm.total_cancels, cm.is_flagged
        FROM users u
        LEFT JOIN (SELECT passenger_id, COUNT(*) as total_rides, SUM(fare) as total_fare FROM rides WHERE status = 'completed' GROUP BY passenger_id) r ON u.id = r.passenger_id
        LEFT JOIN customer_metrics cm ON u.phone = cm.phone
-       WHERE NOT EXISTS (SELECT 1 FROM drivers d WHERE d.id = u.id) ORDER BY u.created_at DESC`
+       ${where}
+       ORDER BY u.created_at DESC LIMIT $${params.length + 1} OFFSET $${params.length + 2}`,
+      [...params, limit, offset]
     );
-    res.json({ users: users.rows });
+    // Same cheap has_more heuristic the rides list uses — a full page back means
+    // there is probably another one, no extra COUNT query. Wrong only on an
+    // exact boundary, where one "See More" click just returns nothing.
+    res.json({ users: users.rows, has_more: users.rows.length === limit });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 

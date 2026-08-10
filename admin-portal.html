@@ -337,6 +337,9 @@ input,select,textarea{outline:none}
       <input id="cust-search" placeholder="🔍 Search name or phone..." class="input-sm" style="margin-bottom:10px;max-width:300px" oninput="filterCust(this.value)">
       <div style="overflow-x:auto"><table><thead><tr><th>Name</th><th>Phone</th><th>Rides</th><th>Total Spent</th><th>Wallet</th><th>Trust</th><th>Joined</th><th>Actions</th></tr></thead>
       <tbody id="cust-body"><tr><td colspan=8 class=loading>Loading...</td></tr></tbody></table></div>
+      <div style="text-align:center;margin-top:14px">
+        <button id="cust-more-btn" class="refresh-btn" style="display:none" onclick="loadMoreCustomers()">See More Customers</button>
+      </div>
     </div>
   </div>
 
@@ -1687,10 +1690,22 @@ async function loadLiveRides(){
 setInterval(()=>{ if(_activeSection==='liverides') loadLiveRides(); }, 15000);
 
 // ── Customers ───────────────────────────────────────────
-async function loadCustomers(){
-  try{
-    const d=await aJson('/api/admin/users');
-    document.getElementById('cust-body').innerHTML=(d.users||[]).map(u=>`<tr>
+const CUST_PAGE_SIZE=50;
+let custOffset=0;
+let custSearchTimer=null;
+
+function custQueryUrl(offset){
+  const search=document.getElementById('cust-search')?.value.trim()||'';
+  let url='/api/admin/users?limit='+CUST_PAGE_SIZE+'&offset='+offset;
+  if(search) url+='&search='+encodeURIComponent(search);
+  return url;
+}
+
+// One row builder, used by both the first page and every "See More" append —
+// they must not be allowed to drift into rendering the same customer two
+// different ways.
+function custRowHtml(u){
+  return `<tr>
       <td><b>${esc(u.name)||'-'}</b>${u.booking_restricted?'<span style="color:#c62828;font-size:10px"> 🔒RESTRICTED</span>':u.is_blocked?'<span style="color:#c62828;font-size:10px"> 🚫BLOCKED</span>':u.is_suspended?'<span style="color:#e65100;font-size:10px"> ⏸SUSPENDED</span>':''}</td>
       <td>${esc(u.phone)}</td>
       <td>${u.total_rides||0}</td>
@@ -1708,8 +1723,37 @@ async function loadCustomers(){
           data-restricted="${!!u.booking_restricted}"
           onclick="openUserModalFromEl(this)">Manage</button>
       </td>
-    </tr>`).join('')||'<tr><td colspan=8 class=loading>Koi customer nahi</td></tr>';
+    </tr>`;
+}
+
+// Reload / search / tab-open — always starts fresh from the first page.
+async function loadCustomers(){
+  custOffset=0;
+  const moreBtn=document.getElementById('cust-more-btn');
+  if(moreBtn) moreBtn.style.display='none';
+  const searching=!!(document.getElementById('cust-search')?.value.trim());
+  try{
+    const d=await aJson(custQueryUrl(0));
+    document.getElementById('cust-body').innerHTML=(d.users||[]).map(custRowHtml).join('')
+      ||'<tr><td colspan=8 class=loading>'+(searching?'Koi result nahi mila':'Koi customer nahi')+'</td></tr>';
+    custOffset=(d.users||[]).length;
+    if(moreBtn) moreBtn.style.display=d.has_more?'inline-block':'none';
   }catch(e){if(e.message!=='Unauthorized')document.getElementById('cust-body').innerHTML='<tr><td colspan=8 class=loading>❌ Load failed</td></tr>';}
+}
+
+// "See More Customers" — appends the next page instead of replacing the table.
+async function loadMoreCustomers(){
+  const moreBtn=document.getElementById('cust-more-btn');
+  if(moreBtn){moreBtn.disabled=true;moreBtn.textContent='Loading...';}
+  try{
+    const d=await aJson(custQueryUrl(custOffset));
+    document.getElementById('cust-body').insertAdjacentHTML('beforeend',(d.users||[]).map(custRowHtml).join(''));
+    custOffset+=(d.users||[]).length;
+    if(moreBtn){
+      moreBtn.disabled=false;moreBtn.textContent='See More Customers';
+      moreBtn.style.display=d.has_more?'inline-block':'none';
+    }
+  }catch(e){if(moreBtn){moreBtn.disabled=false;moreBtn.textContent='See More Customers';}}
 }
 
 function openUserModalFromEl(el){
@@ -4025,26 +4069,14 @@ async function doSupRefund(id, phone) {
 }
 
 // ── Search filters ───────────────────────────────────────
-function filterCust(q){
-  q=q.toLowerCase().trim();
-  var body=document.getElementById('cust-body');
-  var rows=body.querySelectorAll('tr:not(#cust-empty-row)');
-  var visible=0;
-  rows.forEach(function(tr){
-    var show=!q||tr.textContent.toLowerCase().includes(q);
-    tr.style.display=show?'':'none';
-    if(show) visible++;
-  });
-  var emptyRow=document.getElementById('cust-empty-row');
-  if(rows.length>0){
-    if(!emptyRow){
-      emptyRow=document.createElement('tr');
-      emptyRow.id='cust-empty-row';
-      emptyRow.innerHTML='<td colspan=8 class=loading>Koi result nahi mila</td>';
-      body.appendChild(emptyRow);
-    }
-    emptyRow.style.display=(q&&!visible)?'':'none';
-  }
+// Customer search now runs on the SERVER, because the list is paged. The old
+// version hid non-matching rows in the DOM, which searched only what happened
+// to be rendered — with paging that means typing a real customer's name would
+// answer "koi result nahi mila" purely because their page had not been loaded
+// yet. Debounced so a normal typing speed is one query, not one per keystroke.
+function filterCust(_q){
+  if(custSearchTimer) clearTimeout(custSearchTimer);
+  custSearchTimer=setTimeout(loadCustomers,320);
 }
 function filterDrvs(q){
   q=q.toLowerCase().trim();
