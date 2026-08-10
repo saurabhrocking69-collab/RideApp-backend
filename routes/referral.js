@@ -66,7 +66,11 @@ async function maybeGrantReferralReward(userId) {
       `SELECT COUNT(*) FROM rides WHERE passenger_id = $1 AND payment_status = 'completed'`,
       [userId]
     );
-    if (parseInt(countRes.rows[0].count) !== 3) return false;
+    // >= rather than ===. Catching an EXACT count means one missed moment — a
+    // crash, a timeout, a payment settled out of order — pushes it to 4 and the
+    // reward can never be granted. The atomic status guard below is what stops
+    // a double payment, so there is nothing for the equality to protect.
+    if (parseInt(countRes.rows[0].count) < 3) return false;
 
     const refRow = ref.rows[0];
     const reward = parseFloat(refRow.reward_amount);

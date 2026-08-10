@@ -6,6 +6,40 @@ const { emitToRoom, getIO } = require('../config/socket');
 const { HOURLY_FARES, getSurge } = require('../services/pricing');
 const { useSubscriptionIfActive } = require('../services/subscription');
 const { vehicleServesSql } = require('../services/matching');
+const userAuth = require('../middleware/userAuth');
+
+/* ── Who may act on a booking ─────────────────────────────────────────────
+   hourly_bookings.id is a SERIAL, so ids are 1, 2, 3 and can simply be
+   counted through. Every endpoint here took one with no check at all, which
+   meant anyone could cancel a live ride, read its OTP, or end a trip that was
+   not theirs. Authentication alone does not fix that — a logged-in stranger is
+   still a stranger — so the caller must also be a party to the booking. */
+async function ownsBooking(req, res, next) {
+  try {
+    // Body, path or query — GET endpoints like /extend-cost carry it in the
+    // query string, and a guard that only reads the body would wave them
+    // through while looking like it had checked something.
+    const id = req.body?.booking_id ?? req.params?.id ?? req.query?.booking_id;
+    if (!id) return res.status(400).json({ error: 'booking_id is required' });
+    const r = await db.query('SELECT * FROM hourly_bookings WHERE id = $1', [id]);
+    if (!r.rows[0]) return res.status(404).json({ error: 'Booking not found' });
+    const me = String(req.user.phone);
+    const b = r.rows[0];
+    if (me !== String(b.customer_phone) && me !== String(b.driver_phone))
+      return res.status(403).json({ error: 'This booking is not yours' });
+    req.booking = b;                     // saves the handler re-reading it
+    next();
+  } catch (err) { res.status(500).json({ error: 'Something went wrong — please try again' }); }
+}
+
+// For endpoints keyed on a phone number rather than a booking: it must be the
+// caller's own. `/active` returns the ride OTP and the driver's details.
+const ownPhone = (field = 'phone') => (req, res, next) => {
+  const given = String((req.query && req.query[field]) || (req.body && req.body[field]) || '');
+  if (String(req.user.phone) !== given)
+    return res.status(403).json({ error: 'You can only act on your own account' });
+  next();
+};
 
 async function doCompleteHourly(booking_id, actual_km) {
   const client = await db.connect();
@@ -60,7 +94,7 @@ async function doCompleteHourly(booking_id, actual_km) {
 router.get('/packages', (req, res) => res.json({ fares: HOURLY_FARES }));
 
 // POST /api/hourly/book
-router.post('/book', async (req, res) => {
+router.post('/book', userAuth, ownPhone('phone'), async (req, res) => {
   const { phone, vehicle_type, package_hours, pickup, pickup_lat, pickup_lng, drop_location, drop_lat, drop_lng, is_roundtrip, stay_hours, scheduled_at } = req.body;
   const client = await db.connect();
   try {
@@ -116,7 +150,7 @@ router.post('/book', async (req, res) => {
 });
 
 // GET /api/hourly/status/:id
-router.get('/status/:id', async (req, res) => {
+router.get('/status/:id', userAuth, ownsBooking, async (req, res) => {
   const { maskPhone } = require('../services/phone');
   try {
     const r = await db.query('SELECT * FROM hourly_bookings WHERE id = $1', [req.params.id]);
@@ -150,7 +184,7 @@ router.get('/status/:id', async (req, res) => {
 });
 
 // GET /api/hourly/driver-pending
-router.get('/driver-pending', async (req, res) => {
+router.get('/driver-pending', userAuth, ownPhone('phone'), async (req, res) => {
   const { phone } = req.query;
   try {
     const dr = await db.query('SELECT d.vehicle_type FROM drivers d JOIN users u ON d.id = u.id WHERE u.phone = $1', [phone]);
@@ -170,7 +204,7 @@ router.get('/driver-pending', async (req, res) => {
 });
 
 // POST /api/hourly/accept
-router.post('/accept', async (req, res) => {
+router.post('/accept', userAuth, ownPhone('driver_phone'), async (req, res) => {
   const { booking_id, driver_phone } = req.body;
   try {
     const result = await db.query(`UPDATE hourly_bookings SET driver_phone=$1, status='matched' WHERE id=$2 AND status='pending' AND driver_phone IS NULL RETURNING *`, [driver_phone, booking_id]);
@@ -188,7 +222,7 @@ router.post('/accept', async (req, res) => {
 // both — it previously only matched 'matched', permanently 404ing any driver
 // who'd already tapped "I've Arrived" and leaving the booking stuck forever
 // since there was no other way for the driver to back out of it.
-router.post('/driver-cancel', async (req, res) => {
+router.post('/driver-cancel', userAuth, ownsBooking, async (req, res) => {
   const { booking_id, driver_phone } = req.body;
   try {
     const r = await db.query(`SELECT * FROM hourly_bookings WHERE id=$1 AND driver_phone=$2 AND status IN ('matched','arrived')`, [booking_id, driver_phone]);
@@ -208,7 +242,7 @@ router.post('/driver-cancel', async (req, res) => {
 });
 
 // POST /api/hourly/arrived — driver marks arrival at pickup point
-router.post('/arrived', async (req, res) => {
+router.post('/arrived', userAuth, ownsBooking, async (req, res) => {
   const { booking_id, driver_phone } = req.body;
   try {
     const r = await db.query(
@@ -231,7 +265,7 @@ router.post('/arrived', async (req, res) => {
 });
 
 // POST /api/hourly/start
-router.post('/start', async (req, res) => {
+router.post('/start', userAuth, ownsBooking, async (req, res) => {
   const { booking_id, otp, driver_phone } = req.body;
   try {
     const r = await db.query('SELECT otp, driver_phone FROM hourly_bookings WHERE id=$1', [booking_id]);
@@ -246,7 +280,7 @@ router.post('/start', async (req, res) => {
 });
 
 // GET /api/hourly/driver-active
-router.get('/driver-active', async (req, res) => {
+router.get('/driver-active', userAuth, ownPhone('phone'), async (req, res) => {
   const { phone } = req.query;
   try {
     const r = await db.query(`SELECT * FROM hourly_bookings WHERE driver_phone=$1 AND status IN ('matched','arrived','active') ORDER BY created_at DESC LIMIT 1`, [phone]);
@@ -255,7 +289,7 @@ router.get('/driver-active', async (req, res) => {
 });
 
 // GET /api/hourly/active
-router.get('/active', async (req, res) => {
+router.get('/active', userAuth, ownPhone('phone'), async (req, res) => {
   const { phone } = req.query;
   if (!phone) return res.status(400).json({ error: 'phone required' });
   try {
@@ -280,7 +314,7 @@ router.get('/active', async (req, res) => {
 });
 
 // POST /api/hourly/complete
-router.post('/complete', async (req, res) => {
+router.post('/complete', userAuth, ownsBooking, async (req, res) => {
   const { booking_id, actual_km } = req.body;
   try {
     const r = await db.query("SELECT * FROM hourly_bookings WHERE id=$1 AND status='active'", [booking_id]);
@@ -305,7 +339,7 @@ router.post('/complete', async (req, res) => {
 });
 
 // POST /api/hourly/early-end-request
-router.post('/early-end-request', async (req, res) => {
+router.post('/early-end-request', userAuth, ownsBooking, async (req, res) => {
   const { booking_id, requested_by } = req.body;
   try {
     const r = await db.query('SELECT * FROM hourly_bookings WHERE id=$1', [booking_id]);
@@ -327,7 +361,7 @@ router.post('/early-end-request', async (req, res) => {
 });
 
 // POST /api/hourly/early-end-confirm
-router.post('/early-end-confirm', async (req, res) => {
+router.post('/early-end-confirm', userAuth, ownsBooking, async (req, res) => {
   const { booking_id } = req.body;
   const client = await db.connect();
   try {
@@ -364,7 +398,7 @@ router.post('/early-end-confirm', async (req, res) => {
 });
 
 // POST /api/hourly/customer-early-complete
-router.post('/customer-early-complete', async (req, res) => {
+router.post('/customer-early-complete', userAuth, ownsBooking, async (req, res) => {
   const { booking_id } = req.body;
   const client = await db.connect();
   try {
@@ -395,7 +429,7 @@ router.post('/customer-early-complete', async (req, res) => {
 });
 
 // POST /api/hourly/early-end-reject
-router.post('/early-end-reject', async (req, res) => {
+router.post('/early-end-reject', userAuth, ownsBooking, async (req, res) => {
   const { booking_id } = req.body;
   try {
     const r = await db.query('UPDATE hourly_bookings SET early_end_requested_by=NULL, early_end_reject_count=COALESCE(early_end_reject_count,0)+1, early_end_last_rejected_at=NOW() WHERE id=$1 RETURNING early_end_reject_count', [booking_id]);
@@ -405,7 +439,7 @@ router.post('/early-end-reject', async (req, res) => {
 });
 
 // POST /api/hourly/cancel
-router.post('/cancel', async (req, res) => {
+router.post('/cancel', userAuth, ownsBooking, async (req, res) => {
   const { booking_id } = req.body;
   const client = await db.connect();
   try {
@@ -434,7 +468,7 @@ router.post('/cancel', async (req, res) => {
 });
 
 // POST /api/hourly/customer-confirm-complete
-router.post('/customer-confirm-complete', async (req, res) => {
+router.post('/customer-confirm-complete', userAuth, ownsBooking, async (req, res) => {
   const { booking_id } = req.body;
   try {
     const r = await db.query("SELECT * FROM hourly_bookings WHERE id=$1 AND pending_customer_confirm=true AND status='active'", [booking_id]);
@@ -445,7 +479,7 @@ router.post('/customer-confirm-complete', async (req, res) => {
 });
 
 // POST /api/hourly/customer-dispute-complete
-router.post('/customer-dispute-complete', async (req, res) => {
+router.post('/customer-dispute-complete', userAuth, ownsBooking, async (req, res) => {
   const { booking_id } = req.body;
   try {
     const r = await db.query("UPDATE hourly_bookings SET pending_customer_confirm=false, dispute_raised=true WHERE id=$1 AND pending_customer_confirm=true RETURNING driver_phone", [booking_id]);
@@ -456,7 +490,7 @@ router.post('/customer-dispute-complete', async (req, res) => {
 });
 
 // POST /api/hourly/request-extend
-router.post('/request-extend', async (req, res) => {
+router.post('/request-extend', userAuth, ownsBooking, async (req, res) => {
   const { booking_id, extra_hours, customer_phone } = req.body;
   if (!extra_hours || extra_hours < 1) return res.json({ success: false, message: 'Minimum 1 hour extension required' });
   try {
@@ -482,7 +516,7 @@ router.post('/request-extend', async (req, res) => {
 });
 
 // POST /api/hourly/accept-extend
-router.post('/accept-extend', async (req, res) => {
+router.post('/accept-extend', userAuth, ownsBooking, async (req, res) => {
   const { booking_id } = req.body;
   try {
     const r = await db.query('SELECT * FROM hourly_bookings WHERE id=$1 AND extend_requested_hours IS NOT NULL', [booking_id]);
@@ -507,7 +541,7 @@ router.post('/accept-extend', async (req, res) => {
 });
 
 // POST /api/hourly/reject-extend
-router.post('/reject-extend', async (req, res) => {
+router.post('/reject-extend', userAuth, ownsBooking, async (req, res) => {
   const { booking_id } = req.body;
   try {
     const r = await db.query('SELECT * FROM hourly_bookings WHERE id=$1 AND extend_requested_hours IS NOT NULL', [booking_id]);
@@ -529,7 +563,7 @@ router.post('/reject-extend', async (req, res) => {
 });
 
 // POST /api/hourly/update-km
-router.post('/update-km', async (req, res) => {
+router.post('/update-km', userAuth, ownsBooking, async (req, res) => {
   const { booking_id, actual_km } = req.body;
   try {
     const r = await db.query("SELECT * FROM hourly_bookings WHERE id=$1 AND status='active'", [booking_id]);
@@ -560,7 +594,7 @@ router.post('/update-km', async (req, res) => {
 });
 
 // GET /api/hourly/extend-cost
-router.get('/extend-cost', async (req, res) => {
+router.get('/extend-cost', userAuth, ownsBooking, async (req, res) => {
   const { booking_id, extra_hours, extra_minutes } = req.query;
   try {
     const r = await db.query('SELECT * FROM hourly_bookings WHERE id=$1', [booking_id]);
@@ -585,7 +619,7 @@ router.get('/extend-cost', async (req, res) => {
 });
 
 // POST /api/hourly/request-extend-v2
-router.post('/request-extend-v2', async (req, res) => {
+router.post('/request-extend-v2', userAuth, ownsBooking, async (req, res) => {
   const { booking_id, extra_hours, extra_minutes, customer_phone } = req.body;
   const extraHours = parseFloat(extra_hours || 0);
   const extraMin = parseInt(extra_minutes || 0);
@@ -622,7 +656,7 @@ router.post('/request-extend-v2', async (req, res) => {
 });
 
 // POST /api/hourly/chat/send
-router.post('/chat/send', async (req, res) => {
+router.post('/chat/send', userAuth, ownsBooking, async (req, res) => {
   const { booking_id, sender, message } = req.body;
   if (!booking_id || !sender || !message) return res.status(400).json({ error: 'booking_id, sender, message required' });
   try {
@@ -655,7 +689,7 @@ router.post('/chat/send', async (req, res) => {
 });
 
 // GET /api/hourly/chat/:id
-router.get('/chat/:id', async (req, res) => {
+router.get('/chat/:id', userAuth, ownsBooking, async (req, res) => {
   try {
     const r = await db.query('SELECT sender, message, created_at FROM chat_messages WHERE ride_id=$1 ORDER BY created_at ASC', [`h_${req.params.id}`]);
     res.json({ messages: r.rows });
