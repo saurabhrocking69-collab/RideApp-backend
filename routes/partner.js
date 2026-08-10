@@ -377,14 +377,39 @@ function publicPartner(p) {
   };
 }
 
-// Deliberately not "mother's name": it is the most commonly known answer of
-// the lot and is already written on half the forms a person has filled in.
+/* The recovery answer is the ONLY way back into a partner account — there is
+   no OTP and no email to fall back on — so each question here has to clear
+   three bars at once:
+
+   HARD TO LOOK UP. Not on a form, not on a profile, not guessable by someone
+   who knows the partner. This is why "mother's name" is absent despite being
+   the classic: it is already written on half the documents a person has
+   filled in, and in a programme where partners recruit locally, the people
+   most likely to try are the ones who know it.
+
+   STABLE FOR LIFE. The answer is hashed and matched exactly, so anything a
+   person might phrase differently in two years locks them out of real money.
+   That rules out orderings — "second girlfriend", "third job" — because
+   ordering is exactly what people misremember, and it rules out anything that
+   can change, like a current favourite.
+
+   COMFORTABLE TO ANSWER. This is a public business signup, so relationship
+   questions are here as one neutral option rather than several pointed ones. */
 const SECURITY_QUESTIONS = [
   'What was the name of your first school?',
   'What was your childhood nickname?',
   'What was your first vehicle’s number?',
   'What is your best friend’s first name?',
   'What was the name of the street you grew up on?',
+  'What is your first girlfriend’s or boyfriend’s name?',
+  'What is your spouse’s first name?',
+  'What is your mother-in-law’s first name?',
+  'What was your first pet’s name?',
+  'Who was your favourite teacher at school?',
+  'What was the name of your first job or company?',
+  'Which town or village is your family from?',
+  'What was your favourite film as a child?',
+  'What is your youngest brother’s or sister’s first name?',
 ];
 
 router.get('/config', async (_req, res) => {
@@ -402,7 +427,10 @@ router.post('/signup', authLimiter, async (req, res) => {
     if (!s.enabled) return res.status(403).json({ error: 'The partner programme is not open right now.' });
     const name = norm(req.body.name), phone = nphone(req.body.phone);
     const password = norm(req.body.password);
-    const q = norm(req.body.security_q), a = norm(req.body.security_a);
+    // Capped rather than restricted to the list above: a partner sending
+    // something else only affects their own recovery, but an unbounded string
+    // goes straight into the database and back out on the forgot screen.
+    const q = norm(req.body.security_q).slice(0, 120), a = norm(req.body.security_a);
     if (!name)                return res.status(400).json({ error: 'Please enter your name' });
     if (phone.length !== 10)  return res.status(400).json({ error: 'Please enter a 10-digit mobile number' });
     if (password.length < 6)  return res.status(400).json({ error: 'Password must be at least 6 characters' });
