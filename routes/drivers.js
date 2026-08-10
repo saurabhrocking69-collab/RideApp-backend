@@ -10,6 +10,7 @@ const { directFavouriteRideIds } = require('./favourites');
 const { setDriverLoc } = require('../services/rideCache');
 const { attachAreaNames } = require('../services/zoneNames');
 const userAuth = require('../middleware/userAuth');
+const ownPhone = require('../middleware/ownPhone');
 
 // POST /api/upload
 router.post('/upload', async (req, res) => {
@@ -97,7 +98,7 @@ router.post('/login', async (req, res) => {
 });
 
 // POST /api/driver/toggle-online
-router.post('/toggle-online', async (req, res) => {
+router.post('/toggle-online', userAuth, ownPhone(), async (req, res) => {
   const { phone, is_online } = req.body;
   try {
     await db.query(`UPDATE drivers SET is_online = $1 WHERE id = (SELECT id FROM users WHERE phone = $2)`, [is_online, phone]);
@@ -106,7 +107,7 @@ router.post('/toggle-online', async (req, res) => {
 });
 
 // GET /api/driver/pending-ride
-router.get('/pending-ride', async (req, res) => {
+router.get('/pending-ride', userAuth, ownPhone(), async (req, res) => {
   const { phone } = req.query;
   try {
     // Run 3 independent queries in parallel — saves ~300ms vs sequential
@@ -190,7 +191,7 @@ router.get('/pending-ride', async (req, res) => {
 });
 
 // GET /api/driver/active-ride
-router.get('/active-ride', async (req, res) => {
+router.get('/active-ride', userAuth, ownPhone(), async (req, res) => {
   const { phone } = req.query;
   try {
     const result = await db.query(
@@ -211,7 +212,7 @@ router.get('/active-ride', async (req, res) => {
 });
 
 // POST /api/driver/update-location
-router.post('/update-location', async (req, res) => {
+router.post('/update-location', userAuth, ownPhone(), async (req, res) => {
   const { phone, lat, lng } = req.body;
   try {
     driverLocations[phone] = { lat, lng, updated: Date.now() };
@@ -296,7 +297,7 @@ router.post('/bank', userAuth, async (req, res) => {
 });
 
 // GET /api/driver/target
-router.get('/target', async (req, res) => {
+router.get('/target', userAuth, ownPhone(), async (req, res) => {
   const { phone } = req.query;
   try {
     const target = await db.query('SELECT * FROM driver_targets WHERE active = true LIMIT 1');
@@ -311,7 +312,7 @@ router.get('/target', async (req, res) => {
 });
 
 // GET /api/driver/verification-status
-router.get('/verification-status', async (req, res) => {
+router.get('/verification-status', userAuth, ownPhone(), async (req, res) => {
   const { phone } = req.query;
   try {
     const result = await db.query(`SELECT d.verification_status, d.admin_message FROM drivers d JOIN users u ON d.id = u.id WHERE u.phone = $1`, [phone]);
@@ -321,7 +322,7 @@ router.get('/verification-status', async (req, res) => {
 });
 
 // GET /api/driver/check-suspension
-router.get('/check-suspension', async (req, res) => {
+router.get('/check-suspension', userAuth, ownPhone(), async (req, res) => {
   const { phone } = req.query;
   try {
     const dm = await db.query('SELECT suspended_until, cancellation_rate, acceptance_rate FROM driver_metrics WHERE phone = $1', [phone]);
@@ -336,7 +337,7 @@ router.get('/check-suspension', async (req, res) => {
 });
 
 // POST /api/driver/track-metric
-router.post('/track-metric', async (req, res) => {
+router.post('/track-metric', userAuth, ownPhone(), async (req, res) => {
   const { phone, action } = req.body;
   try {
     let dm = await db.query('SELECT * FROM driver_metrics WHERE phone = $1', [phone]);
@@ -408,7 +409,7 @@ router.post('/payout', userAuth, async (req, res) => {
 });
 
 // GET /api/driver/history
-router.get('/history', async (req, res) => {
+router.get('/history', userAuth, ownPhone(), async (req, res) => {
   const { phone } = req.query;
   try {
     // is_parcel/return_status let the app label a parcel delivery as such
@@ -434,7 +435,7 @@ router.get('/history', async (req, res) => {
 });
 
 // GET /api/driver/commission-status
-router.get('/commission-status', async (req, res) => {
+router.get('/commission-status', userAuth, ownPhone(), async (req, res) => {
   const { phone } = req.query;
   try {
     const w = await db.query(`SELECT COALESCE(pending_commission, 0) as pending_commission FROM driver_wallet w JOIN users u ON w.driver_id = u.id WHERE u.phone = $1`, [phone]);
@@ -445,7 +446,7 @@ router.get('/commission-status', async (req, res) => {
 });
 
 // GET /api/driver/commission-history
-router.get('/commission-history', async (req, res) => {
+router.get('/commission-history', userAuth, ownPhone(), async (req, res) => {
   const { phone } = req.query;
   try {
     const walletRow = await db.query(`SELECT COALESCE(w.pending_commission, 0) as pending_commission, COALESCE(w.balance, 0) as balance, COALESCE(w.total_earned, 0) as total_earned FROM driver_wallet w JOIN users u ON w.driver_id = u.id WHERE u.phone = $1`, [phone]);
@@ -460,7 +461,7 @@ router.get('/commission-history', async (req, res) => {
 });
 
 // GET /api/driver/order-history
-router.get('/order-history', async (req, res) => {
+router.get('/order-history', userAuth, ownPhone(), async (req, res) => {
   const { phone, from, to } = req.query;
   try {
     const driverRes = await db.query('SELECT id FROM users WHERE phone = $1', [phone]);
@@ -496,7 +497,7 @@ router.get('/order-history', async (req, res) => {
 });
 
 // POST /api/driver/commission-pay
-router.post('/commission-pay', async (req, res) => {
+router.post('/commission-pay', userAuth, ownPhone(), async (req, res) => {
   const { phone } = req.body;
   try {
     const w = await db.query(`SELECT COALESCE(pending_commission, 0) as pending_commission FROM driver_wallet w JOIN users u ON w.driver_id = u.id WHERE u.phone = $1`, [phone]);
@@ -511,7 +512,7 @@ router.post('/commission-pay', async (req, res) => {
 });
 
 // POST /api/driver/commission-pay-verify
-router.post('/commission-pay-verify', async (req, res) => {
+router.post('/commission-pay-verify', userAuth, ownPhone(), async (req, res) => {
   const { phone, razorpay_order_id, razorpay_payment_id, razorpay_signature } = req.body;
   const crypto = require('crypto');
   try {
@@ -592,7 +593,7 @@ router.get('/demand-zones', async (req, res) => {
 });
 
 // ── GET /api/driver/level/:phone — Driver tier + progress ──
-router.get('/level/:phone', async (req, res) => {
+router.get('/level/:phone', userAuth, ownPhone(), async (req, res) => {
   try {
     const r = await db.query(`
       SELECT u.id, u.name, d.rating, d.verification_status,
@@ -682,7 +683,7 @@ router.get('/demand-prediction', async (req, res) => {
 });
 
 // ── GET /api/driver/earnings-analytics/:phone ──────────────────────────────
-router.get('/earnings-analytics/:phone', async (req, res) => {
+router.get('/earnings-analytics/:phone', userAuth, ownPhone(), async (req, res) => {
   try {
     const { phone } = req.params;
     const user = await db.query(`SELECT id FROM users WHERE phone = $1`, [phone]);

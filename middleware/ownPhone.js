@@ -12,9 +12,12 @@
            router.post('/accept', userAuth, ownPhone('driver_phone'), handler)
 */
 module.exports = (field = 'phone') => (req, res, next) => {
+  // Body, query or path. /driver/level/:phone carries it in the URL, and a
+  // check that only read the body would pass it through untested.
   const given = String(
     (req.body && req.body[field]) ??
     (req.query && req.query[field]) ??
+    (req.params && req.params[field]) ??
     ''
   ).trim();
   if (!given) return res.status(400).json({ error: `${field} is required` });
