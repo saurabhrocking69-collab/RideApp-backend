@@ -453,10 +453,39 @@ router.get('/commission-history', userAuth, ownPhone(), async (req, res) => {
     const commRows = await db.query(`SELECT dc.id, dc.ride_id, dc.fare, dc.commission, dc.payment_method, dc.status, dc.created_at FROM driver_commissions dc WHERE dc.driver_phone = $1 ORDER BY dc.created_at DESC LIMIT 50`, [phone]);
     const payRows = await db.query(`SELECT id, amount, payment_id, status, created_at FROM driver_commission_payments WHERE driver_phone = $1 ORDER BY created_at DESC LIMIT 20`, [phone]);
     const records = commRows.rows;
-    const totalCommission = records.reduce((s, r) => s + parseFloat(r.commission), 0);
-    const settledCommission = records.filter(r => ['settled', 'collected', 'auto_settled'].includes(r.status)).reduce((s, r) => s + parseFloat(r.commission), 0);
+    // Every figure the Commission tab shows now comes from THESE rows, so the
+    // three totals and the per-ride list below them cannot disagree.
+    //
+    // They used to: `pending` was read off driver_wallet.pending_commission
+    // while total and settled were summed from the rows. Two sources, free to
+    // drift — and they did, producing "Pending ₹0" sitting directly above a
+    // ride the same screen labelled pending.
+    //
+    // advance_settled was also missing from the settled list. On an advance
+    // ride the platform takes its commission out of the advance it already
+    // holds, so it IS settled — but it counted in Total and in neither of the
+    // other two, and the money simply vanished between the boxes.
+    const SETTLED  = ['settled', 'collected', 'auto_settled', 'advance_settled'];
+    const UNSETTLED = ['pending', 'cash_owed'];
+    const sum = rows => Math.round(rows.reduce((s, r) => s + parseFloat(r.commission || 0), 0) * 100) / 100;
+    const settledCommission   = sum(records.filter(r => SETTLED.includes(r.status)));
+    const unsettledCommission = sum(records.filter(r => UNSETTLED.includes(r.status)));
+    const totalCommission     = sum(records);
+    // The wallet column stays in the response untouched: it is the debt the
+    // driver actually pays off and what the block-at-₹300 rule reads. It is
+    // NOT the same thing as "commission on rides not yet settled" — a cash
+    // ride is `pending` until the customer confirms payment, and only becomes
+    // a debt after that — so both are returned rather than conflated.
     const pendingCommission = parseFloat(walletRow.rows[0]?.pending_commission || 0);
-    res.json({ pending_commission: pendingCommission, total_commission: Math.round(totalCommission * 100) / 100, settled_commission: Math.round(settledCommission * 100) / 100, wallet_balance: parseFloat(walletRow.rows[0]?.balance || 0), total_earned: parseFloat(walletRow.rows[0]?.total_earned || 0), records, payments: payRows.rows });
+    res.json({
+      pending_commission: pendingCommission,
+      unsettled_commission: unsettledCommission,
+      total_commission: totalCommission,
+      settled_commission: settledCommission,
+      wallet_balance: parseFloat(walletRow.rows[0]?.balance || 0),
+      total_earned: parseFloat(walletRow.rows[0]?.total_earned || 0),
+      records, payments: payRows.rows,
+    });
   } catch (err) { console.error('[drivers]', err.message); res.status(500).json({ error: 'Something went wrong — please try again' }); }
 });
 
