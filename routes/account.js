@@ -162,10 +162,51 @@ router.post('/deletion/cancel', async (req, res) => {
 // Scrub every identifying field, keeping the row so the financial and trip
 // records that point at it stay intact. Exported so the admin route and any
 // future scheduled sweep both go through exactly one implementation.
+/* How long a deleted number stays closed before it can sign up again.
+   Deleting an account renames the phone to a tombstone, which frees the real
+   number immediately — and /verify-otp creates a user for any number it does
+   not recognise. So the person deleted yesterday could enter the same number,
+   get straight in, and land in a brand-new empty account that looks exactly
+   like the old one at the login screen. To the admin it read as "the delete
+   did nothing", because the number reappeared in the customers list.
+   The number is now held closed for this many days first. */
+const REOPEN_AFTER_DAYS = 30;
+
+db.query(`CREATE TABLE IF NOT EXISTS deleted_phones (
+  phone       VARCHAR(15) PRIMARY KEY,
+  user_id     TEXT,
+  role        VARCHAR(20),
+  deleted_at  TIMESTAMP DEFAULT NOW(),
+  reopen_at   TIMESTAMP NOT NULL
+)`).catch(() => {});
+
+/* Returns null when the number is free to use, or { reopen_at, days_left }
+   while it is still closed. Anything that lets someone in must call this. */
+async function phoneDeletionHold(phone) {
+  try {
+    const r = await db.query(
+      'SELECT reopen_at FROM deleted_phones WHERE phone = $1 AND reopen_at > NOW()', [phone]
+    );
+    if (!r.rows[0]) return null;
+    const reopen = new Date(r.rows[0].reopen_at);
+    return { reopen_at: reopen, days_left: Math.max(1, Math.ceil((reopen - Date.now()) / 86400000)) };
+  } catch (_e) { return null; }   // never lock people out because a query failed
+}
+
 async function anonymiseAccount(phone) {
   const u = await db.query('SELECT id, role FROM users WHERE phone = $1', [phone]);
   if (!u.rows[0]) return { ok: false, reason: 'not found' };
   const uid = u.rows[0].id;
+  // Recorded BEFORE the row is tombstoned — after this the real number is gone
+  // from users and there is nothing left to key the hold on.
+  await db.query(
+    `INSERT INTO deleted_phones (phone, user_id, role, reopen_at)
+     VALUES ($1, $2, $3, NOW() + ($4 || ' days')::interval)
+     ON CONFLICT (phone) DO UPDATE
+       SET deleted_at = NOW(), reopen_at = NOW() + ($4 || ' days')::interval,
+           user_id = EXCLUDED.user_id, role = EXCLUDED.role`,
+    [phone, String(uid), u.rows[0].role || null, String(REOPEN_AFTER_DAYS)]
+  ).catch(() => {});
   // Phone is UNIQUE and is the login key, so it cannot simply be nulled — it is
   // replaced with a value that can never be dialled or re-registered.
   const tombstone = `deleted_${uid}_${Date.now()}`;
@@ -196,4 +237,6 @@ async function anonymiseAccount(phone) {
 
 module.exports = router;
 module.exports.anonymiseAccount = anonymiseAccount;
+module.exports.phoneDeletionHold = phoneDeletionHold;
+module.exports.REOPEN_AFTER_DAYS = REOPEN_AFTER_DAYS;
 module.exports.REVIEW_DAYS = REVIEW_DAYS;

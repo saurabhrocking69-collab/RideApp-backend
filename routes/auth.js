@@ -3,12 +3,22 @@ const router = express.Router();
 const jwt = require('jsonwebtoken');
 const db = require('../config/db');
 const { redis } = require('../config/redis');
+// A number whose account was deleted is held closed for a while before it can
+// be used again — see routes/account.js. Checked in BOTH otp endpoints: the
+// test-OTP path skips send-otp entirely, so guarding only there would leave
+// the hold trivially bypassable.
+const { phoneDeletionHold } = require('./account');
 
 // POST /api/auth/send-otp
 router.post('/send-otp', async (req, res) => {
   const { phone } = req.body;
   if (!phone || phone.length !== 10) return res.status(400).json({ error: 'Please enter a valid 10-digit phone number' });
   try {
+    const hold = await phoneDeletionHold(phone);
+    if (hold) return res.status(403).json({
+      error: `This number's account was deleted. You can create a new account with it in ${hold.days_left} day${hold.days_left === 1 ? '' : 's'}.`,
+      account_deleted: true, days_left: hold.days_left,
+    });
     const blocked = await redis.get('otp:block:' + phone);
     if (blocked) {
       const ttl = await redis.ttl('otp:block:' + phone);
@@ -46,6 +56,11 @@ router.post('/send-otp', async (req, res) => {
 router.post('/verify-otp', async (req, res) => {
   const { phone, otp, name } = req.body;
   try {
+    const hold = await phoneDeletionHold(phone);
+    if (hold) return res.status(403).json({
+      error: `This number's account was deleted. You can create a new account with it in ${hold.days_left} day${hold.days_left === 1 ? '' : 's'}.`,
+      account_deleted: true, days_left: hold.days_left,
+    });
     const blocked = await redis.get('otp:block:' + phone);
     if (blocked) {
       const ttl = await redis.ttl('otp:block:' + phone);

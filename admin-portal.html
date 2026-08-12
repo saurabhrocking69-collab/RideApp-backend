@@ -4214,7 +4214,7 @@ async function loadDeletionRequests(){
 }
 async function actionDeletion(id, action){
   var msg = action==='delete'
-    ? 'Permanently anonymise this account? Personal data is scrubbed and they can never sign in again. This cannot be undone.'
+    ? 'Delete this account? Personal data is scrubbed, and the number is held closed for 30 days before it can be used to sign up again. This cannot be undone.'
     : 'Reject this deletion request?';
   if(!confirm(msg)) return;
   var note = prompt(action==='delete' ? 'Note (optional)' : 'Reason shown to the user (optional)') || '';
