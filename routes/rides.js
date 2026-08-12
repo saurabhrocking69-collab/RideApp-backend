@@ -56,9 +56,17 @@ db.query('ALTER TABLE rides ADD COLUMN IF NOT EXISTS delivery_otp VARCHAR(4)').c
 db.query('ALTER TABLE rides ADD COLUMN IF NOT EXISTS delivery_confirmed_at TIMESTAMP').catch(() => {});
 db.query('ALTER TABLE rides ADD COLUMN IF NOT EXISTS receiver_name VARCHAR(100)').catch(() => {});
 db.query('ALTER TABLE rides ADD COLUMN IF NOT EXISTS receiver_phone VARCHAR(15)').catch(() => {});
+// The commission debt at which a driver gets WARNED. Deliberately not a block:
+// crossing it sends one notification asking them to clear it and saying an
+// account can be suspended or blocked, and that decision is then a human one,
+// taken by an admin from the panel. Nothing in this codebase has ever actually
+// stopped a driver at this number — the driver app used to CLAIM it did, which
+// was simply untrue and has been corrected.
+const COMMISSION_WARN_LIMIT = 300;
+
 // COD settlement — the driver collects cod_amount in cash from the receiver
 // on the sender's behalf. pending_cod is a second debt bucket parallel to
-// pending_commission (same ₹300+ block warning, same Razorpay pay-flow in
+// pending_commission (same ₹300+ warning, same Razorpay pay-flow in
 // routes/payments.js) — kept separate so a driver's "Commission Due" number
 // doesn't unexpectedly jump after a parcel and confuse them about why.
 db.query('ALTER TABLE driver_wallet ADD COLUMN IF NOT EXISTS pending_cod NUMERIC(10,2) DEFAULT 0').catch(() => {});
@@ -1333,7 +1341,22 @@ router.post('/cash-confirm', async (req, res) => {
           [commission, phone]
         );
         totalPending = parseFloat(walletRes.rows[0]?.pending_commission || 0);
-        sendFCM(phone, '💰 Commission Due', `₹${commission.toFixed(0)} commission due. Total pending: ₹${totalPending.toFixed(0)}. Pay in app.`, { type: 'commission_due', pending_commission: String(totalPending) }, { role: 'driver' }).catch(() => {});
+        // Nothing here blocks the driver, and nothing should. Crossing the
+        // limit sends a WARNING; whether an account is actually suspended or
+        // blocked stays a decision an admin makes by hand, from the panel.
+        //
+        // The warning fires only on the ride that CROSSES ₹300, not on every
+        // ride after it — a driver who owes ₹900 should not be told off three
+        // times a day, or they stop reading the notifications that matter.
+        const before = totalPending - commission;
+        const crossedLimit = before < COMMISSION_WARN_LIMIT && totalPending >= COMMISSION_WARN_LIMIT;
+        if (crossedLimit) {
+          sendFCM(phone, '⚠️ Commission Due — Please Clear It',
+            `You now owe ₹${totalPending.toFixed(0)} in commission. Please pay it in the app soon — accounts with unpaid commission can be suspended or blocked.`,
+            { type: 'commission_due', pending_commission: String(totalPending) }, { role: 'driver' }).catch(() => {});
+        } else {
+          sendFCM(phone, '💰 Commission Due', `₹${commission.toFixed(0)} commission due. Total pending: ₹${totalPending.toFixed(0)}. Pay in app.`, { type: 'commission_due', pending_commission: String(totalPending) }, { role: 'driver' }).catch(() => {});
+        }
       }
     }
     // Cashback for customer (cash/upi rides still earn ride-count cashbacks, not wallet bonus)
