@@ -209,16 +209,41 @@ async function anonymiseAccount(phone) {
   ).catch(() => {});
   // Phone is UNIQUE and is the login key, so it cannot simply be nulled — it is
   // replaced with a value that can never be dialled or re-registered.
-  const tombstone = `deleted_${uid}_${Date.now()}`;
+  // MUST fit users.phone, which is VARCHAR(15).
+  //
+  // This used to be `deleted_${uid}_${Date.now()}`. users.id is a UUID, so that
+  // string is 58 characters going into a 15-character column — every delete
+  // failed with "value too long for type character varying(15)", the request
+  // stayed pending, and the account was never touched. It had never once
+  // worked. Nobody noticed because the "Account deleted" push was sent BEFORE
+  // this line ran (fixed in admin.js), so the customer was told it was done
+  // while the admin's screen correctly showed it was not.
+  //
+  // 13 chars: 'd' + base36 milliseconds + 4 random. Nothing is lost by it being
+  // opaque — deleted_phones records which user this was, and that is where to
+  // look now.
+  const mkTombstone = () =>
+    ('d' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6)).slice(0, 15);
+  let tombstone = mkTombstone();
 
   // fcm_token / driver_fcm_token are columns on users, not a separate table —
   // clearing them here is what actually stops push reaching a deleted account.
-  await db.query(
-    `UPDATE users SET name = 'Deleted user', phone = $2, is_suspended = true,
-            suspend_reason = 'Account deleted at user request',
-            fcm_token = NULL, driver_fcm_token = NULL
-     WHERE id = $1`, [uid, tombstone]
-  );
+  // phone is UNIQUE, so a collision would throw and abort the deletion. Two
+  // extra tries costs nothing and removes the only way this can fail now.
+  for (let attempt = 0; ; attempt++) {
+    try {
+      await db.query(
+        `UPDATE users SET name = 'Deleted user', phone = $2, is_suspended = true,
+                suspend_reason = 'Account deleted at user request',
+                fcm_token = NULL, driver_fcm_token = NULL
+         WHERE id = $1`, [uid, tombstone]
+      );
+      break;
+    } catch (e) {
+      if (attempt >= 2) throw e;
+      tombstone = mkTombstone();
+    }
+  }
   await db.query(
     `UPDATE drivers SET dl_name = NULL, dl_number = NULL, dl_photo = NULL,
             aadhaar_number = NULL, aadhaar_photo = NULL, face_photo = NULL,

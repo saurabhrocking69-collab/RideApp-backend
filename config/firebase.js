@@ -22,18 +22,33 @@ try {
 // options.role      : 'driver' | 'customer' (default 'customer')
 //   driver  → reads driver_fcm_token, falls back to fcm_token for drivers who haven't re-logged
 //   customer→ reads fcm_token only
+/* Send to a token you already hold, with no user lookup.
+   Needed for exactly one case: telling someone their account has been deleted.
+   sendFCM finds the token by phone, and after a deletion there is no phone and
+   no token left to find — so the caller reads the token first, deletes, and
+   sends here only once the deletion has actually succeeded. Sending before,
+   which is what used to happen, told people their account was gone even when
+   the delete had failed. */
+async function sendToToken(token, title, body, data = {}, options = {}) {
+  if (!token) return;
+  return sendFCM(null, title, body, data, { ...options, _token: token });
+}
+
 async function sendFCM(phone, title, body, data = {}, options = {}) {
   const channelId = options.channelId || 'default';
   const role      = options.role || 'customer';
   const imageUrl  = options.imageUrl  || null;
   try {
-    const col  = role === 'driver'
-      ? 'COALESCE(driver_fcm_token, fcm_token)'
-      : 'fcm_token';
-    // Normalize: strip +91 or 91 prefix so DB lookup always uses 10-digit phone
-    const normalizedPhone = String(phone).replace(/^\+?91(\d{10})$/, '$1');
-    const user = await db.query(`SELECT ${col} AS fcm_token FROM users WHERE phone = $1`, [normalizedPhone]);
-    const token = user.rows[0]?.fcm_token;
+    let token = options._token || null;
+    if (!token) {
+      const col  = role === 'driver'
+        ? 'COALESCE(driver_fcm_token, fcm_token)'
+        : 'fcm_token';
+      // Normalize: strip +91 or 91 prefix so DB lookup always uses 10-digit phone
+      const normalizedPhone = String(phone).replace(/^\+?91(\d{10})$/, '$1');
+      const user = await db.query(`SELECT ${col} AS fcm_token FROM users WHERE phone = $1`, [normalizedPhone]);
+      token = user.rows[0]?.fcm_token;
+    }
     if (!token) { console.log('⚠️ No FCM token for', phone, `(role: ${role})`); return; }
 
     // ── Expo relay path (ExponentPushToken[xxx]) ────────────────────────────
@@ -116,4 +131,4 @@ async function sendFCM(phone, title, body, data = {}, options = {}) {
   }
 }
 
-module.exports = { sendFCM };
+module.exports = { sendFCM, sendToToken };

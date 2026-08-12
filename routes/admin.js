@@ -2,7 +2,7 @@ const express = require('express');
 const router = express.Router();
 const path = require('path');
 const db = require('../config/db');
-const { sendFCM } = require('../config/firebase');
+const { sendFCM, sendToToken } = require('../config/firebase');
 const { HOURLY_FARES, INTERCITY_FARES, PARCEL_FARES, PARCEL_SIZE_SURCHARGE, setSurge, getSurge } = require('../services/pricing');
 const { refundToWallet, creditDriverWallet } = require('../services/advance');
 const { getIO } = require('../config/socket');
@@ -2067,14 +2067,29 @@ router.post('/deletion-requests/action', async (req, res) => {
       return res.json({ success: true, status: 'rejected' });
     }
 
-    // Tell them BEFORE the phone number is tombstoned — afterwards there is no
-    // number left to send anything to.
-    await sendFCM(reqRow.user_phone, 'Account deleted',
-      'Your Sppero account and personal details have been deleted as requested.',
-      { type: 'account_deletion' }, { role: reqRow.role }).catch(() => {});
+    // The push used to be sent HERE, before the deletion, on the reasoning that
+    // afterwards there is no phone number left to look a token up by. True, but
+    // it meant a failed deletion still told the customer their account was
+    // gone — which is exactly what happened for every delete until the
+    // tombstone bug in account.js was fixed: "Account deleted" landed on their
+    // phone while the admin's screen showed the request still pending.
+    //
+    // The token is read first instead, and the message goes out only after the
+    // deletion has actually succeeded.
+    const tokRes = await db.query(
+      `SELECT COALESCE(driver_fcm_token, fcm_token) AS tok FROM users WHERE phone = $1`,
+      [reqRow.user_phone]
+    ).catch(() => ({ rows: [] }));
+    const savedToken = tokRes.rows[0]?.tok || null;
 
     const out = await anonymiseAccount(reqRow.user_phone);
     if (!out.ok) return res.status(404).json({ error: 'Account no longer exists' });
+
+    if (savedToken) {
+      sendToToken(savedToken, 'Account deleted',
+        'Your Sppero account and personal details have been deleted as requested.',
+        { type: 'account_deletion' }).catch(() => {});
+    }
 
     await db.query(
       `UPDATE account_deletion_requests
