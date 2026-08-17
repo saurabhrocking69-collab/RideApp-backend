@@ -143,10 +143,27 @@ const BATCH_DDL = [
 // earlier deploy) and periodically from healthCheck.
 async function recoverStrandedBatchOffers() {
   try {
+    /* Only offers that are genuinely stranded — never one still in flight.
+       This had no minimum age at all: it swept up EVERY 'batch_offered' ride
+       from the last 24 hours, including one created a second ago. The offer
+       window is 30s and this runs from the health monitor every 5 min, so
+       roughly one offer in ten would have been torn down while a driver was
+       looking at it, released back to 'requested' and re-dispatched — racing
+       that driver's own accept.
+
+       Age is measured on the BATCH's expiry, not the ride's created_at: a
+       batch partner can be up to 10 minutes older than the batch itself (the
+       compatibility window), so the ride's age says nothing about the offer's.
+       The extra minute past expiry is the margin that guarantees the
+       in-process timer has either fired or died with the process. */
     const stale = await db.query(
-      `SELECT DISTINCT batch_id FROM rides
-       WHERE status='batch_offered' AND batch_id IS NOT NULL
-         AND created_at > NOW() - INTERVAL '24 hours'`
+      `SELECT DISTINCT r.batch_id FROM rides r
+         JOIN ride_batches b ON b.id = r.batch_id
+       WHERE r.status='batch_offered' AND r.batch_id IS NOT NULL
+         AND b.status <> 'matched'
+         AND COALESCE(b.assignment_expires_at, b.created_at + INTERVAL '${BATCH_OFFER_WINDOW_SEC} seconds')
+             < NOW() - INTERVAL '60 seconds'
+         AND r.created_at > NOW() - INTERVAL '24 hours'`
     );
     if (!stale.rows.length) return 0;
     console.warn(`[batching] recovering ${stale.rows.length} stranded batch offer(s)`);

@@ -57,7 +57,7 @@ async function deletionBlockers(phone, role) {
   const ride = await db.query(
     `SELECT r.id FROM rides r
      JOIN users u ON (r.passenger_id::text = u.id::text OR r.driver_id::text = u.id::text)
-     WHERE u.phone = $1 AND r.status IN ('requested','matched','arrived','started')
+     WHERE u.phone = $1 AND r.status IN ('requested','matched','arrived','started','batch_offered')
      LIMIT 1`, [phone]
   ).catch(() => ({ rows: [] }));
   if (ride.rows[0]) blockers.push('A ride is still in progress. Finish or cancel it first.');

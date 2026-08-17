@@ -702,11 +702,28 @@ router.post('/cancel-smart', async (req, res) => {
     // driver cancel-rate/suspension below. (Previously this guard ran last,
     // so a duplicate request still double-counted those side effects even
     // though the actual re-cancellation itself was correctly blocked.)
+    // 'batch_offered' belongs here too. It is the status a parcel sits in for
+    // the 30s a paired offer is out to drivers, and leaving it out meant a
+    // customer trying to cancel in that window was told "Ride is already
+    // started, completed, or cancelled" — which was simply untrue, and left
+    // them with no way out of a parcel they had already paid for.
     const smartCancelRes = await db.query(
-      `UPDATE rides SET status = 'cancelled' WHERE id = $1 AND status IN ('requested', 'pre_assigned', 'matched', 'arrived') RETURNING id`,
+      `UPDATE rides SET status = 'cancelled' WHERE id = $1 AND status IN ('requested', 'pre_assigned', 'matched', 'arrived', 'batch_offered') RETURNING id, batch_id`,
       [ride_id]
     );
     if (!smartCancelRes.rows[0]) return res.json({ success: false, message: 'Ride is already started, completed, or cancelled' });
+
+    // Cancelling one leg has to take the offer down, or the batch stays out to
+    // drivers advertising a parcel that no longer exists — and the OTHER
+    // sender's parcel would sit in 'batch_offered' until the timer released
+    // it. expireBatchOffer only touches rows still in 'batch_offered', so the
+    // leg just cancelled above is left alone and the partner is released and
+    // re-dispatched normally.
+    const cancelledBatchId = smartCancelRes.rows[0].batch_id;
+    if (cancelledBatchId) {
+      const { expireBatchOffer } = require('../services/parcelBatching');
+      expireBatchOffer(cancelledBatchId).catch(e => console.error('[batching] cancel-release failed:', e.message));
+    }
 
     if (cancelled_by === 'customer') {
       const today = new Date().toISOString().split('T')[0];

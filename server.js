@@ -414,7 +414,10 @@ app.get('/debug/customer-status', debugAuth, async (req, res) => {
     );
     if (!u.rows[0]) return res.status(404).json({ error: 'User not found' });
     const activeRides = await db.query(
-      `SELECT id, status, ride_type, created_at FROM rides WHERE passenger_id=$1 AND status IN ('requested','matched','arrived','started') ORDER BY created_at DESC`,
+      // 'batch_offered' included: a parcel awaiting a paired driver offer is
+      // very much an active ride, and leaving it out made it invisible here —
+      // the one screen someone would look at to find out where it went.
+      `SELECT id, status, ride_type, created_at FROM rides WHERE passenger_id=$1 AND status IN ('requested','matched','arrived','started','batch_offered') ORDER BY created_at DESC`,
       [u.rows[0].id]
     );
     res.json({ user: u.rows[0], active_rides: activeRides.rows });
@@ -441,7 +444,10 @@ app.post('/debug/cancel-stuck-rides', debugAuth, async (req, res) => {
     const u = await db.query(`SELECT id FROM users WHERE phone=$1`, [phone]);
     if (!u.rows[0]) return res.status(404).json({ error: 'User not found' });
     const result = await db.query(
-      `UPDATE rides SET status='cancelled', cancelled_by='admin' WHERE passenger_id=$1 AND status IN ('requested','matched','arrived') RETURNING id, status, ride_type`,
+      // Without 'batch_offered' this recovery path could not clear a parcel
+      // stuck mid-offer — precisely the state someone would be calling support
+      // about.
+      `UPDATE rides SET status='cancelled', cancelled_by='admin' WHERE passenger_id=$1 AND status IN ('requested','matched','arrived','batch_offered') RETURNING id, status, ride_type`,
       [u.rows[0].id]
     );
     for (const row of result.rows) clearRideCache(row.id).catch(() => {});
