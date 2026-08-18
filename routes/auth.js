@@ -2,6 +2,8 @@ const express = require('express');
 const router = express.Router();
 const jwt = require('jsonwebtoken');
 const db = require('../config/db');
+const userAuth = require('../middleware/userAuth');
+const ownPhone = require('../middleware/ownPhone');
 const { redis } = require('../config/redis');
 // A number whose account was deleted is held closed for a while before it can
 // be used again — see routes/account.js. Checked in BOTH otp endpoints: the
@@ -135,6 +137,53 @@ router.post('/update-name', async (req, res) => {
     await db.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS gender VARCHAR(10)').catch(() => {});
     await db.query('UPDATE users SET name=$1, gender=$2 WHERE phone=$3', [name, gender || null, phone]);
     res.json({ success: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+/* The number a driver reaches you on, when you'd rather it not be your login
+   number. Optional; blank means the login number is used, exactly as before.
+   Resolution order lives in routes/call.js and routes/drivers.js:
+     ride.rider_phone  >  users.call_phone  >  users.phone
+
+   userAuth + ownPhone are NOT optional here. /update-name right below takes a
+   phone straight from the body with no auth at all, and adding this field to
+   that endpoint would have let anyone point another person's driver calls at a
+   number they control — a rider waiting for a call that a stranger answers.
+   A new endpoint can carry the check from day one without 403-ing the apps
+   already installed, which is why this is separate rather than folded in. */
+router.post('/call-phone', userAuth, ownPhone(), async (req, res) => {
+  const { phone, call_phone } = req.body;
+  try {
+    await db.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS call_phone VARCHAR(15)').catch(() => {});
+    const given = String(call_phone == null ? '' : call_phone).trim();
+    let raw = given.replace(/\D/g, '');
+    // People paste "+91 98765 43210" and "098765 43210" as often as they type
+    // ten bare digits. Drop a country/trunk prefix only when doing so leaves
+    // exactly ten — never a blind slice(-10), which would silently turn an
+    // 11-digit typo into a valid-looking number belonging to someone else.
+    if (raw.length === 12 && raw.startsWith('91')) raw = raw.slice(2);
+    else if (raw.length === 11 && raw.startsWith('0')) raw = raw.slice(1);
+
+    // Blank clears it. But "abc" also strips to blank, and treating that as a
+    // clear would silently wipe a number the user had already saved while they
+    // thought they were editing it — so only a genuinely empty input clears.
+    if (!given) {
+      await db.query('UPDATE users SET call_phone=NULL WHERE phone=$1', [phone]);
+      return res.json({ success: true, call_phone: null });
+    }
+    if (!/^[6-9][0-9]{9}$/.test(raw))
+      return res.status(400).json({ error: 'Enter a valid 10-digit mobile number' });
+    await db.query('UPDATE users SET call_phone=$1 WHERE phone=$2', [raw, phone]);
+    res.json({ success: true, call_phone: raw });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// GET /api/auth/call-phone — what's currently set (blank = login number is used)
+router.get('/call-phone', userAuth, ownPhone(), async (req, res) => {
+  try {
+    await db.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS call_phone VARCHAR(15)').catch(() => {});
+    const r = await db.query('SELECT call_phone FROM users WHERE phone=$1', [req.query.phone]);
+    res.json({ call_phone: r.rows[0]?.call_phone || null });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 

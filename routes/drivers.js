@@ -1,6 +1,10 @@
 const express = require('express');
 const router = express.Router();
 const db = require('../config/db');
+// Read by every active-ride query below (the rider's preferred call number).
+// Also ensured in config/runMigrations — belt and braces, because a missing
+// column here throws on a poll that runs every few seconds.
+db.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS call_phone VARCHAR(15)').catch(() => {});
 const cloudinary = require('../config/cloudinary');
 const { sendFCM } = require('../config/firebase');
 const { driverLocations, encodeGeohash, haversineKm, vehicleServesSql } = require('../services/matching');
@@ -136,7 +140,7 @@ router.get('/pending-ride', userAuth, ownPhone(), async (req, res) => {
 
     // Broadcast system: driver sees ride if phone in offered_phones OR directly assigned (favourite buddy)
     const assigned = await db.query(
-      `SELECT r.*, COALESCE(NULLIF(r.rider_name,''), p.name) AS passenger_name, COALESCE(NULLIF(r.rider_phone,''), p.phone) AS passenger_phone
+      `SELECT r.*, COALESCE(NULLIF(r.rider_name,''), p.name) AS passenger_name, COALESCE(NULLIF(r.rider_phone,''), NULLIF(p.call_phone,''), p.phone) AS passenger_phone
        FROM rides r JOIN users p ON r.passenger_id::text = p.id::text
        WHERE (
          $1 = ANY(COALESCE(r.offered_phones, '{}'))
@@ -167,7 +171,7 @@ router.get('/pending-ride', userAuth, ownPhone(), async (req, res) => {
     // can THIS vehicle serve.
     const vehicleType = dr.vehicle_type;
     const fallback = await db.query(
-      `SELECT r.*, COALESCE(NULLIF(r.rider_name,''), p.name) AS passenger_name, COALESCE(NULLIF(r.rider_phone,''), p.phone) AS passenger_phone FROM rides r JOIN users p ON r.passenger_id::text = p.id::text
+      `SELECT r.*, COALESCE(NULLIF(r.rider_name,''), p.name) AS passenger_name, COALESCE(NULLIF(r.rider_phone,''), NULLIF(p.call_phone,''), p.phone) AS passenger_phone FROM rides r JOIN users p ON r.passenger_id::text = p.id::text
        WHERE r.status='requested' AND r.driver_id IS NULL AND ${vehicleServesSql('$1', 'r.ride_type')}
          AND (r.assigned_to_phone IS NULL OR r.assignment_expires_at < NOW())
          AND r.created_at < NOW() - INTERVAL '2 minutes'
@@ -195,7 +199,7 @@ router.get('/active-ride', userAuth, ownPhone(), async (req, res) => {
   const { phone } = req.query;
   try {
     const result = await db.query(
-      `SELECT r.*, COALESCE(NULLIF(r.rider_name,''), p.name) AS passenger_name, COALESCE(NULLIF(r.rider_phone,''), p.phone) AS passenger_phone, d2.vehicle_no
+      `SELECT r.*, COALESCE(NULLIF(r.rider_name,''), p.name) AS passenger_name, COALESCE(NULLIF(r.rider_phone,''), NULLIF(p.call_phone,''), p.phone) AS passenger_phone, d2.vehicle_no
        FROM rides r JOIN users d ON r.driver_id = d.id LEFT JOIN users p ON r.passenger_id::text = p.id::text LEFT JOIN drivers d2 ON r.driver_id = d2.id
        WHERE d.phone = $1 AND r.status IN ('matched','arrived','started')
          AND r.parcel_parked_at IS NULL
