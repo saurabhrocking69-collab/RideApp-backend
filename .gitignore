@@ -1,3 +1,6 @@
 node_modules/
 .env
 rideapp-mobile/
+# Expo dev-server logs — start.log me poora loaded .env plaintext likha jaata hai
+# (FIREBASE_SERVICE_ACCOUNT ki private key samet). Kabhi commit na ho.
+.expo/

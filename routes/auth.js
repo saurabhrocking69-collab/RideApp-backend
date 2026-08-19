@@ -11,6 +11,26 @@ const { redis } = require('../config/redis');
 // the hold trivially bypassable.
 const { phoneDeletionHold } = require('./account');
 
+/* TEST OTP — deliberately narrow, because the wide version was a live account
+   takeover of the entire user base.
+
+   It used to be one switch, ALLOW_TEST_OTP=true, which did two things at once:
+   send-otp put the real OTP into its own RESPONSE BODY, and verify-otp accepted
+   '000000' for ANY number. That switch was on in production. Anyone who could
+   POST to a public endpoint could ask for a phone they did not own, read the
+   OTP straight out of the JSON, and log in as that person. Both apps sign in
+   through these two endpoints, so it covered riders and drivers alike —
+   wallets, ride history, earnings, saved addresses, and the ability to book or
+   accept rides in someone else's name.
+
+   Testing still needs a door, so one survives: it opens only for numbers named
+   in TEST_OTP_PHONES. Unset or empty means no bypass exists at all, and that is
+   what production should run with. ALLOW_TEST_OTP now grants nothing — leaving
+   it set somewhere can no longer reopen this. */
+const testPhones = () => String(process.env.TEST_OTP_PHONES || '')
+  .split(',').map(s => s.trim()).filter(s => /^[0-9]{10}$/.test(s));
+const isTestPhone = (phone) => testPhones().includes(String(phone || ''));
+
 // POST /api/auth/send-otp
 router.post('/send-otp', async (req, res) => {
   const { phone } = req.body;
@@ -35,19 +55,38 @@ router.post('/send-otp', async (req, res) => {
     await redis.setEx('otp:' + phone, 600, otp);
     await redis.setEx('otp:sent:' + phone, 30, '1');
     await redis.del('otp:attempts:' + phone);
-    // Fast2SMS integration (set FAST2SMS_API_KEY env var)
-    if (process.env.FAST2SMS_API_KEY) {
-      try {
-        await fetch('https://www.fast2sms.com/dev/bulkV2', {
-          method: 'POST',
-          headers: { authorization: process.env.FAST2SMS_API_KEY },
-          body: new URLSearchParams({ route: 'otp', variables_values: otp, flash: '0', numbers: phone }),
-        });
-      } catch (smsErr) { console.log('SMS send error:', smsErr.message); }
+    /* Delivery is reported honestly. This used to fire Fast2SMS, swallow any
+       error, and answer "OTP sent, success: true" regardless — including when
+       no provider was configured at all, in which case nothing was ever sent
+       and the person just watched a code that did not exist never arrive. */
+    if (isTestPhone(phone)) {
+      return res.json({ message: 'Test number — OTP returned here', success: true, otp });
+    }
+    if (!process.env.FAST2SMS_API_KEY) {
+      console.error('send-otp: no SMS provider configured (FAST2SMS_API_KEY unset)');
+      return res.status(503).json({ error: 'We cannot send SMS right now. Please try again shortly.' });
+    }
+    try {
+      const smsRes = await fetch('https://www.fast2sms.com/dev/bulkV2', {
+        method: 'POST',
+        headers: { authorization: process.env.FAST2SMS_API_KEY },
+        body: new URLSearchParams({ route: 'otp', variables_values: otp, flash: '0', numbers: phone }),
+      });
+      const body = await smsRes.json().catch(() => null);
+      // Fast2SMS answers 200 with { return: false } for a rejected send, so the
+      // status code on its own is not enough to call this delivered.
+      if (!smsRes.ok || (body && body.return === false)) {
+        console.error('send-otp: Fast2SMS rejected', smsRes.status, JSON.stringify(body || '').slice(0, 200));
+        await redis.del('otp:sent:' + phone);   // let them retry at once
+        return res.status(502).json({ error: 'Could not send the OTP. Please try again.' });
+      }
+    } catch (smsErr) {
+      console.error('send-otp: SMS send failed:', smsErr.message);
+      await redis.del('otp:sent:' + phone);
+      return res.status(502).json({ error: 'Could not send the OTP. Check your connection and try again.' });
     }
 
-    const testMode = process.env.ALLOW_TEST_OTP === 'true';
-    res.json({ message: 'OTP sent', success: true, ...(testMode ? { otp } : {}) });
+    res.json({ message: 'OTP sent', success: true });
   } catch (err) {
     console.error('send-otp error:', err.message);
     res.status(500).json({ error: 'Failed to send OTP. Please try again.' });
@@ -68,7 +107,7 @@ router.post('/verify-otp', async (req, res) => {
       const ttl = await redis.ttl('otp:block:' + phone);
       return res.status(429).json({ error: `Account blocked! Please try again in ${Math.ceil(ttl / 60)} min` });
     }
-    const isTestOtp = otp === '000000' && process.env.ALLOW_TEST_OTP === 'true';
+    const isTestOtp = otp === '000000' && isTestPhone(phone);
     const savedOtp = await redis.get('otp:' + phone);
     if (!savedOtp && !isTestOtp) return res.status(400).json({ error: 'OTP has expired! Please request a new one' });
     if (!isTestOtp && savedOtp !== otp) {
