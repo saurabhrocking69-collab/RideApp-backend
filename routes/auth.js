@@ -31,6 +31,42 @@ const testPhones = () => String(process.env.TEST_OTP_PHONES || '')
   .split(',').map(s => s.trim()).filter(s => /^[0-9]{10}$/.test(s));
 const isTestPhone = (phone) => testPhones().includes(String(phone || ''));
 
+/* One place that turns a PROVEN phone number into a logged-in session.
+   verify-otp and the Truecaller route both end here, so the account rules —
+   what counts as a new signup, when a partner may claim one, how a name is
+   allowed to change — cannot drift apart between the two ways in. The caller
+   is responsible for having actually proven the number first. */
+async function issueSession(phone, name, partnerCode) {
+  let user = await db.query('SELECT * FROM users WHERE phone = $1', [phone]);
+  const isNew = user.rows.length === 0;
+  if (isNew) {
+    user = await db.query("INSERT INTO users (phone, name, role) VALUES ($1, $2, 'passenger') RETURNING *", [phone, name || 'User']);
+    // Partner attribution, only ever on a genuinely NEW account. Attaching an
+    // existing rider to a partner would let anyone claim the whole existing
+    // user base by entering a code on a later login.
+    if (partnerCode) {
+      require('./partner')
+        .attributeSignup(user.rows[0].id, phone, 'passenger', partnerCode, 'code')
+        .catch(() => {});
+    }
+  } else if (name && name.trim() !== '' && name !== 'Rider') {
+    await db.query('UPDATE users SET name = $1 WHERE phone = $2', [name.trim(), phone]);
+    user.rows[0].name = name.trim();
+  }
+  const token = jwt.sign({ id: user.rows[0].id, phone }, process.env.JWT_SECRET, { expiresIn: '30d' });
+  return { token, user: user.rows[0], isNew };
+}
+
+/* Indian mobile numbers arrive from Truecaller as E.164 (+919876543210) and
+   from the apps as ten digits. Everything downstream — the users table, redis
+   keys, the driver's call button — assumes ten digits, so anything else is
+   rejected rather than stored in a shape nothing else understands. */
+function toTenDigit(raw) {
+  const d = String(raw || '').replace(/[^0-9]/g, '');
+  const ten = d.length > 10 && d.startsWith('91') ? d.slice(-10) : d;
+  return /^[6-9][0-9]{9}$/.test(ten) ? ten : null;
+}
+
 // POST /api/auth/send-otp
 router.post('/send-otp', async (req, res) => {
   const { phone } = req.body;
@@ -125,25 +161,8 @@ router.post('/verify-otp', async (req, res) => {
       await redis.del('otp:attempts:' + phone);
       await redis.del('otp:sent:' + phone);
     }
-    let user = await db.query('SELECT * FROM users WHERE phone = $1', [phone]);
-    if (user.rows.length === 0) {
-      user = await db.query("INSERT INTO users (phone, name, role) VALUES ($1, $2, 'passenger') RETURNING *", [phone, name || 'User']);
-      // Partner attribution, only ever on a genuinely NEW account. Attaching
-      // an existing rider to a partner would let anyone claim the whole
-      // existing user base by entering a code on a later login.
-      if (req.body.partner_code) {
-        require('./partner')
-          .attributeSignup(user.rows[0].id, phone, 'passenger', req.body.partner_code, 'code')
-          .catch(() => {});
-      }
-    } else {
-      if (name && name.trim() !== '' && name !== 'Rider') {
-        await db.query('UPDATE users SET name = $1 WHERE phone = $2', [name.trim(), phone]);
-        user.rows[0].name = name.trim();
-      }
-    }
-    const token = jwt.sign({ id: user.rows[0].id, phone }, process.env.JWT_SECRET, { expiresIn: '30d' });
-    res.json({ message: 'Login successful!', token, user: user.rows[0] });
+    const { token, user } = await issueSession(phone, name, req.body.partner_code);
+    res.json({ message: 'Login successful!', token, user });
   } catch (err) {
     console.error('verify-otp error:', err.message);
     res.status(500).json({ error: `Login error: ${err.message}` });
@@ -264,4 +283,80 @@ router.get('/check-status', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+
+/* ── POST /api/auth/truecaller ───────────────────────────────────────────
+   One-tap sign-in for the ~90% of Indian Android users who already have
+   Truecaller installed. It matters here for a reason beyond convenience: it
+   proves a number without sending an SMS at all, so it works even while no
+   SMS provider is configured, and it costs nothing per login.
+
+   The security rule is the whole point of doing this server-side. The app
+   sends an authorization code, NEVER a phone number. Only the number that
+   Truecaller's own profile API hands back is treated as proven. If the app
+   were allowed to say who it is, this endpoint would be a worse hole than the
+   test-OTP one it helps replace.
+
+   Endpoints are overridable because Truecaller routes EU and non-EU traffic to
+   different hosts; the defaults are the non-EU (India) pair. */
+const TC_TOKEN_URL = process.env.TRUECALLER_TOKEN_URL || 'https://oauth-account-noneu.truecaller.com/v1/token';
+const TC_USERINFO_URL = process.env.TRUECALLER_USERINFO_URL || 'https://oauth-account-noneu.truecaller.com/v1/userinfo';
+
+router.post('/truecaller', async (req, res) => {
+  const { authorizationCode, codeVerifier, partner_code } = req.body || {};
+  if (!process.env.TRUECALLER_CLIENT_ID) {
+    return res.status(503).json({ error: 'Truecaller sign-in is not set up yet.' });
+  }
+  if (!authorizationCode || !codeVerifier) {
+    return res.status(400).json({ error: 'Truecaller sign-in did not complete. Please use OTP.' });
+  }
+  try {
+    // 1. Code + verifier -> access token. PKCE, so there is no client secret.
+    const tokenRes = await fetch(TC_TOKEN_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        grant_type: 'authorization_code',
+        client_id: process.env.TRUECALLER_CLIENT_ID,
+        code: authorizationCode,
+        code_verifier: codeVerifier,
+      }),
+    });
+    const tokenBody = await tokenRes.json().catch(() => null);
+    if (!tokenRes.ok || !tokenBody || !tokenBody.access_token) {
+      console.error('truecaller: token exchange failed', tokenRes.status, JSON.stringify(tokenBody || '').slice(0, 200));
+      return res.status(401).json({ error: 'Could not verify with Truecaller. Please use OTP.' });
+    }
+
+    // 2. The only source of the phone number we will trust.
+    const infoRes = await fetch(TC_USERINFO_URL, {
+      headers: { Authorization: `Bearer ${tokenBody.access_token}` },
+    });
+    const profile = await infoRes.json().catch(() => null);
+    if (!infoRes.ok || !profile) {
+      console.error('truecaller: userinfo failed', infoRes.status);
+      return res.status(401).json({ error: 'Could not read your Truecaller profile. Please use OTP.' });
+    }
+
+    const phone = toTenDigit(profile.phone_number || profile.phoneNumber);
+    if (!phone) {
+      console.error('truecaller: unusable phone in profile');
+      return res.status(400).json({ error: 'Truecaller did not return an Indian mobile number. Please use OTP.' });
+    }
+
+    // The same closed-account hold the OTP path enforces. Skipping it here
+    // would make Truecaller the way around a deletion.
+    const hold = await phoneDeletionHold(phone);
+    if (hold) return res.status(403).json({
+      error: `This number's account was deleted. You can create a new account with it in ${hold.days_left} day${hold.days_left === 1 ? '' : 's'}.`,
+      account_deleted: true, days_left: hold.days_left,
+    });
+
+    const name = [profile.given_name, profile.family_name].filter(Boolean).join(' ').trim();
+    const { token, user, isNew } = await issueSession(phone, name, partner_code);
+    res.json({ message: 'Login successful!', token, user, phone, is_new: isNew, via: 'truecaller' });
+  } catch (err) {
+    console.error('truecaller error:', err.message);
+    res.status(500).json({ error: 'Sign-in failed. Please use OTP.' });
+  }
+});
 module.exports = router;
