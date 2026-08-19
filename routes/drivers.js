@@ -572,8 +572,17 @@ router.post('/commission-pay-verify', userAuth, ownPhone(), async (req, res) => 
     );
     const remaining = await db.query(`SELECT COALESCE(pending_commission, 0) as pc FROM driver_wallet w JOIN users u ON w.driver_id = u.id WHERE u.phone = $1`, [phone]);
     const remainingTotal = parseFloat(remaining.rows[0]?.pc || 0);
+    /* The wallet total and the individual rows have to agree. If this UPDATE
+       is lost, pending_commission reads 0 while the rows behind it still say
+       cash_owed, and the driver's own screen shows a list of debts adding up
+       to more than it says is due — with nothing anywhere recording why.
+       The payment itself has already gone through, so this must not fail the
+       request; it must, however, be findable. Swallowing it silently is what
+       turns a one-row repair into an unexplained ledger drift nobody can
+       trace back to a moment. */
     if (remainingTotal <= 0)
-      await db.query(`UPDATE driver_commissions SET status = 'settled' WHERE driver_phone = $1 AND status = 'cash_owed'`, [phone]).catch(() => {});
+      await db.query(`UPDATE driver_commissions SET status = 'settled' WHERE driver_phone = $1 AND status = 'cash_owed'`, [phone])
+        .catch(e => console.error(`[drivers] LEDGER DRIFT: commission rows for ${phone} not marked settled after payment ${razorpay_payment_id}:`, e.message));
     sendFCM(phone, '✅ Commission Paid!', `₹${amount.toFixed(0)} cleared. You can now accept new rides!`, { type: 'commission_cleared' }, { role: 'driver' }).catch(() => {});
     res.json({ success: true, message: 'Payment successful!', pending_commission: remainingTotal });
   } catch (err) { console.error('[drivers]', err.message); res.status(500).json({ error: 'Something went wrong — please try again' }); }

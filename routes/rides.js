@@ -1,5 +1,7 @@
 const express = require('express');
 const router = express.Router();
+const userAuth = require('../middleware/userAuth');
+const ownPhone = require('../middleware/ownPhone');
 const db = require('../config/db');
 const { sendFCM } = require('../config/firebase');
 const { emitToRoom } = require('../config/socket');
@@ -151,7 +153,7 @@ async function processCashback(userId, phone, rideId, fare, paymentMethod) {
 }
 
 // POST /api/rides/book
-router.post('/book', async (req, res) => {
+router.post('/book', userAuth, ownPhone('passenger_phone'), async (req, res) => {
   const { passenger_phone, pickup, drop_location, ride_type, pickup_lat, pickup_lng, drop_lat, drop_lng, discount, promo_code, route_polyline, route_type, rider_name, rider_phone, pickup_landmark, drop_note } = req.body;
   console.log(`[rides] 📥 book request: phone=${passenger_phone} type=${ride_type}`);
   if (!passenger_phone || String(passenger_phone).length !== 10) return res.status(400).json({ error: 'Valid phone do' });
@@ -362,7 +364,7 @@ router.get('/status/:rideId', async (req, res) => {
 });
 
 // POST /api/rides/accept
-router.post('/accept', async (req, res) => {
+router.post('/accept', userAuth, ownPhone('driver_phone'), async (req, res) => {
   const { ride_id, driver_phone } = req.body;
   if (!ride_id || !driver_phone) return res.status(400).json({ success: false, message: 'ride_id and driver_phone required' });
   try {
@@ -471,7 +473,7 @@ router.post('/accept', async (req, res) => {
 // POST /api/rides/reject-offer
 // In broadcast system: driver dismisses the popup. Broadcast window keeps running for other drivers.
 // Just track the rejection so this driver won't see the ride again.
-router.post('/reject-offer', async (req, res) => {
+router.post('/reject-offer', userAuth, ownPhone('driver_phone'), async (req, res) => {
   const { ride_id, driver_phone } = req.body;
   try {
     // Add to rejected_phones so pending-ride won't show it again to this driver
@@ -507,7 +509,7 @@ router.post('/reject-offer', async (req, res) => {
 });
 
 // POST /api/rides/arrived
-router.post('/arrived', async (req, res) => {
+router.post('/arrived', userAuth, ownPhone('driver_phone'), async (req, res) => {
   const { ride_id, driver_phone, driver_lat, driver_lng } = req.body;
   if (!driver_phone) return res.status(400).json({ error: 'driver_phone required' });
   try {
@@ -570,7 +572,7 @@ router.post('/arrived', async (req, res) => {
 });
 
 // POST /api/rides/start
-router.post('/start', async (req, res) => {
+router.post('/start', userAuth, ownPhone('driver_phone'), async (req, res) => {
   const { ride_id, otp, driver_phone } = req.body;
   if (!driver_phone) return res.status(400).json({ success: false, message: 'driver_phone required' });
   try {
@@ -666,7 +668,7 @@ router.get('/cancel-info/:ride_id', async (req, res) => {
 });
 
 // POST /api/rides/cancel-smart
-router.post('/cancel-smart', async (req, res) => {
+router.post('/cancel-smart', userAuth, ownPhone(), async (req, res) => {
   const { ride_id, cancelled_by, reason, phone } = req.body;
   try {
     const cs = await getCancelSettings();
@@ -682,6 +684,15 @@ router.post('/cancel-smart', async (req, res) => {
     );
     if (rideRes.rows.length === 0) return res.json({ success: false, message: 'Ride not found' });
     const ride = rideRes.rows[0];
+    /* ownPhone proved the number in the body belongs to the caller. This proves
+       the caller has anything to do with THIS ride. Without it a logged-in
+       account could cancel any stranger's trip by passing its id — charging
+       them a cancellation fee, stranding them, and marking a driver's trip
+       dead mid-journey. */
+    const norm = v => String(v || '').replace(/\D/g, '').slice(-10);
+    const me = norm(req.user.phone);
+    if (me !== norm(ride.passenger_phone) && me !== norm(ride.driver_phone))
+      return res.status(403).json({ error: 'This is not your ride' });
     const secondsAfterBook = Math.round(ride.seconds_since_book || 0);
     const secDriverWaited  = ride.arrived_at ? Math.max(0, Math.round(ride.seconds_driver_waited || 0)) : 0;
     let penalty = 0;
@@ -866,7 +877,7 @@ router.post('/cancel-smart', async (req, res) => {
 // The trip ends immediately, but the money (advance) is HELD, not auto-refunded:
 // admin decides the penalty/refund within 2 days (a mid-trip cancel could be a
 // genuine emergency or an abuse, so a human adjudicates).
-router.post('/report-cancel', async (req, res) => {
+router.post('/report-cancel', userAuth, ownPhone(), async (req, res) => {
   const { ride_id, phone, reason } = req.body;
   try {
     const r = await db.query(
@@ -907,7 +918,7 @@ router.post('/report-cancel', async (req, res) => {
 // POST /api/rides/complete
 // Accepts optional driver_lat/driver_lng for early-completion detection.
 // If driver is >300m from drop point, marks early_completion=true and logs an incident.
-router.post('/complete', async (req, res) => {
+router.post('/complete', userAuth, ownPhone('driver_phone'), async (req, res) => {
   const { ride_id, driver_phone, driver_lat, driver_lng, delivery_otp } = req.body;
   try {
     const rideRow = await db.query(
@@ -1996,7 +2007,7 @@ router.get('/track-info/:rideId', async (req, res) => {
 });
 
 // POST /api/rides/pre-accept — driver accepts a pre-assignment offer
-router.post('/pre-accept', async (req, res) => {
+router.post('/pre-accept', userAuth, ownPhone(), async (req, res) => {
   const { ride_id, phone } = req.body;
   if (!ride_id || !phone) return res.status(400).json({ error: 'ride_id and phone required' });
   try {
@@ -2018,7 +2029,7 @@ router.post('/pre-accept', async (req, res) => {
 });
 
 // POST /api/rides/pre-decline — driver declines a pre-assignment offer
-router.post('/pre-decline', async (req, res) => {
+router.post('/pre-decline', userAuth, ownPhone(), async (req, res) => {
   const { ride_id, phone } = req.body;
   if (!ride_id || !phone) return res.status(400).json({ error: 'ride_id and phone required' });
   try {
