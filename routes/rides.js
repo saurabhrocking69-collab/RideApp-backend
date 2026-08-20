@@ -3,6 +3,7 @@ const router = express.Router();
 const userAuth = require('../middleware/userAuth');
 const ownPhone = require('../middleware/ownPhone');
 const { creditDriverWallet } = require('../services/advance');
+const { resolvePromoDiscount } = require('./promo');
 // Highest tip the rating screen can offer is ₹50; the cap sits above it so a
 // future button does not silently start failing, but far below anything that
 // would matter if this endpoint is ever hit directly.
@@ -257,14 +258,33 @@ router.post('/book', async (req, res) => {
     const riderNameVal  = (rider_name  || '').trim() || null;
     const riderPhoneVal = /^[0-9]{10}$/.test(String(rider_phone || '').trim()) ? String(rider_phone).trim() : null;
 
+    /* What the promo is actually worth, decided here rather than accepted from
+       the request. `discount` used to go straight from the body into the
+       column, and net fare is `fare - discount`, so a request carrying
+       `discount: 5000` on a ₹200 ride produced a free ride — no check that the
+       code existed, was live, was allowed for this rider, or was worth
+       anything near that. The rules already existed in /api/promo/validate;
+       booking simply never asked.
+
+       Resolved against the fare the SERVER just computed, not the one the app
+       thinks it is, so a percentage code cannot be stretched by understating
+       the ride either. Capped by what was requested as well, so this can only
+       ever reduce a discount, never invent one. */
+    const promoResolved = await resolvePromoDiscount(promo_code, fare, passenger_phone);
+    const askedDiscount = Math.max(0, parseFloat(discount) || 0);
+    const finalDiscount = Math.min(askedDiscount, promoResolved.discount);
+    if (askedDiscount > finalDiscount) {
+      console.warn(`[rides] discount trimmed ${askedDiscount} -> ${finalDiscount} for ${passenger_phone} code=${promo_code || 'none'} (${promoResolved.reason || 'worth less'})`);
+    }
+
     // Surge is NOT applied at booking — it's offered to customer only after no driver accepts
     const ride = await db.query(
       `INSERT INTO rides (passenger_id, pickup, drop_location, ride_type, fare, status, pickup_lat, pickup_lng, drop_lat, drop_lng, discount, promo_code, distance_km, platform_fee, route_polyline, route_type, advance_amount, advance_status, advance_order_id, advance_payment_id, rider_name, rider_phone)
        VALUES ($1, $2, $3, $4, $5, 'requested', $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21) RETURNING *`,
-      [passenger.rows[0].id, pickup, drop_location, ride_type, fare, pickup_lat || null, pickup_lng || null, drop_lat || null, drop_lng || null, discount || 0, promo_code || null, distance, platFee, route_polyline || null, route_type || null, advanceAmount, advanceAmount > 0 ? 'paid' : 'none', advanceOrderId, advancePaymentId, riderNameVal, riderPhoneVal]
+      [passenger.rows[0].id, pickup, drop_location, ride_type, fare, pickup_lat || null, pickup_lng || null, drop_lat || null, drop_lng || null, finalDiscount, promo_code || null, distance, platFee, route_polyline || null, route_type || null, advanceAmount, advanceAmount > 0 ? 'paid' : 'none', advanceOrderId, advancePaymentId, riderNameVal, riderPhoneVal]
     );
 
-    const disc = discount || 0;
+    const disc = finalDiscount;
     const netFare = Math.max(0, fare - disc);
     const _rideId = ride.rows[0].id, _pLat = pickup_lat || null, _pLng = pickup_lng || null;
     console.log(`[rides] ✅ booked ride=${_rideId} type=${ride_type} phone=${passenger_phone}`);
