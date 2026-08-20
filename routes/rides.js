@@ -2,12 +2,7 @@ const express = require('express');
 const router = express.Router();
 const userAuth = require('../middleware/userAuth');
 const ownPhone = require('../middleware/ownPhone');
-const { creditDriverWallet } = require('../services/advance');
 const { resolvePromoDiscount } = require('./promo');
-// Highest tip the rating screen can offer is ₹50; the cap sits above it so a
-// future button does not silently start failing, but far below anything that
-// would matter if this endpoint is ever hit directly.
-const MAX_TIP = 100;
 const db = require('../config/db');
 const { sendFCM } = require('../config/firebase');
 const { emitToRoom } = require('../config/socket');
@@ -1504,7 +1499,11 @@ router.post('/payment-not-received', async (req, res) => {
 
 // POST /api/rides/rate
 router.post('/rate', async (req, res) => {
-  const { ride_id, rating, review, tip } = req.body;
+  /* `tip` is still accepted off the body and deliberately ignored. Installed
+     apps that have not taken the update yet keep sending it, and rejecting the
+     whole request over a field we no longer honour would cost those riders
+     their rating too. */
+  const { ride_id, rating, review } = req.body;
   try {
     await db.query(`UPDATE rides SET rating = $1, review = $2 WHERE id = $3`, [rating, review || null, ride_id]);
     const rideData = await db.query(`SELECT driver_id FROM rides WHERE id = $1`, [ride_id]);
@@ -1514,34 +1513,20 @@ router.post('/rate', async (req, res) => {
         [rideData.rows[0].driver_id]
       );
     }
-    /* TIP.
-       Two things were wrong with the one line that used to be here.
+    /* TIPPING IS GONE — removed 2026-08-20, deliberately and not as a bug fix.
 
-       It took whatever number the body carried. This endpoint has no auth, so
-       anyone could POST a ride id with tip: 999999 and inflate a driver's
-       balance to something they could then withdraw through /driver/payout.
-       The amount is now an integer bounded by what the app can actually offer.
+       The rating screen offered ₹10/20/50 and this endpoint credited it to the
+       driver's wallet, from where it could be withdrawn. Nothing ever charged
+       the rider: no wallet debit, nothing added to the cash or UPI they handed
+       over. So every tip paid a driver with money the platform had never
+       collected, and Sppero covered the difference on every single one.
 
-       And it wrote the balance directly, going around creditDriverWallet, so
-       the tip never reached driver_transactions — the driver's balance moved
-       with no line in their statement saying why. It goes through the ledger
-       now, like every other credit.
+       Capping the amount only slowed that down. The feature could not stay
+       until the rider is actually charged, so it comes out.
 
-       STILL OPEN, and it needs a decision rather than a patch: the rider is
-       never charged for this. Nothing debits their wallet and nothing is added
-       to what they pay in cash or UPI, so every tip credits a driver with
-       money the platform never collected. Capping it limits the bleeding; it
-       does not stop it. Either the tip has to be taken from the rider at the
-       same moment, or the option should come off the rating screen. */
-    const tipAmt = Math.floor(Number(tip) || 0);
-    if (tipAmt > 0 && rideData.rows[0]?.driver_id) {
-      if (tipAmt > MAX_TIP) {
-        console.error(`[rides] tip of ${tipAmt} rejected on ride ${ride_id} — above the ₹${MAX_TIP} cap`);
-      } else {
-        const drv = await db.query('SELECT phone FROM users WHERE id = $1', [rideData.rows[0].driver_id]);
-        if (drv.rows[0]?.phone) await creditDriverWallet(null, drv.rows[0].phone, tipAmt, 'Tip from rider', ride_id);
-      }
-    }
+       Tips already credited are left alone. That money is in drivers' wallets
+       and some of it has been paid out; taking it back after the fact would be
+       the wrong way to fix a mistake that was never theirs. */
     res.json({ success: true });
   } catch (err) { console.error('[rides]', err.message); res.status(500).json({ error: 'Something went wrong — please try again' }); }
 });
