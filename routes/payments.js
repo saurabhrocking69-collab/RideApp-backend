@@ -13,11 +13,30 @@ router.post('/create-order', async (req, res) => {
   if (!razorpay)
     return res.status(500).json({ success: false, error: 'Payment gateway not configured — please contact admin' });
   const { amount, ride_id } = req.body;
-  if (!amount || amount < 1)
-    return res.status(400).json({ success: false, error: 'Valid amount required' });
+  if (!ride_id) return res.status(400).json({ success: false, error: 'ride_id required' });
   try {
+    /* What this ride actually costs, read from the ride — not taken from the
+       request. The amount used to come straight from the body, so a request
+       asking for ₹1 on a ₹500 trip produced a ₹1 order, and the signature
+       check on /verify then passed happily: it only proves that order was
+       paid, never that the order was for the right sum.
+
+       Same arithmetic the app shows (`fare - discount`), and rides.fare is the
+       recalculated fare by this point — /complete writes it back through
+       transitionRide's extraFields — so the rider is charged exactly what
+       their screen said. */
+    const r = await db.query('SELECT fare, discount FROM rides WHERE id = $1', [ride_id]);
+    if (!r.rows[0]) return res.status(404).json({ success: false, error: 'Ride not found' });
+    const due = Math.max(0, Math.round(parseFloat(r.rows[0].fare || 0) - parseFloat(r.rows[0].discount || 0)));
+    if (due < 1) return res.status(400).json({ success: false, error: 'Nothing to pay on this ride' });
+
+    const asked = Math.round(parseFloat(amount) || 0);
+    if (asked && asked !== due) {
+      console.warn(`[payment] create-order asked ₹${asked} but ride ${ride_id} is ₹${due} — charging ₹${due}`);
+    }
+
     const receipt = ('ride_' + String(ride_id)).substring(0, 40);
-    const order = await razorpay.orders.create({ amount: Math.round(amount * 100), currency: 'INR', receipt });
+    const order = await razorpay.orders.create({ amount: due * 100, currency: 'INR', receipt });
     res.json({ success: true, order_id: order.id, amount: order.amount, key_id: process.env.RAZORPAY_KEY_ID });
   } catch (err) { res.status(500).json({ success: false, error: err.message }); }
 });
@@ -38,9 +57,16 @@ router.post('/verify', async (req, res) => {
       if (expected !== razorpay_signature)
         return res.status(400).json({ success: false, error: 'Invalid payment signature' });
     }
+    /* The recorded amount comes from the ride too. It used to be whatever the
+       body said, so the payments table could disagree with what was actually
+       charged — which is the one place you would go to find that out. */
+    const rr = await db.query('SELECT fare, discount FROM rides WHERE id = $1', [ride_id]);
+    const paid = rr.rows[0]
+      ? Math.max(0, Math.round(parseFloat(rr.rows[0].fare || 0) - parseFloat(rr.rows[0].discount || 0)))
+      : Math.round(parseFloat(amount) || 0);
     await db.query(
       "INSERT INTO payments (ride_id, amount, method, status) VALUES ($1,$2,$3,'completed') ON CONFLICT DO NOTHING",
-      [ride_id, amount, method || 'online']
+      [ride_id, paid, method || 'online']
     );
     res.json({ success: true, message: 'Payment verified!' });
   } catch (err) { res.status(500).json({ success: false, error: err.message }); }
