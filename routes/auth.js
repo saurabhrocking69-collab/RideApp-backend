@@ -301,10 +301,34 @@ router.get('/check-status', async (req, res) => {
 const TC_TOKEN_URL = process.env.TRUECALLER_TOKEN_URL || 'https://oauth-account-noneu.truecaller.com/v1/token';
 const TC_USERINFO_URL = process.env.TRUECALLER_USERINFO_URL || 'https://oauth-account-noneu.truecaller.com/v1/userinfo';
 
+/* Truecaller issues a separate credential per Android package, so the two apps
+   have two different client ids. The token exchange has to use the SAME one
+   that produced the authorization code, so the app tells us which it used and
+   we check it against the ids we actually know — anything else is refused
+   rather than forwarded. A client id is not a secret (it ships inside the APK
+   and PKCE is what makes that safe), so the check is about sending the right
+   one, not about guarding it.
+   TRUECALLER_CLIENT_ID stays supported as a single-app fallback. */
+const tcClients = () => ({
+  customer: process.env.TRUECALLER_CLIENT_ID_CUSTOMER || process.env.TRUECALLER_CLIENT_ID || '',
+  driver:   process.env.TRUECALLER_CLIENT_ID_DRIVER   || process.env.TRUECALLER_CLIENT_ID || '',
+});
+
 router.post('/truecaller', async (req, res) => {
-  const { authorizationCode, codeVerifier, partner_code } = req.body || {};
-  if (!process.env.TRUECALLER_CLIENT_ID) {
+  const { authorizationCode, codeVerifier, partner_code, client_id, role } = req.body || {};
+  const known = tcClients();
+  if (!known.customer && !known.driver) {
     return res.status(503).json({ error: 'Truecaller sign-in is not set up yet.' });
+  }
+  // Prefer the id the app names; fall back to its role; then to whichever is
+  // configured. Never fall back to "some other app's id" — that exchange would
+  // fail at Truecaller anyway, just with a far less obvious error.
+  const clientId = client_id
+    ? (Object.values(known).includes(client_id) ? client_id : null)
+    : (role === 'driver' ? known.driver : known.customer);
+  if (!clientId) {
+    console.error('[truecaller] unrecognised client_id from app');
+    return res.status(400).json({ error: 'Truecaller sign-in could not be verified. Please use OTP.' });
   }
   if (!authorizationCode || !codeVerifier) {
     return res.status(400).json({ error: 'Truecaller sign-in did not complete. Please use OTP.' });
@@ -316,7 +340,7 @@ router.post('/truecaller', async (req, res) => {
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
       body: new URLSearchParams({
         grant_type: 'authorization_code',
-        client_id: process.env.TRUECALLER_CLIENT_ID,
+        client_id: clientId,
         code: authorizationCode,
         code_verifier: codeVerifier,
       }),
