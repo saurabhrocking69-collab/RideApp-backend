@@ -32,10 +32,11 @@ const testPhones = () => String(process.env.TEST_OTP_PHONES || '')
 const isTestPhone = (phone) => testPhones().includes(String(phone || ''));
 
 /* One place that turns a PROVEN phone number into a logged-in session.
-   verify-otp and the Truecaller route both end here, so the account rules —
-   what counts as a new signup, when a partner may claim one, how a name is
-   allowed to change — cannot drift apart between the two ways in. The caller
-   is responsible for having actually proven the number first. */
+   Only verify-otp uses it today, but it stays factored out on purpose: the
+   account rules — what counts as a new signup, when a partner may claim one,
+   how a name is allowed to change — must not get copied into whatever second
+   way in gets added next, because copies drift. The caller is responsible for
+   having actually proven the number first; this does not check anything. */
 async function issueSession(phone, name, partnerCode) {
   let user = await db.query('SELECT * FROM users WHERE phone = $1', [phone]);
   const isNew = user.rows.length === 0;
@@ -55,16 +56,6 @@ async function issueSession(phone, name, partnerCode) {
   }
   const token = jwt.sign({ id: user.rows[0].id, phone }, process.env.JWT_SECRET, { expiresIn: '30d' });
   return { token, user: user.rows[0], isNew };
-}
-
-/* Indian mobile numbers arrive from Truecaller as E.164 (+919876543210) and
-   from the apps as ten digits. Everything downstream — the users table, redis
-   keys, the driver's call button — assumes ten digits, so anything else is
-   rejected rather than stored in a shape nothing else understands. */
-function toTenDigit(raw) {
-  const d = String(raw || '').replace(/[^0-9]/g, '');
-  const ten = d.length > 10 && d.startsWith('91') ? d.slice(-10) : d;
-  return /^[6-9][0-9]{9}$/.test(ten) ? ten : null;
 }
 
 // POST /api/auth/send-otp
@@ -283,104 +274,4 @@ router.get('/check-status', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-
-/* ── POST /api/auth/truecaller ───────────────────────────────────────────
-   One-tap sign-in for the ~90% of Indian Android users who already have
-   Truecaller installed. It matters here for a reason beyond convenience: it
-   proves a number without sending an SMS at all, so it works even while no
-   SMS provider is configured, and it costs nothing per login.
-
-   The security rule is the whole point of doing this server-side. The app
-   sends an authorization code, NEVER a phone number. Only the number that
-   Truecaller's own profile API hands back is treated as proven. If the app
-   were allowed to say who it is, this endpoint would be a worse hole than the
-   test-OTP one it helps replace.
-
-   Endpoints are overridable because Truecaller routes EU and non-EU traffic to
-   different hosts; the defaults are the non-EU (India) pair. */
-const TC_TOKEN_URL = process.env.TRUECALLER_TOKEN_URL || 'https://oauth-account-noneu.truecaller.com/v1/token';
-const TC_USERINFO_URL = process.env.TRUECALLER_USERINFO_URL || 'https://oauth-account-noneu.truecaller.com/v1/userinfo';
-
-/* Truecaller issues a separate credential per Android package, so the two apps
-   have two different client ids. The token exchange has to use the SAME one
-   that produced the authorization code, so the app tells us which it used and
-   we check it against the ids we actually know — anything else is refused
-   rather than forwarded. A client id is not a secret (it ships inside the APK
-   and PKCE is what makes that safe), so the check is about sending the right
-   one, not about guarding it.
-   TRUECALLER_CLIENT_ID stays supported as a single-app fallback. */
-const tcClients = () => ({
-  customer: process.env.TRUECALLER_CLIENT_ID_CUSTOMER || process.env.TRUECALLER_CLIENT_ID || '',
-  driver:   process.env.TRUECALLER_CLIENT_ID_DRIVER   || process.env.TRUECALLER_CLIENT_ID || '',
-});
-
-router.post('/truecaller', async (req, res) => {
-  const { authorizationCode, codeVerifier, partner_code, client_id, role } = req.body || {};
-  const known = tcClients();
-  if (!known.customer && !known.driver) {
-    return res.status(503).json({ error: 'Truecaller sign-in is not set up yet.' });
-  }
-  // Prefer the id the app names; fall back to its role; then to whichever is
-  // configured. Never fall back to "some other app's id" — that exchange would
-  // fail at Truecaller anyway, just with a far less obvious error.
-  const clientId = client_id
-    ? (Object.values(known).includes(client_id) ? client_id : null)
-    : (role === 'driver' ? known.driver : known.customer);
-  if (!clientId) {
-    console.error('[truecaller] unrecognised client_id from app');
-    return res.status(400).json({ error: 'Truecaller sign-in could not be verified. Please use OTP.' });
-  }
-  if (!authorizationCode || !codeVerifier) {
-    return res.status(400).json({ error: 'Truecaller sign-in did not complete. Please use OTP.' });
-  }
-  try {
-    // 1. Code + verifier -> access token. PKCE, so there is no client secret.
-    const tokenRes = await fetch(TC_TOKEN_URL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: new URLSearchParams({
-        grant_type: 'authorization_code',
-        client_id: clientId,
-        code: authorizationCode,
-        code_verifier: codeVerifier,
-      }),
-    });
-    const tokenBody = await tokenRes.json().catch(() => null);
-    if (!tokenRes.ok || !tokenBody || !tokenBody.access_token) {
-      console.error('truecaller: token exchange failed', tokenRes.status, JSON.stringify(tokenBody || '').slice(0, 200));
-      return res.status(401).json({ error: 'Could not verify with Truecaller. Please use OTP.' });
-    }
-
-    // 2. The only source of the phone number we will trust.
-    const infoRes = await fetch(TC_USERINFO_URL, {
-      headers: { Authorization: `Bearer ${tokenBody.access_token}` },
-    });
-    const profile = await infoRes.json().catch(() => null);
-    if (!infoRes.ok || !profile) {
-      console.error('truecaller: userinfo failed', infoRes.status);
-      return res.status(401).json({ error: 'Could not read your Truecaller profile. Please use OTP.' });
-    }
-
-    const phone = toTenDigit(profile.phone_number || profile.phoneNumber);
-    if (!phone) {
-      console.error('truecaller: unusable phone in profile');
-      return res.status(400).json({ error: 'Truecaller did not return an Indian mobile number. Please use OTP.' });
-    }
-
-    // The same closed-account hold the OTP path enforces. Skipping it here
-    // would make Truecaller the way around a deletion.
-    const hold = await phoneDeletionHold(phone);
-    if (hold) return res.status(403).json({
-      error: `This number's account was deleted. You can create a new account with it in ${hold.days_left} day${hold.days_left === 1 ? '' : 's'}.`,
-      account_deleted: true, days_left: hold.days_left,
-    });
-
-    const name = [profile.given_name, profile.family_name].filter(Boolean).join(' ').trim();
-    const { token, user, isNew } = await issueSession(phone, name, partner_code);
-    res.json({ message: 'Login successful!', token, user, phone, is_new: isNew, via: 'truecaller' });
-  } catch (err) {
-    console.error('truecaller error:', err.message);
-    res.status(500).json({ error: 'Sign-in failed. Please use OTP.' });
-  }
-});
 module.exports = router;
