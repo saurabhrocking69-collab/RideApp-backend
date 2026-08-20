@@ -17,6 +17,16 @@ db.query('ALTER TABLE rides ADD COLUMN IF NOT EXISTS advance_amount NUMERIC DEFA
 db.query("ALTER TABLE rides ADD COLUMN IF NOT EXISTS advance_status TEXT DEFAULT 'none'").catch(() => {});
 db.query('ALTER TABLE rides ADD COLUMN IF NOT EXISTS advance_order_id TEXT').catch(() => {});
 db.query('ALTER TABLE rides ADD COLUMN IF NOT EXISTS advance_payment_id TEXT').catch(() => {});
+/* One paid advance backs exactly one ride. Without this a rider could pay a
+   single advance and attach the same order_id to booking after booking — the
+   verify step only ever asked whether the order was paid, never whether it had
+   already been spent. The index is the guard that actually holds, because two
+   simultaneous bookings racing on the same order cannot both insert.
+   If this ever fails to build, rides already share an order id and that is
+   worth knowing loudly rather than swallowing. */
+db.query(`CREATE UNIQUE INDEX IF NOT EXISTS rides_advance_order_id_uniq
+            ON rides (advance_order_id) WHERE advance_order_id IS NOT NULL`)
+  .catch(e => console.error('[advance] advance_order_id unique index NOT created — check for rides already sharing one:', e.message));
 
 // Emergency mid-trip cancellations → funds held, admin adjudicates within 2 days.
 db.query(`
@@ -114,7 +124,7 @@ function requiresAdvance(fare) {
 
 // Verify a Razorpay payment signature + that the order was actually paid, and
 // return the authoritative amount (rupees) captured — never trust the client.
-async function verifyAdvancePayment({ order_id, payment_id, signature }) {
+async function verifyAdvancePayment({ order_id, payment_id, signature, expectAtLeast = 0 }) {
   if (!order_id || !payment_id || !signature) return { ok: false, error: 'Missing advance payment fields' };
   const expected = crypto.createHmac('sha256', process.env.RAZORPAY_KEY_SECRET)
     .update(`${order_id}|${payment_id}`).digest('hex');
@@ -122,7 +132,33 @@ async function verifyAdvancePayment({ order_id, payment_id, signature }) {
   try {
     const order = await razorpay.orders.fetch(order_id);
     if (order.status !== 'paid') return { ok: false, error: 'Advance not captured yet' };
-    return { ok: true, amount: order.amount / 100 };
+    const paid = order.amount / 100;
+
+    /* Is it ENOUGH? This used to stop at "an order was paid" and hand the
+       amount back unchecked. /api/advance/order builds the order from a fare
+       the CLIENT states, so someone could ask for an order on a ₹3,001 trip
+       (advance ₹1,000), pay that, and then book a ride the server prices at
+       ₹20,000 — where the advance owed is ₹6,667 — and the booking went
+       through on the ₹1,000. The caller passes what it actually expects, and
+       the amount is measured against that. */
+    if (expectAtLeast > 0 && paid + 1 < expectAtLeast) {
+      return {
+        ok: false,
+        error: `This trip needs an advance of ₹${Math.round(expectAtLeast)} — ₹${Math.round(paid)} was paid`,
+        amount: paid, required: Math.round(expectAtLeast),
+      };
+    }
+
+    /* Has it been spent already? Nothing checked, and advance_order_id had no
+       unique index, so one paid advance could be attached to ride after ride:
+       pay ₹1,000 once and keep booking high-value trips with the same
+       order/payment/signature. The index below is the real guard (it is atomic,
+       so two simultaneous bookings cannot both win); this lookup exists to give
+       a person a sentence they can understand instead of a constraint error. */
+    const used = await db.query('SELECT 1 FROM rides WHERE advance_order_id = $1 LIMIT 1', [order_id]);
+    if (used.rows[0]) return { ok: false, error: 'That advance payment has already been used for another booking' };
+
+    return { ok: true, amount: paid };
   } catch (_e) {
     return { ok: false, error: 'Could not verify advance payment' };
   }
@@ -131,7 +167,7 @@ async function verifyAdvancePayment({ order_id, payment_id, signature }) {
 // Verify a Razorpay payment for the FULL amount (no advance fraction) — used
 // by parcel booking-time escrow payment. Same signature/capture verification
 // as verifyAdvancePayment, just without the 1/3 math.
-async function verifyOnlinePayment({ order_id, payment_id, signature }) {
+async function verifyOnlinePayment({ order_id, payment_id, signature, expectAtLeast = 0 }) {
   if (!order_id || !payment_id || !signature) return { ok: false, error: 'Missing payment fields' };
   const expected = crypto.createHmac('sha256', process.env.RAZORPAY_KEY_SECRET)
     .update(`${order_id}|${payment_id}`).digest('hex');
@@ -139,7 +175,19 @@ async function verifyOnlinePayment({ order_id, payment_id, signature }) {
   try {
     const order = await razorpay.orders.fetch(order_id);
     if (order.status !== 'paid') return { ok: false, error: 'Payment not captured yet' };
-    return { ok: true, amount: order.amount / 100 };
+    const paid = order.amount / 100;
+    // Same two gaps as the advance path: was it enough, and was it already
+    // spent on another booking. See verifyAdvancePayment for the detail.
+    if (expectAtLeast > 0 && paid + 1 < expectAtLeast) {
+      return {
+        ok: false,
+        error: `This booking needs ₹${Math.round(expectAtLeast)} — ₹${Math.round(paid)} was paid`,
+        amount: paid, required: Math.round(expectAtLeast),
+      };
+    }
+    const used = await db.query('SELECT 1 FROM rides WHERE advance_order_id = $1 LIMIT 1', [order_id]);
+    if (used.rows[0]) return { ok: false, error: 'That payment has already been used for another booking' };
+    return { ok: true, amount: paid };
   } catch (_e) {
     return { ok: false, error: 'Could not verify payment' };
   }

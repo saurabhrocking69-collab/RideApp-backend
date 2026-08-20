@@ -5,7 +5,7 @@ const db      = require('../config/db');
 const { sendFCM } = require('../config/firebase');
 const { INTERCITY_FARES, calculateIntercityFare } = require('../services/pricing');
 const { rideQueue, assignRideToNextDriver } = require('../workers/rideWorker');
-const { requiresAdvance, verifyAdvancePayment } = require('../services/advance');
+const { requiresAdvance, advanceForFare, verifyAdvancePayment } = require('../services/advance');
 
 // ── Idempotent schema additions ───────────────────────────────────────────────
 db.query('ALTER TABLE rides ADD COLUMN IF NOT EXISTS is_intercity BOOLEAN DEFAULT FALSE').catch(() => {});
@@ -125,7 +125,11 @@ router.post('/book', async (req, res) => {
     let advanceAmount = 0, advanceOrderId = null, advancePaymentId = null;
     if (requiresAdvance(fare)) {
       const adv = req.body.advance || {};
-      const v = await verifyAdvancePayment({ order_id: adv.order_id, payment_id: adv.payment_id, signature: adv.signature });
+      // Measured against the fare THIS server computed, not the app's estimate.
+      const v = await verifyAdvancePayment({
+        order_id: adv.order_id, payment_id: adv.payment_id, signature: adv.signature,
+        expectAtLeast: advanceForFare(fare),
+      });
       if (!v.ok) return res.status(402).json({ error: v.error || 'Advance payment required', advance_required: true, advance_amount: Math.round(fare / 3) });
       advanceAmount = v.amount; advanceOrderId = adv.order_id; advancePaymentId = adv.payment_id;
     }

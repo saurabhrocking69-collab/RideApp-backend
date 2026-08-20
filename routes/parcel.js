@@ -421,6 +421,10 @@ router.post('/book', userAuth, async (req, res) => {
     // ── Collect the full fare upfront, before the ride exists — held in
     //    escrow (payment_status='escrowed') and released to the driver's
     //    wallet automatically on delivery (rides.js /complete). ────────────
+    // Set only on the online branch — a wallet debit has no Razorpay order to
+    // spend twice, so there is nothing to record against.
+    let paidOrderId = null, paidPaymentId = null;
+
     if (paymentMethod === 'wallet') {
       await client.query('BEGIN');
       const walletRes = await client.query('SELECT balance FROM customer_wallet WHERE user_id=$1 FOR UPDATE', [passenger.id]);
@@ -432,9 +436,13 @@ router.post('/book', userAuth, async (req, res) => {
       await client.query('UPDATE customer_wallet SET balance = balance - $1, updated_at = NOW() WHERE user_id = $2', [fare, passenger.id]);
       await client.query("INSERT INTO transactions (user_id, type, amount, description) VALUES ($1,'debit',$2,'Parcel delivery payment')", [passenger.id, fare]);
     } else {
-      const v = await verifyOnlinePayment({ order_id: payment.order_id, payment_id: payment.payment_id, signature: payment.signature });
+      const v = await verifyOnlinePayment({
+        order_id: payment.order_id, payment_id: payment.payment_id, signature: payment.signature,
+        expectAtLeast: fare,
+      });
       if (!v.ok || Math.round(v.amount) < Math.round(fare))
         { client.release(); return res.status(402).json({ error: v.error || 'Payment verification failed' }); }
+      paidOrderId = payment.order_id; paidPaymentId = payment.payment_id;
       await client.query('BEGIN');
       // Record the payment in the sender's history even though it never
       // touched their wallet balance (paid card/UPI direct to Razorpay).
@@ -454,8 +462,16 @@ router.post('/book', userAuth, async (req, res) => {
           pickup_lat, pickup_lng, drop_lat, drop_lng,
           discount, promo_code, distance_km, platform_fee,
           receiver_name, receiver_phone, payment_status, payment_method,
-          drop_building, drop_floor, drop_landmark, drop_note)
-       VALUES ($1,$2,$3,$4,$5,'requested',true,$6,$7,$8,$9,$10,$11,$12,$13,$14,0,$15,$16,'escrowed',$17,$18,$19,$20,$21)
+          drop_building, drop_floor, drop_landmark, drop_note,
+          /* The Razorpay order that paid for this parcel. It was verified and
+             then thrown away, so nothing recorded which order had been spent —
+             and the same paid order could be presented again on the next
+             booking. Stored here because rides.advance_order_id carries a
+             UNIQUE index (services/advance.js), which is what actually stops
+             the second use. The column is only ever written, never read as
+             "this ride had an advance", so an escrow order sits in it safely. */
+          advance_order_id, advance_payment_id)
+       VALUES ($1,$2,$3,$4,$5,'requested',true,$6,$7,$8,$9,$10,$11,$12,$13,$14,0,$15,$16,'escrowed',$17,$18,$19,$20,$21,$22,$23)
        RETURNING *`,
       [
         passenger.id, pickup, drop_location, vehicle_type, fare,
@@ -468,6 +484,7 @@ router.post('/book', userAuth, async (req, res) => {
         (drop_floor    || '').trim().slice(0, 40) || null,
         (drop_landmark || '').trim().slice(0, 80) || null,
         (drop_note     || '').trim().slice(0, 140) || null,
+        paidOrderId, paidPaymentId,
       ]
     );
     await client.query('COMMIT');

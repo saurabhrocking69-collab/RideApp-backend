@@ -19,7 +19,7 @@ const { accruePartnerEarnings } = require('./partner');
 const { getSurgeMultiplier } = require('../services/locationIntelligence');
 const { calculateFare, getISTHour } = require('../services/pricing');
 const { useSubscriptionIfActive } = require('../services/subscription');
-const { requiresAdvance, verifyAdvancePayment, refundToWallet, logDriverTxn } = require('../services/advance');
+const { requiresAdvance, advanceForFare, verifyAdvancePayment, refundToWallet, logDriverTxn } = require('../services/advance');
 const { isGreen, co2SavedGrams, co2Equivalent, greenFactors } = require('../services/green');
 const { shortRideId } = require('../services/rideId');
 const { recordSuccessfulPickup, recordSuccessfulDrop, landmarkFor } = require('../services/pickupPoints');
@@ -242,7 +242,12 @@ router.post('/book', async (req, res) => {
     let advanceAmount = 0, advanceOrderId = null, advancePaymentId = null;
     if (requiresAdvance(fare)) {
       const adv = req.body.advance || {};
-      const v = await verifyAdvancePayment({ order_id: adv.order_id, payment_id: adv.payment_id, signature: adv.signature });
+      // expectAtLeast is measured against the fare THIS server just computed,
+      // not the estimate the app asked the advance order for.
+      const v = await verifyAdvancePayment({
+        order_id: adv.order_id, payment_id: adv.payment_id, signature: adv.signature,
+        expectAtLeast: advanceForFare(fare),
+      });
       if (!v.ok) return res.status(402).json({ error: v.error || 'Advance payment required', advance_required: true, advance_amount: Math.round(fare / 3) });
       advanceAmount = v.amount; advanceOrderId = adv.order_id; advancePaymentId = adv.payment_id;
     }
