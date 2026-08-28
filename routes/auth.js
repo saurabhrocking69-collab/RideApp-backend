@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const jwt = require('jsonwebtoken');
+const axios = require('axios');
 const db = require('../config/db');
 const userAuth = require('../middleware/userAuth');
 const ownPhone = require('../middleware/ownPhone');
@@ -37,7 +38,36 @@ const isTestPhone = (phone) => testPhones().includes(String(phone || ''));
    how a name is allowed to change — must not get copied into whatever second
    way in gets added next, because copies drift. The caller is responsible for
    having actually proven the number first; this does not check anything. */
+/* A phone that was only claimed, taken by somebody who can prove it.
+
+   A Google signup types a number; it does not demonstrate holding the handset.
+   An OTP does. So if this number is sitting on an account that never proved it
+   (phone_verified = false) and somebody now arrives having read the code sent
+   to it, the prover is the owner and the claim loses.
+
+   The claiming account is NOT handed over. It may have rides and a wallet
+   behind it, and giving those to a different person because they proved a
+   phone number would be its own kind of theft. Its phone is released instead -
+   rewritten to something no signup can collide with - and it keeps everything
+   it had. Its owner still signs in through Google, and is asked for a number
+   again, because the one they typed was not theirs.
+
+   Costs one extra SELECT on a path that runs once per login. */
+async function releaseClaimedPhone(phone) {
+  const held = await db.query(
+    'SELECT id, google_sub, phone_verified FROM users WHERE phone = $1', [phone]);
+  if (!held.rows.length) return false;
+  const u = held.rows[0];
+  if (u.phone_verified !== false) return false;   // proved, or an old account: leave it alone
+  // Not ten digits, so no future signup can ever be handed this string, and
+  // the Google route reads it as "this account still needs a number".
+  await db.query('UPDATE users SET phone = $1 WHERE id = $2', ['released:' + u.id, u.id]);
+  console.warn('[auth] phone ' + phone + ' released from unproven account ' + u.id + ' — proved by OTP');
+  return true;
+}
+
 async function issueSession(phone, name, partnerCode) {
+  await releaseClaimedPhone(phone);
   let user = await db.query('SELECT * FROM users WHERE phone = $1', [phone]);
   const isNew = user.rows.length === 0;
   if (isNew) {
@@ -272,6 +302,183 @@ router.get('/check-status', async (req, res) => {
     }
     res.json({ status: 'ok', admin_message: u.admin_message });
   } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+/* ══ GOOGLE SIGN-IN ═══════════════════════════════════════════════════════
+
+   Why this exists: there is no SMS provider on production, so send-otp has
+   nothing to send and nobody new can get in at all. This is a second door.
+
+   What it does NOT do, and this is the whole design: it does not let anybody
+   into an account that already exists. Google proves an email; it does not
+   prove a phone number, and in this app the phone IS the identity - it is what
+   the driver rings at the pickup point. A flow that let somebody sign in with
+   Google, type a stranger's number and land in their account would be a worse
+   version of the OTP takeover that was closed in August, because it would not
+   even need an OTP.
+
+   So the rule is narrow and it is enforced below: a Google signup may only
+   take a phone number that NO account holds. If the number is taken, it is
+   refused - no merging, no "claiming", no exceptions. Two accounts belonging
+   to the same person is a nuisance the shop can fix; one account belonging to
+   the wrong person is not.
+
+   And every number that arrives this way is written down as unproven
+   (phone_verified = false), because it was typed, not demonstrated. When SMS
+   comes back, that flag is what tells the two apart. */
+
+const GOOGLE_AUDS = () => String(process.env.GOOGLE_CLIENT_IDS || process.env.GOOGLE_CLIENT_ID || '')
+  .split(',').map(s => s.trim()).filter(Boolean);
+
+/* Verified with Google, not with the phone that sent it.
+
+   The client hands over an ID token. Anyone can post anything to this route,
+   so the token is checked against Google's own endpoint and the audience is
+   checked against OUR client ids - a valid Google token minted for somebody
+   else's app is still a valid Google token, and without the aud check it would
+   be accepted here. */
+async function verifyGoogleToken(idToken) {
+  const auds = GOOGLE_AUDS();
+  if (!auds.length) throw new Error('Google sign-in is not configured on the server.');
+  /* axios, not fetch. fetch is only global from Node 18, and the deployed
+     runtime here is not pinned anywhere - no engines field, no Dockerfile. A
+     sign-in route that throws ReferenceError on the host is a worse bug than a
+     dependency, and axios is already in this project. */
+  let t;
+  try {
+    const r = await axios.get('https://oauth2.googleapis.com/tokeninfo',
+      { params: { id_token: idToken }, timeout: 10000 });
+    t = r.data || {};
+  } catch (_e) {
+    throw new Error('That Google sign-in could not be verified.');
+  }
+  if (!t.sub) throw new Error('That Google sign-in could not be verified.');
+  if (!auds.includes(String(t.aud))) throw new Error('That Google sign-in was not issued for this app.');
+  // Google's own word on whether the address is real. A Google account with an
+  // unverified email is not proof of anything.
+  if (String(t.email_verified) !== 'true') throw new Error('That Google account has no verified email.');
+  return { sub: String(t.sub), email: String(t.email || '').toLowerCase(), name: String(t.name || '').trim() };
+}
+
+/* A short-lived ticket instead of trusting the client's second request.
+
+   Signup is two steps - Google, then the phone - and the second step must not
+   simply believe a `sub` posted to it, or anybody could claim any Google
+   identity by typing its id. The ticket is signed by us, carries what Google
+   told us, and dies in ten minutes. */
+const googleTicket = (g) => jwt.sign(
+  { gsub: g.sub, email: g.email, gname: g.name, kind: 'gsignup' },
+  process.env.JWT_SECRET, { expiresIn: '10m' });
+
+// POST /api/auth/google  { idToken, partner_code? }
+router.post('/google', async (req, res) => {
+  try {
+    const g = await verifyGoogleToken(String(req.body.idToken || ''));
+
+    const found = await db.query('SELECT * FROM users WHERE google_sub = $1', [g.sub]);
+    if (found.rows.length) {
+      const u = found.rows[0];
+      // The email can change on Google's side; the sub cannot. Keep ours current.
+      if (g.email && g.email !== u.email) {
+        await db.query('UPDATE users SET email = $1 WHERE id = $2', [g.email, u.id]);
+        u.email = g.email;
+      }
+      /* Their number may have been released to somebody who proved it by
+         OTP - see releaseClaimedPhone. Then this account has no usable phone
+         and cannot be ridden with, so ask for one before letting them in
+         rather than handing back a session with a dead number in it. */
+      if (!/^[0-9]{10}$/.test(String(u.phone || ''))) {
+        return res.json({
+          needPhone: true, ticket: googleTicket(g), email: g.email, name: u.name || g.name,
+          reason: 'phone_released',
+        });
+      }
+      const token = jwt.sign({ id: u.id, phone: u.phone }, process.env.JWT_SECRET, { expiresIn: '30d' });
+      return res.json({ token, user: u, isNew: false });
+    }
+
+    /* Nobody yet. We cannot make an account without a phone - the column is
+       NOT NULL and the driver has to be able to ring somebody. So the app is
+       told to ask for one, and given a ticket to come back with. */
+    res.json({
+      needPhone: true,
+      ticket: googleTicket(g),
+      email: g.email,
+      name: g.name,
+    });
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+// POST /api/auth/google/phone  { ticket, phone, name?, partner_code? }
+router.post('/google/phone', async (req, res) => {
+  try {
+    let t;
+    try { t = jwt.verify(String(req.body.ticket || ''), process.env.JWT_SECRET); }
+    catch (_e) { return res.status(401).json({ error: 'That sign-in took too long. Please try again.' }); }
+    if (t.kind !== 'gsignup' || !t.gsub) return res.status(401).json({ error: 'Please sign in with Google again.' });
+
+    const phone = String(req.body.phone || '').replace(/\D/g, '');
+    if (phone.length !== 10) return res.status(400).json({ error: 'Please enter a valid 10-digit phone number' });
+
+    // Same hold a normal signup faces - a deleted number is closed to
+    // everybody, and going around it through this door would make the hold a
+    // formality.
+    const hold = await phoneDeletionHold(phone);
+    if (hold) return res.status(403).json({
+      error: `This number's account was deleted. You can create a new account with it in ${hold.days_left} day${hold.days_left === 1 ? '' : 's'}.`,
+      account_deleted: true, days_left: hold.days_left,
+    });
+
+    /* THE line. A Google sign-in has proved an email and nothing else, so it
+       may only take a number that nobody holds. Refusing here is what stops
+       this door from being a way into somebody else's account. */
+    const taken = await db.query('SELECT id FROM users WHERE phone = $1', [phone]);
+    if (taken.rows.length) return res.status(409).json({
+      error: 'That number already has an account. Sign in with the number instead — Google cannot prove a phone number belongs to you.',
+      phone_taken: true,
+    });
+
+    /* Already known to us: either a repeat submit, or an account whose number
+       was released to somebody who proved it. Give the number to the account
+       they already have - a second account for the same Google identity would
+       split their rides in half. */
+    const already = await db.query('SELECT * FROM users WHERE google_sub = $1', [t.gsub]);
+    if (already.rows.length) {
+      const u = already.rows[0];
+      if (!/^[0-9]{10}$/.test(String(u.phone || ''))) {
+        const upd = await db.query(
+          'UPDATE users SET phone = $1, phone_verified = FALSE WHERE id = $2 RETURNING *', [phone, u.id]);
+        const fixed = upd.rows[0];
+        const tok = jwt.sign({ id: fixed.id, phone }, process.env.JWT_SECRET, { expiresIn: '30d' });
+        return res.json({ token: tok, user: fixed, isNew: false });
+      }
+      const token = jwt.sign({ id: u.id, phone: u.phone }, process.env.JWT_SECRET, { expiresIn: '30d' });
+      return res.json({ token, user: u, isNew: false });
+    }
+
+    const name = String(req.body.name || t.gname || 'User').trim().slice(0, 60) || 'User';
+    const ins = await db.query(
+      `INSERT INTO users (phone, name, role, google_sub, email, phone_verified)
+       VALUES ($1, $2, 'passenger', $3, $4, FALSE) RETURNING *`,
+      [phone, name, t.gsub, t.email || null]);
+    const u = ins.rows[0];
+
+    if (req.body.partner_code) {
+      require('./partner')
+        .attributeSignup(u.id, phone, 'passenger', req.body.partner_code, 'code')
+        .catch(() => {});
+    }
+
+    const token = jwt.sign({ id: u.id, phone }, process.env.JWT_SECRET, { expiresIn: '30d' });
+    res.json({ token, user: u, isNew: true });
+  } catch (err) {
+    // A racing insert on the unique index lands here rather than as a 500.
+    if (String(err.message || '').includes('users_phone_key'))
+      return res.status(409).json({ error: 'That number already has an account.', phone_taken: true });
+    res.status(500).json({ error: err.message });
+  }
 });
 
 module.exports = router;
