@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const userAuth = require('../middleware/userAuth');
 const ownPhone = require('../middleware/ownPhone');
+const { rideParty, extParty } = require('../middleware/rideParty');
 const { resolvePromoDiscount } = require('./promo');
 const db = require('../config/db');
 const { sendFCM } = require('../config/firebase');
@@ -154,7 +155,7 @@ async function processCashback(userId, phone, rideId, fare, paymentMethod) {
 }
 
 // POST /api/rides/book
-router.post('/book', async (req, res) => {
+router.post('/book', userAuth, ownPhone('passenger_phone'), async (req, res) => {
   const { passenger_phone, pickup, drop_location, ride_type, pickup_lat, pickup_lng, drop_lat, drop_lng, discount, promo_code, route_polyline, route_type, rider_name, rider_phone, pickup_landmark, drop_note } = req.body;
   console.log(`[rides] 📥 book request: phone=${passenger_phone} type=${ride_type}`);
   if (!passenger_phone || String(passenger_phone).length !== 10) return res.status(400).json({ error: 'Valid phone do' });
@@ -325,7 +326,7 @@ router.get('/surge-check', async (req, res) => {
 });
 
 // POST /api/rides/:id/driver-location — driver posts live GPS during active ride
-router.post('/:id/driver-location', async (req, res) => {
+router.post('/:id/driver-location', userAuth, ownPhone('phone'), async (req, res) => {
   const { lat, lng, phone } = req.body;
   const rideId = req.params.id;
   if (!lat || !lng) return res.status(400).json({ error: 'lat lng required' });
@@ -344,7 +345,7 @@ router.post('/:id/driver-location', async (req, res) => {
 
 // GET /api/rides/status/:rideId
 // Reads status from Redis (fast) — falls back to Postgres for full row
-router.get('/status/:rideId', async (req, res) => {
+router.get('/status/:rideId', userAuth, rideParty('rideId'), async (req, res) => {
   if (!req.params.rideId || req.params.rideId === 'undefined' || req.params.rideId === 'null')
     return res.status(400).json({ error: 'Invalid ride ID' });
   try {
@@ -389,7 +390,7 @@ router.get('/status/:rideId', async (req, res) => {
 });
 
 // POST /api/rides/accept
-router.post('/accept', async (req, res) => {
+router.post('/accept', userAuth, ownPhone('driver_phone'), async (req, res) => {
   const { ride_id, driver_phone } = req.body;
   if (!ride_id || !driver_phone) return res.status(400).json({ success: false, message: 'ride_id and driver_phone required' });
   try {
@@ -498,7 +499,7 @@ router.post('/accept', async (req, res) => {
 // POST /api/rides/reject-offer
 // In broadcast system: driver dismisses the popup. Broadcast window keeps running for other drivers.
 // Just track the rejection so this driver won't see the ride again.
-router.post('/reject-offer', async (req, res) => {
+router.post('/reject-offer', userAuth, ownPhone('driver_phone'), async (req, res) => {
   const { ride_id, driver_phone } = req.body;
   try {
     // Add to rejected_phones so pending-ride won't show it again to this driver
@@ -534,7 +535,7 @@ router.post('/reject-offer', async (req, res) => {
 });
 
 // POST /api/rides/arrived
-router.post('/arrived', async (req, res) => {
+router.post('/arrived', userAuth, ownPhone('driver_phone'), async (req, res) => {
   const { ride_id, driver_phone, driver_lat, driver_lng } = req.body;
   if (!driver_phone) return res.status(400).json({ error: 'driver_phone required' });
   try {
@@ -597,7 +598,7 @@ router.post('/arrived', async (req, res) => {
 });
 
 // POST /api/rides/start
-router.post('/start', async (req, res) => {
+router.post('/start', userAuth, ownPhone('driver_phone'), async (req, res) => {
   const { ride_id, otp, driver_phone } = req.body;
   if (!driver_phone) return res.status(400).json({ success: false, message: 'driver_phone required' });
   try {
@@ -634,7 +635,7 @@ async function getCancelSettings() {
 }
 
 // GET /api/rides/cancel-info/:ride_id — live cancellation fee + wait fare for a ride
-router.get('/cancel-info/:ride_id', async (req, res) => {
+router.get('/cancel-info/:ride_id', userAuth, rideParty('ride_id'), async (req, res) => {
   if (!req.params.ride_id || req.params.ride_id === 'undefined' || req.params.ride_id === 'null')
     return res.status(400).json({ error: 'Invalid ride ID' });
   try {
@@ -693,7 +694,7 @@ router.get('/cancel-info/:ride_id', async (req, res) => {
 });
 
 // POST /api/rides/cancel-smart
-router.post('/cancel-smart', async (req, res) => {
+router.post('/cancel-smart', userAuth, ownPhone('phone'), async (req, res) => {
   const { ride_id, cancelled_by, reason, phone } = req.body;
   try {
     const cs = await getCancelSettings();
@@ -893,7 +894,7 @@ router.post('/cancel-smart', async (req, res) => {
 // The trip ends immediately, but the money (advance) is HELD, not auto-refunded:
 // admin decides the penalty/refund within 2 days (a mid-trip cancel could be a
 // genuine emergency or an abuse, so a human adjudicates).
-router.post('/report-cancel', async (req, res) => {
+router.post('/report-cancel', userAuth, ownPhone('phone'), async (req, res) => {
   const { ride_id, phone, reason } = req.body;
   try {
     const r = await db.query(
@@ -934,7 +935,7 @@ router.post('/report-cancel', async (req, res) => {
 // POST /api/rides/complete
 // Accepts optional driver_lat/driver_lng for early-completion detection.
 // If driver is >300m from drop point, marks early_completion=true and logs an incident.
-router.post('/complete', async (req, res) => {
+router.post('/complete', userAuth, ownPhone('driver_phone'), async (req, res) => {
   const { ride_id, driver_phone, driver_lat, driver_lng, delivery_otp } = req.body;
   try {
     const rideRow = await db.query(
@@ -1310,7 +1311,7 @@ async function completeRidePayment({ ride_id, payment_method, phone }) {
 }
 
 // POST /api/rides/payment-complete
-router.post('/payment-complete', async (req, res) => {
+router.post('/payment-complete', userAuth, rideParty('ride_id'), async (req, res) => {
   try {
     const result = await completeRidePayment(req.body);
     res.json(result);
@@ -1318,7 +1319,7 @@ router.post('/payment-complete', async (req, res) => {
 });
 
 // POST /api/rides/cash-confirm
-router.post('/cash-confirm', async (req, res) => {
+router.post('/cash-confirm', userAuth, ownPhone('phone'), async (req, res) => {
   const { ride_id, phone, payment_method } = req.body;
   const method = payment_method === 'upi_direct' ? 'upi' : 'cash';
   try {
@@ -1434,7 +1435,7 @@ router.post('/cash-confirm', async (req, res) => {
 // POST /api/rides/payment-not-received
 // Driver calls this within 10 min of trip completion when cash customer refuses/runs.
 // Auto-creates incident, penalizes customer trust_score.
-router.post('/payment-not-received', async (req, res) => {
+router.post('/payment-not-received', userAuth, ownPhone('driver_phone'), async (req, res) => {
   const { ride_id, driver_phone } = req.body;
   if (!ride_id || !driver_phone) return res.status(400).json({ error: 'ride_id and driver_phone required' });
   try {
@@ -1503,7 +1504,7 @@ router.post('/payment-not-received', async (req, res) => {
 });
 
 // POST /api/rides/rate
-router.post('/rate', async (req, res) => {
+router.post('/rate', userAuth, rideParty('ride_id'), async (req, res) => {
   /* `tip` is still accepted off the body and deliberately ignored. Installed
      apps that have not taken the update yet keep sending it, and rejecting the
      whole request over a field we no longer honour would cost those riders
@@ -1660,7 +1661,7 @@ router.get('/nearby-drivers', async (req, res) => {
 // ── GET /api/rides/green-summary?phone= — a rider's lifetime CO₂ saving ─────
 // Counts every completed electric ride they have ever taken. Computed live
 // from distance_km, so rides taken before this feature existed are included.
-router.get('/green-summary', async (req, res) => {
+router.get('/green-summary', userAuth, ownPhone('phone'), async (req, res) => {
   const { phone } = req.query;
   if (!phone) return res.status(400).json({ error: 'phone required' });
   try {
@@ -1698,7 +1699,7 @@ router.get('/green-summary', async (req, res) => {
   }
 });
 
-router.get('/history', async (req, res) => {
+router.get('/history', userAuth, ownPhone('phone'), async (req, res) => {
   const { phone } = req.query;
   try {
     const result = await db.query(
@@ -1721,7 +1722,7 @@ router.get('/history', async (req, res) => {
 });
 
 // GET /api/rides/payment-status/:rideId
-router.get('/payment-status/:rideId', async (req, res) => {
+router.get('/payment-status/:rideId', userAuth, rideParty('rideId'), async (req, res) => {
   try {
     const result = await db.query(`SELECT payment_status, payment_method, fare, discount, commission_amount FROM rides WHERE id = $1`, [req.params.rideId]);
     if (result.rows.length === 0) return res.json({ status: 'not_found' });
@@ -1733,7 +1734,7 @@ router.get('/payment-status/:rideId', async (req, res) => {
 
 // GET /api/rides/driver-location/:rideId
 // Priority: Redis > in-memory > Postgres
-router.get('/driver-location/:rideId', async (req, res) => {
+router.get('/driver-location/:rideId', userAuth, rideParty('rideId'), async (req, res) => {
   try {
     const rideId = req.params.rideId;
 
@@ -1759,7 +1760,7 @@ router.get('/driver-location/:rideId', async (req, res) => {
 });
 
 // POST /api/rides/switch-vehicle — customer switches vehicle type while searching
-router.post('/switch-vehicle', async (req, res) => {
+router.post('/switch-vehicle', userAuth, rideParty('ride_id'), async (req, res) => {
   const { ride_id, new_vehicle_type } = req.body;
   if (!['auto', 'bike', 'car', 'car_7', 'eriksha', 'luxury', 'green_bike', 'electric_auto'].includes(new_vehicle_type))
     return res.status(400).json({ error: 'Invalid vehicle type' });
@@ -1800,7 +1801,7 @@ router.post('/switch-vehicle', async (req, res) => {
 });
 
 // POST /api/rides/extension-request
-router.post('/extension-request', async (req, res) => {
+router.post('/extension-request', userAuth, ownPhone('customer_phone'), async (req, res) => {
   const { customer_phone, new_drop } = req.body;
   const original_ride_id = req.body.original_ride_id;
   const new_drop_lat = req.body.new_drop_lat ? parseFloat(req.body.new_drop_lat) : null;
@@ -1851,7 +1852,7 @@ router.post('/extension-request', async (req, res) => {
 });
 
 // GET /api/rides/extension-status/:id
-router.get('/extension-status/:id', async (req, res) => {
+router.get('/extension-status/:id', userAuth, extParty('id'), async (req, res) => {
   try {
     const r = await db.query('SELECT * FROM ride_extensions WHERE id=$1', [req.params.id]);
     if (!r.rows[0]) return res.status(404).json({ error: 'Extension not found' });
@@ -1865,7 +1866,7 @@ router.get('/extension-status/:id', async (req, res) => {
 });
 
 // GET /api/rides/extension-pending
-router.get('/extension-pending', async (req, res) => {
+router.get('/extension-pending', userAuth, ownPhone('phone'), async (req, res) => {
   const { phone } = req.query;
   if (!phone) return res.status(400).json({ error: 'phone required' });
   try {
@@ -1881,7 +1882,7 @@ router.get('/extension-pending', async (req, res) => {
 });
 
 // POST /api/rides/extension-accept
-router.post('/extension-accept', async (req, res) => {
+router.post('/extension-accept', userAuth, extParty('extension_id'), async (req, res) => {
   const { extension_id } = req.body;
   const client = await db.connect();
   try {
@@ -1908,7 +1909,7 @@ router.post('/extension-accept', async (req, res) => {
 });
 
 // POST /api/rides/extension-reject
-router.post('/extension-reject', async (req, res) => {
+router.post('/extension-reject', userAuth, extParty('extension_id'), async (req, res) => {
   const { extension_id } = req.body;
   try {
     const r = await db.query("UPDATE ride_extensions SET status='rejected' WHERE id=$1 RETURNING customer_phone, new_drop", [extension_id]);
@@ -1918,7 +1919,7 @@ router.post('/extension-reject', async (req, res) => {
 });
 
 // POST /api/rides/rate-customer
-router.post('/rate-customer', async (req, res) => {
+router.post('/rate-customer', userAuth, ownPhone('driver_phone'), async (req, res) => {
   const { ride_id, driver_phone, rating } = req.body;
   const r = parseInt(rating);
   if (!ride_id || !driver_phone) return res.status(400).json({ error: 'ride_id and driver_phone required' });
@@ -1950,7 +1951,7 @@ router.post('/rate-customer', async (req, res) => {
 
 // POST /api/rides/surge-fare
 // Customer boosts fare after all radii exhausted — absolute (base_fare + surge_amount)
-router.post('/surge-fare', async (req, res) => {
+router.post('/surge-fare', userAuth, ownPhone('customer_phone'), async (req, res) => {
   const { ride_id, customer_phone, surge_amount } = req.body;
   const amt = parseInt(surge_amount);
   if (!ride_id || !customer_phone) return res.status(400).json({ error: 'ride_id and customer_phone required' });
@@ -2038,7 +2039,7 @@ router.get('/track-info/:rideId', async (req, res) => {
 });
 
 // POST /api/rides/pre-accept — driver accepts a pre-assignment offer
-router.post('/pre-accept', async (req, res) => {
+router.post('/pre-accept', userAuth, ownPhone('phone'), async (req, res) => {
   const { ride_id, phone } = req.body;
   if (!ride_id || !phone) return res.status(400).json({ error: 'ride_id and phone required' });
   try {
@@ -2060,7 +2061,7 @@ router.post('/pre-accept', async (req, res) => {
 });
 
 // POST /api/rides/pre-decline — driver declines a pre-assignment offer
-router.post('/pre-decline', async (req, res) => {
+router.post('/pre-decline', userAuth, ownPhone('phone'), async (req, res) => {
   const { ride_id, phone } = req.body;
   if (!ride_id || !phone) return res.status(400).json({ error: 'ride_id and phone required' });
   try {
@@ -2092,7 +2093,7 @@ router.post('/pre-decline', async (req, res) => {
 });
 
 // ── GET /api/rides/customer-analytics?phone=X ──────────────────────────────
-router.get('/customer-analytics', async (req, res) => {
+router.get('/customer-analytics', userAuth, ownPhone('phone'), async (req, res) => {
   const { phone } = req.query;
   if (!phone) return res.status(400).json({ error: 'phone required' });
   try {
