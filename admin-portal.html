@@ -511,6 +511,41 @@ input,select,textarea{outline:none}
         <tbody id="wc-history-body"><tr><td colspan=7 class=loading>Loading...</td></tr></tbody></table></div>
       </div>
     </div>
+    <!-- App Download (website par kya dikhega) -->
+    <div style="background:#e3f2fd;border:2px solid #1565c0;border-radius:14px;padding:18px;margin-bottom:20px">
+      <div style="font-size:16px;font-weight:900;color:#0d47a1;margin-bottom:4px">&#128241; App Download &mdash; sppero.com</div>
+      <p style="font-size:12px;color:#1565c0;margin-bottom:14px">
+        Website par log app kahan se lein, ye yahan se tay hota hai. Badalte hi asar dikhta hai &mdash;
+        website dobara deploy nahi karni padti.
+      </p>
+
+      <label style="font-size:12px;font-weight:700;color:#0d47a1;display:block;margin-bottom:12px">
+        Mode
+        <br><select id="dl-mode" style="width:100%;max-width:320px;padding:8px;border-radius:8px;border:1px solid #90caf9;margin-top:4px;font-size:13px">
+          <option value="off">Band &mdash; "jald aa rahi hai" dikhega</option>
+          <option value="direct">Direct APK &mdash; seedhe website se</option>
+          <option value="play">Play Store &mdash; store ke button</option>
+        </select>
+      </label>
+
+      <div id="dl-fields" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:14px"></div>
+
+      <div style="margin-top:14px;display:flex;gap:10px;flex-wrap:wrap;align-items:center">
+        <button onclick="saveDownloadSettings()" style="background:#1565c0;color:#fff;border:none;border-radius:8px;padding:10px 22px;font-size:13px;font-weight:800;cursor:pointer">&#128190; Save</button>
+        <button class="refresh-btn" onclick="loadDownloadSettings()">&#8635; Reload</button>
+        <div id="dl-result" style="font-size:13px;font-weight:700"></div>
+      </div>
+
+      <div style="margin-top:12px;padding:10px;background:rgba(21,101,192,0.07);border-radius:8px;font-size:11px;color:#0d47a1;line-height:1.7">
+        <b>Dhyan:</b> jis app ka link khaali hai, uska card website par aata hi nahi &mdash;
+        aadha bhara hua section dikhane se accha hai na dikhana.<br>
+        <b>SHA-256</b> sirf Direct APK mode me dikhta hai. Nikalne ka tareeka:
+        <code>apksigner verify --print-certs app.apk</code> ya
+        <code>certutil -hashfile app.apk SHA256</code>. Ye wahi ek cheez hai jisse
+        koi khud jaanch sakta hai ki utri hui file Sppero ki hi hai.
+      </div>
+    </div>
+
     <!-- Cancellation Fee Settings -->
     <div id="cancel-settings-card" style="background:#f3e5f5;border:2px solid #7b1fa2;border-radius:14px;padding:18px;margin-bottom:20px">
       <div style="font-size:16px;font-weight:900;color:#4a148c;margin-bottom:4px">🚫 Cancellation Fee Settings</div>
@@ -1229,7 +1264,7 @@ function showSection(id,btn){
   if(id==='rides') loadRides();
   if(id==='topups') loadTopups();
   if(id==='verify') loadVerifications();
-  if(id==='settings'){loadFares();loadStdFares();loadCancelSettings();loadCommRates();loadIntercityFares();loadParcelFares();loadParcelBatches();loadRideDisputes();}
+  if(id==='settings'){loadFares();loadStdFares();loadCancelSettings();loadCommRates();loadIntercityFares();loadParcelFares();loadParcelBatches();loadRideDisputes();loadDownloadSettings();}
   if(id==='marketing'){loadCampaigns();loadPromos();loadReferrals();}
   if(id==='payouts'){loadPayouts('pending');}
   if(id==='complaints'){loadComplaints();}
@@ -3414,6 +3449,79 @@ async function loadRewardSettings() {
       </div>
     `).join('');
   } catch(e) { grid.innerHTML = `<p style="color:red">${e.message}</p>`; }
+}
+
+/* App Download ki setting - website (sppero.com) static hai, to uska
+   "app kahan se lein" ka jawab yahin se aata hai. */
+const DL_FIELDS = [
+  ['rider',  'Sppero (Rider app)'],
+  ['driver', 'Sppero Buddy (Captain app)'],
+];
+
+async function loadDownloadSettings() {
+  const box = document.getElementById('dl-fields');
+  if (!box) return;
+  box.innerHTML = '<div class=loading>Loading...</div>';
+  try {
+    const d = await aJson('/api/admin/app-download');
+    const v = {};
+    (d.settings || []).forEach(x => { v[x.key] = x.value || ''; });
+    document.getElementById('dl-mode').value = ['direct','play','off'].includes(v.mode) ? v.mode : 'off';
+    const row = (id, label, val, ph) =>
+      `<label style="font-size:11px;font-weight:700;color:#0d47a1;display:block;margin-bottom:8px">${label}
+        <br><input id="dl-${id}" value="${esc(val)}" placeholder="${ph}"
+          style="width:100%;padding:7px;border-radius:8px;border:1px solid #90caf9;margin-top:3px;font-size:12px"></label>`;
+    box.innerHTML = DL_FIELDS.map(([k, title]) => `
+      <div style="background:#fff;border:1px solid #bbdefb;border-radius:12px;padding:14px">
+        <div style="font-size:13px;font-weight:900;color:#0d47a1;margin-bottom:10px">${title}</div>
+        ${row(k+'_apk',     'APK ka URL',        v[k+'_apk'],     'https://...apk')}
+        ${row(k+'_play',    'Play Store link',   v[k+'_play'],    'https://play.google.com/...')}
+        ${row(k+'_version', 'Version',           v[k+'_version'], '1.4.2')}
+        ${row(k+'_size',    'Size (MB)',         v[k+'_size'],    '48')}
+        ${row(k+'_sha256',  'APK ka SHA-256',    v[k+'_sha256'],  'A1:B2:... ya bina colon')}
+      </div>`).join('')
+      + `<div style="background:#fff;border:1px solid #bbdefb;border-radius:12px;padding:14px">
+           <div style="font-size:13px;font-weight:900;color:#0d47a1;margin-bottom:10px">Buttons ke neeche ki line</div>
+           ${row('note', 'Khaali chhodne par apne aap sahi line lag jaati hai', v.note, '')}
+         </div>`;
+    document.getElementById('dl-result').textContent = '';
+  } catch (e) {
+    box.innerHTML = '<p style="color:#c62828">' + e.message + '</p>';
+  }
+}
+
+async function saveDownloadSettings() {
+  const body = { mode: document.getElementById('dl-mode').value };
+  DL_FIELDS.forEach(([k]) => {
+    ['_apk','_play','_version','_size','_sha256'].forEach(sfx => {
+      const el = document.getElementById('dl-' + k + sfx);
+      if (el) body[k + sfx] = el.value;
+    });
+  });
+  const noteEl = document.getElementById('dl-note');
+  if (noteEl) body.note = noteEl.value;
+
+  const out = document.getElementById('dl-result');
+  try {
+    const d = await aFetch('/api/admin/app-download', {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+    }).then(r => r.json());
+    if (!d.success) { out.style.color = '#c62828'; out.textContent = d.error || 'Save nahi hua'; return; }
+    /* Bas "saved" likh dena kaafi nahi - asli sawal ye hai ki website par
+       ab dikhega kya. Isliye wahi public raasta poochh kar bataya jaata hai
+       jo website khud padhti hai. */
+    const pub = await fetch('/api/app-download').then(r => r.json()).catch(() => null);
+    let msg = 'Saved';
+    if (pub) {
+      const on = [];
+      if (pub.rider && pub.rider.ready) on.push('Rider');
+      if (pub.driver && pub.driver.ready) on.push('Captain');
+      msg += ' \u2014 website par: ' + (pub.mode === 'off' ? 'kuch nahi (band)'
+        : on.length ? on.join(' + ') + ' (' + pub.mode + ')'
+        : 'kuch nahi \u2014 link khaali hai');
+    }
+    out.style.color = '#1b5e20'; out.textContent = msg;
+  } catch (e) { out.style.color = '#c62828'; out.textContent = e.message; }
 }
 
 async function saveRewardSetting(key) {

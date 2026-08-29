@@ -229,6 +229,46 @@ router.get('/analytics', async (req, res) => {
 });
 
 // GET /api/admin/bonus-rules
+/* App download ki setting - padhna aur badalna, dono admin ke haath me.
+
+   Pehra yahan nahi likha kyoki server.js poore admin router par lagata hai
+   (app.use('/api/admin', adminAuth, adminRouter)) - yahan dobara likhna wo
+   bharam deta ki baaki raaste khule hain.
+
+   Website (sppero.com) static hai, to ye setting hi wo switch hai jisse admin
+   tay karta hai ki log app kahan se lein: seedhe APK se, Play Store se, ya
+   abhi kahin se nahi. Badalte hi asar dikhta hai - website dobara deploy nahi
+   karni padti.
+
+   Sirf wahi keys likhi jaati hain jo table me pehle se hain: panel se koi
+   anjaan key aa jaye to wo chup-chaap jam kar na baithe, aur public raasta
+   sirf unhi keys ko jaanta hai jo wo padhta hai. */
+router.get('/app-download', async (_req, res) => {
+  try {
+    const r = await db.query('SELECT key, value, label FROM download_settings ORDER BY key');
+    res.json({ settings: r.rows });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+router.put('/app-download', async (req, res) => {
+  const incoming = req.body && typeof req.body === 'object' ? req.body : {};
+  try {
+    if (incoming.mode !== undefined && !['direct', 'play', 'off'].includes(incoming.mode))
+      return res.status(400).json({ error: 'mode direct, play ya off hi ho sakta hai' });
+    const known = await db.query('SELECT key FROM download_settings');
+    const allowed = new Set(known.rows.map(r => r.key));
+    let n = 0;
+    for (const [k, val] of Object.entries(incoming)) {
+      if (!allowed.has(k)) continue;
+      await db.query('UPDATE download_settings SET value = $1, updated_at = NOW() WHERE key = $2',
+        [String(val == null ? '' : val).trim(), k]);
+      n++;
+    }
+    const r = await db.query('SELECT key, value, label FROM download_settings ORDER BY key');
+    res.json({ success: true, updated: n, settings: r.rows });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 router.get('/bonus-rules', async (req, res) => {
   try {
     const rules = await db.query(`SELECT * FROM bonus_rules ORDER BY vehicle_type, bonus_type, id`);

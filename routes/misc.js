@@ -366,6 +366,43 @@ router.get('/rewards/dashboard', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+/* GET /api/app-download - website ke liye, khula.
+
+   sppero.com static hai; ye wahi ek jagah hai jahan se use pata chalta hai ki
+   aaj log app kahan se lein. Khula isliye ki koi bhi visitor page kholta hai -
+   yahan kisi ka kuch niji nahi hai, sirf wahi link jo page par chhapne hi
+   hain.
+
+   Aadha bhara hua section kabhi nahi jaata: mode chahe 'direct' ho, agar us
+   app ka link hi nahi bhara to wo app 'ready: false' ke saath jaata hai aur
+   website uska button dikhati hi nahi. Ek dabta hua button jo kahin na le
+   jaye, na hone se bura hai.
+*/
+router.get('/app-download', async (_req, res) => {
+  try {
+    const r = await db.query('SELECT key, value FROM download_settings');
+    const v = {};
+    r.rows.forEach(x => { v[x.key] = x.value || ''; });
+    const mode = ['direct', 'play', 'off'].includes(v.mode) ? v.mode : 'off';
+    const app = (p) => {
+      const apk = (v[p + '_apk'] || '').trim();
+      const play = (v[p + '_play'] || '').trim();
+      const url = mode === 'direct' ? apk : mode === 'play' ? play : '';
+      return {
+        ready: mode !== 'off' && !!url,
+        url,
+        version: (v[p + '_version'] || '').trim(),
+        size: (v[p + '_size'] || '').trim(),
+        sha256: mode === 'direct' ? (v[p + '_sha256'] || '').trim() : '',
+      };
+    };
+    res.json({ mode, note: (v.note || '').trim(), rider: app('rider'), driver: app('driver') });
+  } catch (_e) {
+    // Website ka ek hissa hai - girne par poora panna na rukna chahiye.
+    res.json({ mode: 'off', note: '', rider: { ready: false }, driver: { ready: false } });
+  }
+});
+
 // GET /api/notifications (in-app notifications)
 // ?target=PHONE&role=customer|driver
 router.get('/notifications', async (req, res) => {
