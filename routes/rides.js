@@ -1605,34 +1605,46 @@ router.post('/rate', gUser, gRide('ride_id'), async (req, res) => {
         [rideData.rows[0].driver_id]
       );
 
-      /* Driver ko batao ki uska rating aa gaya.
+      /* Driver ko batao ki uska rating aa gaya - app ke ANDAR, phone ki
+         notification tray par nahi.
 
          Ab tak rating chup-chaap uske average me jud jaati thi aur use pata hi
-         nahi chalta tha ki kis ride par kya mila. Ek driver ko yahi cheez sudhar
-         ne ka mauka deti hai - "Came late" padh kar wo agli baar jaldi nikalta
-         hai; sirf gir-te hue average se koi kuch nahi seekhta.
+         nahi chalta tha ki kis ride par kya mila. "Came late" padh kar hi wo
+         agli baar jaldi nikalta hai; gir-te hue average se koi kuch nahi
+         seekhta.
 
-         Chuni hui baatein saath jaati hain, kyoki wahi asli sandesh hain.
-         Ek ank sirf ye batata hai ki kitna, kyu nahi.
+         Push (FCM) jaan-boojh kar nahi. Rating ek khabar hai, bulawa nahi -
+         uske liye driver ka phone bajana uski agli ride me khalal daalna hai,
+         aur jo push sach me zaroori hain (nayi ride, commission) unki keemat
+         girana hai. Ye notifications table me jaati hai, jise driver app har
+         30 second me /api/notifications/latest se poochhta hai aur jo uske
+         notification centre me bani rehti hai.
 
-         Alert hamesha English me (house rule). Fire-and-forget: rating pehle hi
-         darj ho chuki hai, aur ek notification chook jaane par use palatna nahi
-         chahiye. */
+         user_phone wala roop, kyoki app usi ko padhta hai (GET /notifications
+         me `target = $1 OR user_phone = $1`).
+
+         Chuni hui baatein saath jaati hain - wahi asli sandesh hain; ank sirf
+         ye batata hai ki kitna, kyu nahi.
+
+         Angrezi me, waise hi jaise admin ke sandesh - ye text server par jama
+         hota hai, to driver ke bhasha-toggle ke saath badal nahi sakta.
+
+         Fire-and-forget: rating pehle hi darj ho chuki hai, aur ek soochna
+         chook jaane par use palatna nahi chahiye. */
       const nStars = Math.max(0, Math.min(5, parseInt(rating, 10) || 0));
       if (nStars > 0) {
         const drv = await db.query('SELECT phone FROM users WHERE id = $1', [rideData.rows[0].driver_id]);
         const drPhone = drv.rows[0]?.phone;
         if (drPhone) {
           const said = String(review || '').trim();
-          sendFCM(
-            drPhone,
-            (nStars >= 4 ? '⭐ ' : '') + nStars + '-star rating from your rider',
-            said
-              ? 'They said: ' + said
-              : (nStars >= 4 ? 'Nice work — keep it up.' : 'Tap to see this trip.'),
-            { type: 'ride_rated', ride_id: String(ride_id), rating: String(nStars) },
-            { role: 'driver' }
-          ).catch(() => {});
+          db.query(
+            `INSERT INTO notifications (user_phone, title, body, type, created_at)
+             VALUES ($1, $2, $3, 'ride_rated', NOW())`,
+            [drPhone,
+             (nStars >= 4 ? '⭐ ' : '') + nStars + '-star rating from your rider',
+             said ? 'They said: ' + said
+                  : (nStars >= 4 ? 'Nice work - keep it up.' : 'Tap to see this trip.')]
+          ).catch((e) => console.error('[rides] rating notification:', e.message));
         }
       }
     }
