@@ -436,7 +436,11 @@ router.post('/google/phone', async (req, res) => {
        this door from being a way into somebody else's account. */
     const taken = await db.query('SELECT id FROM users WHERE phone = $1', [phone]);
     if (taken.rows.length) return res.status(409).json({
-      error: 'That number already has an account. Sign in with the number instead — Google cannot prove a phone number belongs to you.',
+      /* Kya hua, aur ab kya karein - dono. Pehla sandesh sirf pehla aadha
+         kehta tha ("us number se sign in karo"), aur wo salah abhi kaam ki
+         bhi nahi hai: prod par koi SMS provider nahi hai, to OTP wala raasta
+         band pada hai. Aadmi ko wahi batao jo wo sach me kar sakta hai. */
+      error: 'This number is already registered to another account. Try a different number, or sign in with the Google account that already has it.',
       phone_taken: true,
     });
 
