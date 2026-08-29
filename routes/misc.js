@@ -7,6 +7,39 @@ const { suggestPickupPoints, suggestDropPoints, landmarkFor, venueFor } = requir
 
 const ADMIN_ALERT_PHONE = process.env.ADMIN_ALERT_PHONE || '';
 
+/* Sandesh apne hi padhe ja sakein - par kisi ki chalti hui call tode bina.
+
+   Ye raasta abhi sirf query me likha number dekh kar jawab de deta hai: koi
+   bhi number badal kar kisi aur ke sandesh padh sakta hai. Uspar seedha pehra
+   lagane ka matlab hota har wo app usi ghadi andha ho jaye jispar naya build
+   nahi pahuncha - aur unme se kaun kis build par hai, ye hume pata nahi.
+
+   To do hisso me:
+
+     1. ABHI, aur ye kuch nahi todta: token HO to wahi sach hai - query ka
+        number nazarandaz kar diya jaata hai. Naye build (jo ab token bhejte
+        hain) se kisi aur ke sandesh padhna namumkin ho jaata hai. Purane
+        build bina token pehle ki tarah chalte rehte hain - unke liye kuch
+        nahi badla.
+
+     2. BAAD ME, jab wo build logon tak pahunch jayein: NOTIF_AUTH_ENFORCE=true
+        karne par bina token wali call ko mana kar diya jayega. Tab tak ye
+        switch band hai.
+
+   Pehla hissa akela hi asli hamla band kar deta hai - kyoki hamlawar ke paas
+   doosre ka token hota hi nahi. Bacha hua chheda sirf itna hai ki koi
+   jaan-boojh kar purane tarike se (bina token) poochh le, aur wo doosre hisse
+   se band hoga. */
+const jwt = require('jsonwebtoken');
+const NOTIF_ENFORCE = String(process.env.NOTIF_AUTH_ENFORCE || '').trim().toLowerCase() === 'true';
+
+function phoneFromToken(req) {
+  const h = req.headers.authorization || '';
+  const t = h.startsWith('Bearer ') ? h.slice(7) : null;
+  if (!t) return null;
+  try { return jwt.verify(t, process.env.JWT_SECRET).phone || null; } catch (_e) { return null; }
+}
+
 // GET /api/fare-settings
 router.get('/fare-settings', async (req, res) => {
   try {
@@ -332,7 +365,11 @@ router.get('/rewards/dashboard', async (req, res) => {
 // GET /api/notifications (in-app notifications)
 // ?target=PHONE&role=customer|driver
 router.get('/notifications', async (req, res) => {
-  const { target, role } = req.query;
+  const { role } = req.query;
+  const mine = phoneFromToken(req);
+  if (!mine && NOTIF_ENFORCE) return res.status(401).json({ error: 'Login required' });
+  // Token ho to wahi, warna purana bartaav (query ka number)
+  const target = mine || req.query.target;
   try {
     const r = await db.query(
       `SELECT title,
@@ -355,7 +392,9 @@ router.get('/notifications', async (req, res) => {
 
 // GET /api/notifications/latest
 router.get('/notifications/latest', async (req, res) => {
-  const { phone } = req.query;
+  const mine = phoneFromToken(req);
+  if (!mine && NOTIF_ENFORCE) return res.status(401).json({ error: 'Login required' });
+  const phone = mine || req.query.phone;
   try {
     const result = await db.query(
       `SELECT * FROM notifications WHERE user_phone = $1 ORDER BY created_at DESC LIMIT 1`,
