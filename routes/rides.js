@@ -1199,14 +1199,33 @@ async function completeRidePayment({ ride_id, payment_method, phone }) {
   const { commission } = await useSubscriptionIfActive(ride.driver_phone, ride_id, 'standard', normalCommission);
 
   if (payment_method === 'cash') {
-    await db.query(`UPDATE rides SET payment_method = 'cash', payment_status = 'cash_pending' WHERE id = $1`, [ride_id]);
-    await db.query(
-      `INSERT INTO driver_commissions (driver_phone, ride_id, fare, commission, payment_method, status)
-       SELECT u.phone, $1, $2, $3, 'cash', 'pending'
-       FROM rides r JOIN users u ON r.driver_id = u.id WHERE r.id = $1
-       ON CONFLICT (ride_id) DO NOTHING`,
-      [ride_id, fare, commission]
-    );
+    /* Wahi jodi, wahi niyam: dono likhaai saath, ya ek bhi nahi.
+
+       Yahi wo raasta hai jo grahak ke "Cash" button se chalta hai. Pehle
+       UPDATE chal jaata tha aur INSERT phat jaata tha (unique index tha hi
+       nahi), aur poora function wahin gir jaata tha - to neeche ka socket
+       ping aur `return { success: true }` kabhi nahi chalte. Grahak ko laal
+       me "Could not record your cash payment" dikhta tha, jabki ride par
+       'cash_pending' likha ja chuka hota tha. */
+    const cq = await db.connect();
+    try {
+      await cq.query('BEGIN');
+      await cq.query(`UPDATE rides SET payment_method = 'cash', payment_status = 'cash_pending' WHERE id = $1`, [ride_id]);
+      await cq.query(
+        `INSERT INTO driver_commissions (driver_phone, ride_id, fare, commission, payment_method, status)
+         SELECT u.phone, $1, $2, $3, 'cash', 'pending'
+         FROM rides r JOIN users u ON r.driver_id = u.id WHERE r.id = $1
+         ON CONFLICT (ride_id) DO NOTHING`,
+        [ride_id, fare, commission]
+      );
+      await cq.query('COMMIT');
+    } catch (e) {
+      await cq.query('ROLLBACK').catch(() => {});
+      cq.release();
+      console.error('[rides] cash likhaai phati:', e.message);
+      return { success: false, message: 'Could not record this payment. Please try again.' };
+    }
+    cq.release();
     // Customer gets a socket ping to show "give cash to driver" UI
     emitToRoom('ride_' + ride_id, 'paymentConfirmed', { ride_id, status: 'cash_pending', payment_method: 'cash' });
     return { success: true, status: 'cash_pending', message: 'Driver ko cash do!' };
@@ -1404,6 +1423,22 @@ router.post('/cash-confirm', gUser, gOwn('phone'), async (req, res) => {
       return res.status(500).json({ error: 'Could not record this payment. Please try Confirm again.' });
     }
     cc.release();
+
+    /* Grahak ko khabar YAHAN, paise likhte hi - neeche wale hisaab-kitaab ke
+       baad nahi.
+
+       Ye sandesh function ke ant me pada tha, driver ke wallet, uske pending
+       commission aur teen FCM ke BAAD. Naapa gaya: beech me INSERT phat jaata
+       tha, aur us throw ke saath ye sandesh bhi kabhi nahi chalta - grahak ki
+       screen "pay karo" par hi khadi reh jaati thi jabki ride paid ho chuki
+       thi. Wahi shikayat aayi thi.
+
+       Grahak ki screen ka driver ke commission ke hisaab par nirbhar hona
+       waise bhi galat tha. Ride paid darj ho gayi - use turant bata do. Ant
+       wala sandesh apni jagah rehta hai (cashbacks ke saath); do baar ek hi
+       socket ping se kuch nahi bigadta, chhoot jaane se bigadta hai. */
+    emitToRoom('ride_' + ride_id, 'paymentConfirmed',
+      { ride_id, status: 'completed', payment_method: method, cashbacks: [] });
 
     let totalPending = 0;
     if (advanceAmt > 0) {
