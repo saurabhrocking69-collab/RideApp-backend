@@ -1367,7 +1367,43 @@ router.post('/cash-confirm', gUser, gOwn('phone'), async (req, res) => {
     const { commission } = await useSubscriptionIfActive(phone, ride_id, 'standard', normalCommission);
 
     const advanceAmt = parseFloat(rideRes.rows[0].advance_amount || 0);
-    await db.query(`UPDATE rides SET payment_status = 'completed', payment_method = $1, commission_amount = $2 WHERE id = $3`, [method, commission, ride_id]);
+    /* Ride ko 'paid' likhna aur commission darj karna - dono saath, ya dono
+       nahi.
+
+       Ye do alag likhaai thi, bina kisi transaction ke. Naapa gaya: pehli
+       chal jaati thi aur doosri phat jaati thi (ON CONFLICT (ride_id) ke liye
+       zaroori unique index table par tha hi nahi), aur pehli likhi hui reh
+       jaati thi. Nateeja: ride paid, commission ki pankti nadaarad, driver ke
+       "due" me kuch nahi juda - aur agli baar /cash-confirm apne hi
+       "payment_status already completed" wale darwaze se laut jaata tha, to
+       wo commission phir kabhi darj nahi ho sakti thi. 77 rides is haal me
+       hain, Rs 2156 ka commission.
+
+       Index ab lag chuka hai, par asli sabak ye hai ki paise ki do likhaai ko
+       ek saath bandhna chahiye tha. Ab agar aage kabhi doosri phati, to pehli
+       bhi palat jayegi aur ride 'unpaid' rahegi - jise driver dobara confirm
+       kar sakta hai. Aadha likha hua reh jaana sabse bura nateeja hai. */
+    const cc = await db.connect();
+    try {
+      await cc.query('BEGIN');
+      await cc.query(`UPDATE rides SET payment_status = 'completed', payment_method = $1, commission_amount = $2 WHERE id = $3`, [method, commission, ride_id]);
+      await cc.query(
+        advanceAmt > 0
+          ? `INSERT INTO driver_commissions (driver_phone, ride_id, fare, commission, payment_method, status)
+             VALUES ($1, $2, $3, $4, $5, 'advance_settled')
+             ON CONFLICT (ride_id) DO UPDATE SET status = 'advance_settled', commission = $4, payment_method = $5`
+          : `INSERT INTO driver_commissions (driver_phone, ride_id, fare, commission, payment_method, status)
+             VALUES ($1, $2, $3, $4, $5, 'cash_owed')
+             ON CONFLICT (ride_id) DO UPDATE SET status = 'cash_owed', commission = $4, payment_method = $5`,
+        [phone, ride_id, fare, commission, method]);
+      await cc.query('COMMIT');
+    } catch (e) {
+      await cc.query('ROLLBACK').catch(() => {});
+      cc.release();
+      console.error('[rides] cash-confirm likhaai phati:', e.message);
+      return res.status(500).json({ error: 'Could not record this payment. Please try Confirm again.' });
+    }
+    cc.release();
 
     let totalPending = 0;
     if (advanceAmt > 0) {
@@ -1377,12 +1413,8 @@ router.post('/cash-confirm', gUser, gOwn('phone'), async (req, res) => {
       // holds the remaining (fare - advance) in cash. Net = fare - commission,
       // with ZERO cash-commission debt.
       const driverCredit = Math.max(0, Math.round((advanceAmt - commission) * 100) / 100);
-      await db.query(
-        `INSERT INTO driver_commissions (driver_phone, ride_id, fare, commission, payment_method, status)
-         VALUES ($1, $2, $3, $4, $5, 'advance_settled')
-         ON CONFLICT (ride_id) DO UPDATE SET status = 'advance_settled', commission = $4, payment_method = $5`,
-        [phone, ride_id, fare, commission, method]
-      );
+      // Commission ki pankti uper wale transaction me hi ride ke saath likhi
+      // ja chuki hai - yahan dobara likhna ek hi baat do jagah rakhna hota.
       const drv = await db.query('SELECT id FROM users WHERE phone=$1', [phone]);
       if (drv.rows[0]) {
         await db.query('INSERT INTO driver_wallet (driver_id) VALUES ($1) ON CONFLICT (driver_id) DO NOTHING', [drv.rows[0].id]);
@@ -1392,12 +1424,8 @@ router.post('/cash-confirm', gUser, gOwn('phone'), async (req, res) => {
       sendFCM(phone, '✅ Trip Settled', `₹${driverCredit.toFixed(0)} credited to your wallet (commission already covered by the advance — nothing due).`, { type: 'advance_settled', ride_id: String(ride_id) }, { role: 'driver' }).catch(() => {});
     } else {
       // Normal cash ride: driver owes the commission until they clear it in-app.
-      await db.query(
-        `INSERT INTO driver_commissions (driver_phone, ride_id, fare, commission, payment_method, status)
-         VALUES ($1, $2, $3, $4, $5, 'cash_owed')
-         ON CONFLICT (ride_id) DO UPDATE SET status = 'cash_owed', commission = $4, payment_method = $5`,
-        [phone, ride_id, fare, commission, method]
-      );
+      // Commission ki pankti uper wale transaction me hi ride ke saath likhi
+      // ja chuki hai - yahan dobara likhna ek hi baat do jagah rakhna hota.
       if (commission > 0) {
         const driverUser = await db.query('SELECT id FROM users WHERE phone=$1', [phone]);
         if (driverUser.rows[0]) {
