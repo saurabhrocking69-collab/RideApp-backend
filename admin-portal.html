@@ -420,8 +420,24 @@ input,select,textarea{outline:none}
         <p style="font-size:12px;color:#888;margin-bottom:10px">FCM push seedha phones pe bhejo</p>
         <input id="notif-title" placeholder="Notification title" class="input-sm" style="margin-bottom:8px">
         <textarea id="notif-body" placeholder="Message text..." class="input-sm" style="resize:none;height:58px;margin-bottom:8px"></textarea>
+        <!-- Poster: file se, ya link se.
+
+             Pehle sirf link ka khaana tha - yaani admin ko pehle kisi aur jagah
+             poster chadhana padta, wahan se URL uthana padta, tab yahan
+             chipkana padta. Asli me uska nateeja ye hota ki poster bheja hi na
+             jaye, ya kisi aisi jagah se jaye jo kal band ho jaye aur sabki
+             notification me tuti tasveer reh jaye.
+
+             Link ka khaana rakha bhi gaya hai - jiske paas pehle se URL hai use
+             upload par majboor karna bemani hai. -->
+        <div style="display:flex;gap:8px;align-items:center;margin-bottom:8px;flex-wrap:wrap">
+          <input type="file" id="notif-file" accept="image/*" style="display:none" onchange="uploadNotifImage(this)">
+          <button type="button" onclick="document.getElementById('notif-file').click()"
+            style="background:#0f172a;color:#fff;border:none;border-radius:8px;padding:9px 16px;font-size:12.5px;font-weight:800;cursor:pointer;white-space:nowrap">&#128247; Poster chuno</button>
+          <span id="notif-up-status" style="font-size:11.5px;color:#888"></span>
+        </div>
         <div style="position:relative;margin-bottom:8px">
-          <input id="notif-image" placeholder="🖼️ Banner image URL (optional — for promo/discount)" class="input-sm" style="width:100%;padding-right:72px;box-sizing:border-box" oninput="previewNotifImg(this.value)">
+          <input id="notif-image" placeholder="&#128444; ...ya poster ka URL yahan chipkao (optional)" class="input-sm" style="width:100%;padding-right:72px;box-sizing:border-box" oninput="previewNotifImg(this.value)">
           <span style="position:absolute;right:8px;top:50%;transform:translateY(-50%);font-size:10px;color:#bbb;pointer-events:none">optional</span>
         </div>
         <div id="notif-img-preview" style="display:none;margin-bottom:10px;border-radius:10px;overflow:hidden;border:1px solid #eee;position:relative">
@@ -3488,6 +3504,40 @@ async function loadDownloadSettings() {
   } catch (e) {
     box.innerHTML = '<p style="color:#c62828">' + e.message + '</p>';
   }
+}
+
+/* Poster chuno -> Cloudinary -> URL apne aap khaane me.
+
+   Base64 me bheja jaata hai, wahi tareeka jo driver ke documents ka hai -
+   naya kuch nahi. 5 MB ki hadd yahin rok di jaati hai: uske aage phone par
+   khulne me hi der lagegi, aur wo poster kisi kaam ka nahi jo notification
+   me khule hi na. */
+async function uploadNotifImage(input) {
+  const f = input.files && input.files[0];
+  if (!f) return;
+  const st = document.getElementById('notif-up-status');
+  if (f.size > 5 * 1024 * 1024) {
+    st.style.color = '#c62828';
+    st.textContent = 'Poster 5 MB se bada hai — chhota karke bhejo';
+    input.value = ''; return;
+  }
+  st.style.color = '#888'; st.textContent = 'Chadha rahe hain…';
+  try {
+    const b64 = await new Promise((res, rej) => {
+      const r = new FileReader();
+      r.onload = () => res(r.result); r.onerror = rej; r.readAsDataURL(f);
+    });
+    const d = await aFetch('/api/admin/upload-image', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ image: b64 }),
+    }).then(r => r.json());
+    if (!d.success || !d.url) throw new Error(d.error || 'Upload nahi hua');
+    document.getElementById('notif-image').value = d.url;
+    previewNotifImg(d.url);
+    st.style.color = '#1b5e20'; st.textContent = 'Chadh gaya — neeche dikh raha hai';
+  } catch (e) {
+    st.style.color = '#c62828'; st.textContent = e.message;
+  } finally { input.value = ''; }
 }
 
 async function saveDownloadSettings() {

@@ -243,6 +243,40 @@ router.get('/analytics', async (req, res) => {
    Sirf wahi keys likhi jaati hain jo table me pehle se hain: panel se koi
    anjaan key aa jaye to wo chup-chaap jam kar na baithe, aur public raasta
    sirf unhi keys ko jaanta hai jo wo padhta hai. */
+/* Poster ka upload - panel se seedha.
+
+   Panel me sirf "Banner image URL" ka khaana tha. Iska matlab tha ki admin ko
+   pehle kisi aur jagah poster chadhana padta, wahan se link uthana padta, aur
+   tab yahan chipkana padta. Asli zindagi me uska nateeja ye hota hai ki poster
+   bheja hi nahi jaata - ya kisi aisi jagah se bhej diya jaata hai jo kal band
+   ho jaye aur sabki notification me tuti hui tasveer reh jaye.
+
+   Cloudinary pehle se laga hua hai (driver ke documents wahin jaate hain), to
+   naya kuch nahi banaya - bas wahi rasta admin ke liye khola gaya, alag folder
+   me taaki poster aur driver ke kaagaz aapas me na mile.
+
+   drivers.js wala /api/upload jaan-boojh kar istemal nahi kiya: wo bina pehre
+   ka hai (naya driver register hone se pehle bhi chadhata hai), aur admin ka
+   kaam uspar chhodna us khule darwaze ko aur bada karna hota. */
+router.post('/upload-image', async (req, res) => {
+  const { image } = req.body || {};
+  if (!image) return res.status(400).json({ error: 'image chahiye' });
+  try {
+    const cloudinary = require('../config/cloudinary');
+    const r = await cloudinary.uploader.upload(image, {
+      folder: 'sppero_broadcast',
+      resource_type: 'image',
+      // Poster phone par dikhta hai - itna bada bhejne ka koi matlab nahi ki
+      // wo khulne me hi der lagaye.
+      transformation: [{ width: 1080, crop: 'limit', quality: 'auto' }],
+    });
+    res.json({ success: true, url: r.secure_url });
+  } catch (e) {
+    console.error('[admin] poster upload:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
 router.get('/app-download', async (_req, res) => {
   try {
     const r = await db.query('SELECT key, value, label FROM download_settings ORDER BY key');
