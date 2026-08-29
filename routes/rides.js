@@ -162,10 +162,21 @@ async function processCashback(userId, phone, rideId, fare, paymentMethod) {
       finally { cbClient.release(); }
     }
 
-    if (fare > 100) await tryCashback('fare_over_100', 10, '₹100+ ride bonus');
-    if (rideCount === 2) await tryCashback('second_ride_day', 10, '2nd ride of the day');
-    if (rideCount === 3) await tryCashback('third_ride_day', 15, '3rd ride streak bonus');
-    if (paymentMethod === 'wallet' && fare >= 50) await tryCashback('wallet_pay', 5, 'Wallet payment bonus');
+    /* Aadha kar diya gaya - partner programme aa jaane ke baad.
+
+       Ab grahak ko kamane ka ek doosra, bada raasta mil chuka hai, to har ride
+       par itni cashback dene ki zaroorat nahi rahi. Rakam aadhi, aur poore rupaye
+       me neeche ki taraf: 15 ka 7 (7.5 nahi) aur 5 ka 2. Neeche ki taraf isliye
+       ki "aadha" se zyada kabhi na de baithe, aur poore rupaye isliye ki ye
+       sankhya grahak ko dikhti bhi hai - "Rs 7.50 cashback" padhne me kharab hai.
+
+       DHYAN: yahi soochi misc.js me DOBARA likhi hai, jahan se ye grahak ko
+       dikhayi jaati hai. Dono ek saath badalti hain - warna app Rs 15 ka waada
+       karega aur wallet me 7 aayenge, aur wo shikayat banegi. */
+    if (fare > 100) await tryCashback('fare_over_100', 5, '₹100+ ride bonus');
+    if (rideCount === 2) await tryCashback('second_ride_day', 5, '2nd ride of the day');
+    if (rideCount === 3) await tryCashback('third_ride_day', 7, '3rd ride streak bonus');
+    if (paymentMethod === 'wallet' && fare >= 50) await tryCashback('wallet_pay', 2, 'Wallet payment bonus');
 
     await addLoyaltyPoints(userId, 10);
 

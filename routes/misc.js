@@ -345,11 +345,15 @@ router.get('/rewards/dashboard', async (req, res) => {
     ]);
 
     const rideCount = parseInt(todayRides.rows[0].count);
+    /* Rakam wahi jo rides.js sach me deti hai (processCashback). Ye
+       soochi sirf DIKHATI hai - dono alag ho gayi to app waada kuch aur
+       karega aur wallet me kuch aur aayega. Aadha kiya gaya partner
+       programme aa jaane ke baad. */
     const rules = [
-      { id: 'fare_over_100',  icon: '💎', label: '₹100+ Ride',       desc: 'Koi bhi ride ₹100 se zyada ki hogi',     cashback: 10,  unlocked: false, claimed_today: false },
-      { id: 'second_ride_day',icon: '✌️',  label: '2nd Ride Today',   desc: 'Complete 2 rides today',               cashback: 10,  unlocked: rideCount >= 2, claimed_today: rideCount >= 2 },
-      { id: 'third_ride_day', icon: '🔥',  label: '3rd Ride Streak',  desc: 'Complete your 3rd ride today',              cashback: 15,  unlocked: rideCount >= 3, claimed_today: rideCount >= 3 },
-      { id: 'wallet_pay',     icon: '👛',  label: 'Wallet Pay Bonus', desc: 'Pay with wallet (on rides ₹50+)',       cashback: 5,   unlocked: false, claimed_today: false },
+      { id: 'fare_over_100',  icon: '💎', label: '₹100+ Ride',       desc: 'Koi bhi ride ₹100 se zyada ki hogi',     cashback: 5,  unlocked: false, claimed_today: false },
+      { id: 'second_ride_day',icon: '✌️',  label: '2nd Ride Today',   desc: 'Complete 2 rides today',               cashback: 5,  unlocked: rideCount >= 2, claimed_today: rideCount >= 2 },
+      { id: 'third_ride_day', icon: '🔥',  label: '3rd Ride Streak',  desc: 'Complete your 3rd ride today',              cashback: 7,  unlocked: rideCount >= 3, claimed_today: rideCount >= 3 },
+      { id: 'wallet_pay',     icon: '👛',  label: 'Wallet Pay Bonus', desc: 'Pay with wallet (on rides ₹50+)',       cashback: 2,   unlocked: false, claimed_today: false },
     ];
 
     res.json({
