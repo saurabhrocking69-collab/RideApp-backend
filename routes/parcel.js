@@ -124,18 +124,34 @@ async function parcelCommission(rideType, amount) {
 // Package size gates which vehicle types can carry it — enforced here too,
 // not just client-side, same "never trust the client" rule the rest of the
 // booking endpoints follow.
-// - small (fits in a bag, ≤2kg): bike/e-bike only — fastest, cheapest,
+// - small (fits in a bag, ≤5kg): bike/e-bike only — fastest, cheapest,
 //   most available on the road; sending a bag-sized item by car/auto is
 //   needlessly slow and expensive, and offering those just clutters the
 //   choice with no upside for the customer.
-// - medium (a box, ≤10kg): too bulky/heavy to secure safely on a 2-wheeler —
-//   needs an actual boot/cargo area, so bike/green_bike are excluded and it's
-//   auto/eriksha/electric_auto/car instead.
-// - large (won't fit on a bike, ≤25kg): only a car has the trunk space.
+//   5kg, not the 2kg this said before: Porter's 2-wheeler carries 20kg and a
+//   food-delivery bag carries 5-7kg every day, so 2kg pushed a 3kg tiffin
+//   onto an auto — ₹62 instead of ₹45 over 5km, 38% more and slower. That
+//   threw away the cheap fast option a bike exists to be.
+// - medium (a box, ≤20kg): too bulky to secure safely on a 2-wheeler — needs
+//   an actual boot/cargo area, so bike/green_bike are excluded and it's
+//   auto/eriksha/electric_auto/car instead. The binding limit here is volume,
+//   not weight; 20kg simply stops the number being the thing that refuses a
+//   box an auto would have taken happily.
+// - large (won't fit on a bike, ≤40kg): an auto belongs here too. In India the
+//   vehicle that actually moves bulky things IS the auto — its open cabin is
+//   larger than a sedan boot and takes taller items. Leaving it out cost the
+//   customer 29% over 5km and 31% over 10km for no benefit. 40kg because one
+//   driver has to lift it alone; Porter's 3-wheeler does 500kg, but that is a
+//   goods auto with a helper.
+//
+// NOTE: none of these weights is measured anywhere, and there is no field for
+// dimensions. They are a promise, not a gate — the driver finds out on
+// arrival. So their real job is to sit close to what a driver actually
+// accepts, which is why 2kg had to go.
 const SIZE_VEHICLES = {
   small:  ['bike', 'green_bike'],
   medium: ['auto', 'eriksha', 'electric_auto', 'car'],
-  large:  ['car', 'car_7'],
+  large:  ['auto', 'car', 'car_7'],
 };
 
 // Admin-editable parcel rates — persisted here, hydrated into the in-memory
