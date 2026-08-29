@@ -1604,6 +1604,37 @@ router.post('/rate', gUser, gRide('ride_id'), async (req, res) => {
         `UPDATE drivers SET rating = (SELECT ROUND(AVG(rating)::numeric, 1) FROM rides WHERE driver_id = $1 AND rating IS NOT NULL) WHERE id = $1`,
         [rideData.rows[0].driver_id]
       );
+
+      /* Driver ko batao ki uska rating aa gaya.
+
+         Ab tak rating chup-chaap uske average me jud jaati thi aur use pata hi
+         nahi chalta tha ki kis ride par kya mila. Ek driver ko yahi cheez sudhar
+         ne ka mauka deti hai - "Came late" padh kar wo agli baar jaldi nikalta
+         hai; sirf gir-te hue average se koi kuch nahi seekhta.
+
+         Chuni hui baatein saath jaati hain, kyoki wahi asli sandesh hain.
+         Ek ank sirf ye batata hai ki kitna, kyu nahi.
+
+         Alert hamesha English me (house rule). Fire-and-forget: rating pehle hi
+         darj ho chuki hai, aur ek notification chook jaane par use palatna nahi
+         chahiye. */
+      const nStars = Math.max(0, Math.min(5, parseInt(rating, 10) || 0));
+      if (nStars > 0) {
+        const drv = await db.query('SELECT phone FROM users WHERE id = $1', [rideData.rows[0].driver_id]);
+        const drPhone = drv.rows[0]?.phone;
+        if (drPhone) {
+          const said = String(review || '').trim();
+          sendFCM(
+            drPhone,
+            (nStars >= 4 ? '⭐ ' : '') + nStars + '-star rating from your rider',
+            said
+              ? 'They said: ' + said
+              : (nStars >= 4 ? 'Nice work — keep it up.' : 'Tap to see this trip.'),
+            { type: 'ride_rated', ride_id: String(ride_id), rating: String(nStars) },
+            { role: 'driver' }
+          ).catch(() => {});
+        }
+      }
     }
     /* TIPPING IS GONE — removed 2026-08-20, deliberately and not as a bug fix.
 
