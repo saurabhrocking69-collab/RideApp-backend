@@ -14,13 +14,16 @@ const { directFavouriteRideIds } = require('./favourites');
 const { setDriverLoc } = require('../services/rideCache');
 const { attachAreaNames } = require('../services/zoneNames');
 const userAuth = require('../middleware/userAuth');
+const uploadGuard = require('../middleware/uploadGuard');
 const ownPhone = require('../middleware/ownPhone');
 
-// POST /api/upload
-router.post('/upload', async (req, res) => {
+// POST /api/driver/upload
+/* Ye doosra darwaza hai usi kamre ka - server.js wala /api/upload aur ye,
+   dono Cloudinary par chadhate hain aur dono khule pade the. Ek par pehra
+   lagakar doosra chhod dena kuchh na karne ke barabar hota. */
+router.post('/upload', uploadGuard, async (req, res) => {
   const { image } = req.body;
   try {
-    if (!image) return res.status(400).json({ error: 'Image not found' });
     const result = await cloudinary.uploader.upload(image, { folder: 'rideapp_drivers', resource_type: 'image' });
     res.json({ success: true, url: result.secure_url });
   } catch (err) { console.error('[drivers]', err.message); res.status(500).json({ error: 'Something went wrong — please try again' }); }

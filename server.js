@@ -645,14 +645,24 @@ function connectSocket() {
 });
 
 // ── Upload (needs /api/upload, not /api/driver/upload) ──
+/* uploadGuard ise pehle bilkul khula hone se bachata hai: koi bhi, bina kisi
+   pehchan ke, hamare Cloudinary par kuchh bhi chadha sakta tha - quota aur
+   bill hamara, aur khaate par padi cheez ki zimmedari bhi hamari. */
 const cloudinary = require('./config/cloudinary');
-app.post('/api/upload', async (req, res) => {
+const uploadGuard = require('./middleware/uploadGuard');
+app.post('/api/upload', uploadGuard, async (req, res) => {
   const { image } = req.body;
   try {
-    if (!image) return res.status(400).json({ error: 'Image not found' });
     const result = await cloudinary.uploader.upload(image, { folder: 'rideapp_drivers', resource_type: 'image' });
     res.json({ success: true, url: result.secure_url });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) {
+    /* Pehle yahan `err.message` seedha bahar jaata tha - wo Cloudinary ka
+       andar ka sandesh hota hai (kabhi folder ka naam, kabhi khaate ki
+       haalat). Bahar wale ko usse kuchh nahi milta, sirf hamare baare me
+       pata chalta hai. */
+    console.error('[upload]', err.message);
+    res.status(500).json({ error: 'Upload failed — please try again' });
+  }
 });
 
 // ── Health endpoint — public, no auth, used by Railway + UptimeRobot ─────────
