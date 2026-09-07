@@ -527,6 +527,14 @@ input,select,textarea{outline:none}
         <tbody id="wc-history-body"><tr><td colspan=7 class=loading>Loading...</td></tr></tbody></table></div>
       </div>
     </div>
+    <!-- SMS balance. Chhota rakha gaya hai kyoki roz dekhne ki cheez nahi
+         hai - par khatm hone se pehle dikh jaani chahiye. -->
+    <div id="sms-bal-card" style="background:#ede7f6;border:2px solid #4527a0;border-radius:14px;padding:14px 18px;margin-bottom:20px;display:flex;align-items:center;gap:14px;flex-wrap:wrap">
+      <div style="font-size:15px;font-weight:900;color:#311b92">&#128242; OTP SMS balance</div>
+      <div id="sms-bal" style="font-size:15px;font-weight:800;color:#4527a0">&hellip;</div>
+      <button class="refresh-btn" onclick="loadSmsBalance()">&#8635;</button>
+    </div>
+
     <!-- App Download (website par kya dikhega) -->
     <div style="background:#e3f2fd;border:2px solid #1565c0;border-radius:14px;padding:18px;margin-bottom:20px">
       <div style="font-size:16px;font-weight:900;color:#0d47a1;margin-bottom:4px">&#128241; App Download &mdash; sppero.com</div>
@@ -1280,7 +1288,7 @@ function showSection(id,btn){
   if(id==='rides') loadRides();
   if(id==='topups') loadTopups();
   if(id==='verify') loadVerifications();
-  if(id==='settings'){loadFares();loadStdFares();loadCancelSettings();loadCommRates();loadIntercityFares();loadParcelFares();loadParcelBatches();loadRideDisputes();loadDownloadSettings();}
+  if(id==='settings'){loadFares();loadStdFares();loadCancelSettings();loadCommRates();loadIntercityFares();loadParcelFares();loadParcelBatches();loadRideDisputes();loadDownloadSettings();loadSmsBalance();}
   if(id==='marketing'){loadCampaigns();loadPromos();loadReferrals();}
   if(id==='payouts'){loadPayouts('pending');}
   if(id==='complaints'){loadComplaints();}
@@ -3473,6 +3481,24 @@ const DL_FIELDS = [
   ['rider',  'Sppero (Rider app)'],
   ['driver', 'Sppero Buddy (Captain app)'],
 ];
+
+/* SMS balance. Kam bache to rang badal jaata hai - ek sankhya jo har haal me
+   ek jaisi dikhe, wo dekhi hi nahi jaati. */
+async function loadSmsBalance() {
+  const el = document.getElementById('sms-bal');
+  if (!el) return;
+  el.textContent = '…';
+  try {
+    const d = await aJson('/api/admin/sms-balance');
+    if (!d.ok) { el.style.color = '#c62828'; el.textContent = d.reason || 'nahi mila'; return; }
+    const n = d.balance;
+    el.style.color = n < 500 ? '#c62828' : n < 2000 ? '#e65100' : '#2e7d32';
+    el.textContent = n.toLocaleString('en-IN') + ' SMS'
+      + (n < 500 ? '  — bahut kam bache, aaj hi bharwa lein'
+       : n < 2000 ? '  — kam ho rahe hain' : '')
+      + (d.provider ? '   (' + d.provider + ')' : '');
+  } catch (e) { el.style.color = '#c62828'; el.textContent = e.message; }
+}
 
 async function loadDownloadSettings() {
   const box = document.getElementById('dl-fields');

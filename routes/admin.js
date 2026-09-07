@@ -258,6 +258,18 @@ router.get('/analytics', async (req, res) => {
    drivers.js wala /api/upload jaan-boojh kar istemal nahi kiya: wo bina pehre
    ka hai (naya driver register hone se pehle bhi chadhata hai), aur admin ka
    kaam uspar chhodna us khule darwaze ko aur bada karna hota. */
+/* Kitne SMS bache hain.
+
+   25,000 kabhi na kabhi khatm honge, aur us din ka pata us subah nahi chalna
+   chahiye jis subah koi login na kar paye. Panel me ek line kaafi hai. */
+router.get('/sms-balance', async (_req, res) => {
+  try {
+    const { smsBalance, smsProviderName } = require('../services/sms');
+    const r = await smsBalance();
+    res.json({ ...r, provider: smsProviderName() });
+  } catch (e) { res.status(500).json({ ok: false, reason: e.message }); }
+});
+
 router.post('/upload-image', async (req, res) => {
   const { image } = req.body || {};
   if (!image) return res.status(400).json({ error: 'image chahiye' });

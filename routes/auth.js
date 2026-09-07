@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const jwt = require('jsonwebtoken');
+const { sendOtpSms, smsProviderName } = require('../services/sms');
 const axios = require('axios');
 const db = require('../config/db');
 const userAuth = require('../middleware/userAuth');
@@ -116,31 +117,32 @@ router.post('/send-otp', async (req, res) => {
        error, and answer "OTP sent, success: true" regardless — including when
        no provider was configured at all, in which case nothing was ever sent
        and the person just watched a code that did not exist never arrive. */
-    if (isTestPhone(phone)) {
+    const provider = smsProviderName();
+
+    /* Test number wali chhoot AB SIRF TAB hai jab koi provider hi na ho.
+
+       Wo chhoot us daur ki hai jab prod par koi SMS provider tha hi nahi -
+       bina uske kuch bhi jaancha nahi ja sakta tha. Uski keemat ye thi ki
+       server OTP ko apne hi jawab me laut-a deta tha, jo ek khula darwaza hai.
+
+       Ab SMS sach me jaata hai, to us darwaze ki koi wajah nahi bachi: test
+       number ko bhi asli SMS milega, baaki sabki tarah. TEST_OTP_PHONES aur
+       ALLOW_TEST_OTP ko hataya nahi gaya - agar kabhi provider band ho jaye to
+       wo aakhri sahara bane rahe. */
+    if (!provider && isTestPhone(phone)) {
       return res.json({ message: 'Test number — OTP returned here', success: true, otp });
     }
-    if (!process.env.FAST2SMS_API_KEY) {
-      console.error('send-otp: no SMS provider configured (FAST2SMS_API_KEY unset)');
+    if (!provider) {
+      console.error('send-otp: no SMS provider configured');
       return res.status(503).json({ error: 'We cannot send SMS right now. Please try again shortly.' });
     }
-    try {
-      const smsRes = await fetch('https://www.fast2sms.com/dev/bulkV2', {
-        method: 'POST',
-        headers: { authorization: process.env.FAST2SMS_API_KEY },
-        body: new URLSearchParams({ route: 'otp', variables_values: otp, flash: '0', numbers: phone }),
-      });
-      const body = await smsRes.json().catch(() => null);
-      // Fast2SMS answers 200 with { return: false } for a rejected send, so the
-      // status code on its own is not enough to call this delivered.
-      if (!smsRes.ok || (body && body.return === false)) {
-        console.error('send-otp: Fast2SMS rejected', smsRes.status, JSON.stringify(body || '').slice(0, 200));
-        await redis.del('otp:sent:' + phone);   // let them retry at once
-        return res.status(502).json({ error: 'Could not send the OTP. Please try again.' });
-      }
-    } catch (smsErr) {
-      console.error('send-otp: SMS send failed:', smsErr.message);
-      await redis.del('otp:sent:' + phone);
-      return res.status(502).json({ error: 'Could not send the OTP. Check your connection and try again.' });
+
+    const sent = await sendOtpSms(phone, otp);
+    if (!sent.ok) {
+      // Wajah log me, aadmi ko nahi - usme provider ki apni baatein hoti hain.
+      console.error('send-otp: ' + sent.provider + ' ne mana kiya:', sent.reason);
+      await redis.del('otp:sent:' + phone);   // turant dobara try kar sake
+      return res.status(502).json({ error: 'Could not send the OTP. Please try again.' });
     }
 
     res.json({ message: 'OTP sent', success: true });
