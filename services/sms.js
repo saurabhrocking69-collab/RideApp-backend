@@ -31,7 +31,23 @@ const FAST2SMS_KEY  = () => (process.env.FAST2SMS_API_KEY || '').trim();
 /* DLT wala apna template, agar approve ho chuka ho. Khaali chhodne par
    2Factor apna default OTP template istemal karta hai, jo pehle se approved
    aata hai - isliye ye zaroori nahi, sirf marzi ki baat hai. */
-const TWOFACTOR_TEMPLATE = () => (process.env.TWOFACTOR_TEMPLATE || '').trim();
+/* Har app ka apna template - kyoki har app ka app-hash alag hai.
+
+   SMS Retriever (bina tap ke bharna) ke liye SMS ke ANT me us app ka
+   11-akshar ka hash hona zaroori hai, aur wo signing cert se banta hai:
+       rider  (com.sppero.rider)  -> XCAG/VOG/GQ
+       driver (com.sppero.driver) -> LQuev5EzywW
+   Dono alag hain, to ek hi template dono ke liye kaam nahi kar sakta - jis app
+   ke liye hash galat hoga, uspar autofill chup-chaap kabhi nahi chalega.
+
+   Isliye send-otp ab ye bhi poochhta hai ki maang kaun raha hai, aur uske
+   hisaab se template chunta hai. Dono khaali hon to 2Factor apna default
+   template lagata hai - wahi jo aaj chal raha hai. */
+const TWOFACTOR_TEMPLATE = (app) => (
+  (app === 'driver' ? process.env.TWOFACTOR_TEMPLATE_DRIVER
+   : app === 'rider' ? process.env.TWOFACTOR_TEMPLATE_RIDER
+   : '') || process.env.TWOFACTOR_TEMPLATE || ''
+).trim();
 
 const TIMEOUT_MS = 12000;
 
@@ -50,9 +66,9 @@ function smsProviderName() {
   return null;
 }
 
-async function via2Factor(phone, otp) {
+async function via2Factor(phone, otp, app) {
   const key = TWOFACTOR_KEY();
-  const tpl = TWOFACTOR_TEMPLATE();
+  const tpl = TWOFACTOR_TEMPLATE(app);
   const url = `https://2factor.in/API/V1/${encodeURIComponent(key)}/SMS/`
     + `${encodeURIComponent(phone)}/${encodeURIComponent(otp)}`
     + (tpl ? `/${encodeURIComponent(tpl)}` : '');
@@ -86,11 +102,11 @@ async function viaFast2SMS(phone, otp) {
    koshish hoti thi, error nigal liya jaata tha, aur aadmi ko "OTP sent" dikha
    diya jaata tha - jabki kuch gaya hi nahi hota tha aur wo ek aise code ka
    intezaar karta rehta jo kabhi bana hi nahi. */
-async function sendOtpSms(phone, otp) {
+async function sendOtpSms(phone, otp, app) {
   const provider = smsProviderName();
   if (!provider) return { ok: false, reason: 'koi SMS provider nahi laga', provider: null };
   try {
-    const r = provider === '2factor' ? await via2Factor(phone, otp) : await viaFast2SMS(phone, otp);
+    const r = provider === '2factor' ? await via2Factor(phone, otp, app) : await viaFast2SMS(phone, otp);
     return { ...r, provider };
   } catch (e) {
     return { ok: false, reason: e.message, provider };

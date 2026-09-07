@@ -92,6 +92,10 @@ async function issueSession(phone, name, partnerCode) {
 // POST /api/auth/send-otp
 router.post('/send-otp', async (req, res) => {
   const { phone } = req.body;
+  // Kaun maang raha hai - rider app ya captain app. Template chunne ke liye
+  // (har app ka app-hash alag hai). Na bheje to default template chalta hai,
+  // yaani purane build waise ke waise chalte rehte hain.
+  const app = ['rider', 'driver'].includes(req.body.app) ? req.body.app : null;
   if (!phone || phone.length !== 10) return res.status(400).json({ error: 'Please enter a valid 10-digit phone number' });
   try {
     const hold = await phoneDeletionHold(phone);
@@ -137,7 +141,7 @@ router.post('/send-otp', async (req, res) => {
       return res.status(503).json({ error: 'We cannot send SMS right now. Please try again shortly.' });
     }
 
-    const sent = await sendOtpSms(phone, otp);
+    const sent = await sendOtpSms(phone, otp, app);
     if (!sent.ok) {
       // Wajah log me, aadmi ko nahi - usme provider ki apni baatein hoti hain.
       console.error('send-otp: ' + sent.provider + ' ne mana kiya:', sent.reason);
@@ -166,7 +170,21 @@ router.post('/verify-otp', async (req, res) => {
       const ttl = await redis.ttl('otp:block:' + phone);
       return res.status(429).json({ error: `Account blocked! Please try again in ${Math.ceil(ttl / 60)} min` });
     }
-    const isTestOtp = otp === '000000' && isTestPhone(phone);
+    /* "000000" wali master chaabi - ab sirf tab jab koi SMS provider hi na ho.
+
+       Ye us daur ki cheez hai jab prod par SMS tha hi nahi: bina iske kuch
+       jaancha hi nahi ja sakta tha. Par iski keemat ye thi ki TEST_OTP_PHONES
+       me pade har number par koi bhi bina OTP ke andar aa sakta tha - na SMS
+       chahiye, na asli code. Un numbers me ek driver ka bhi hai, uske wallet
+       aur commission ke saath.
+
+       Pichhli baar bhejne wala chheda (jawab me OTP laut-ana) band kiya tha,
+       par YE waali - verify wali - dekhi hi nahi gayi thi. Aadhi safai poori
+       safai nahi hoti.
+
+       Ab SMS sach me jaata hai, to iski koi wajah nahi bachi. Provider band ho
+       jaye to ye wapas aa jaata hai - taaki aakhri sahara bana rahe. */
+    const isTestOtp = otp === '000000' && isTestPhone(phone) && !smsProviderName();
     const savedOtp = await redis.get('otp:' + phone);
     if (!savedOtp && !isTestOtp) return res.status(400).json({ error: 'OTP has expired! Please request a new one' });
     if (!isTestOtp && savedOtp !== otp) {
