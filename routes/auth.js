@@ -197,16 +197,32 @@ router.post('/verify-otp', async (req, res) => {
       }
       return res.status(400).json({ error: `Incorrect OTP! ${3 - attempts} attempt(s) remaining` });
     }
+    /* OTP tabhi mitao jab session SACH ME ban jaye.
+
+       Pehle wo yahin mit jaata tha, issueSession se PEHLE. Aur issueSession
+       gir sakta hai - girta bhi tha. Nateeja jo screen par dikha: sahi OTP
+       daalne par pehle "Login error: value too long..." aaya, aur dobara
+       dabane par "OTP has expired!" - jabki OTP ko das minute mile the aur wo
+       sirf saat second purana tha. Wo expire nahi hua tha; pehli nakaam koshish
+       use kha gayi thi.
+
+       Ab pehle session banta hai, tabhi OTP hatta hai. Koi bhi nakami ab dobara
+       koshish karne layak chhodti hai - aadmi ke haath me wahi code raha aata
+       hai jo uske phone par likha hai. */
+    const { token, user } = await issueSession(phone, name, req.body.partner_code);
     if (!isTestOtp) {
       await redis.del('otp:' + phone);
       await redis.del('otp:attempts:' + phone);
       await redis.del('otp:sent:' + phone);
     }
-    const { token, user } = await issueSession(phone, name, req.body.partner_code);
     res.json({ message: 'Login successful!', token, user });
   } catch (err) {
+    /* Database ki apni baatein aadmi ko nahi dikhani. "value too long for type
+       character varying(15)" na use kuch batata hai, na wo uske baare me kuch
+       kar sakta hai - aur wo hamare khaano ka naap bahar keh deta hai. Wajah
+       log me jaati hai, jahan wo kaam ki hai. */
     console.error('verify-otp error:', err.message);
-    res.status(500).json({ error: `Login error: ${err.message}` });
+    res.status(500).json({ error: 'Login nahi ho paya — thodi der me dobara try karo' });
   }
 });
 
