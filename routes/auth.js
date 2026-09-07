@@ -447,6 +447,62 @@ router.post('/google', async (req, res) => {
   }
 });
 
+/* POST /api/auth/link-google  { idToken }  - apne khaate se Google jodna.
+
+   YAHI wo cheez hai jo Google ko sach me SMS ka vikalp banati hai.
+
+   Google se aane ke teen haal hote hain:
+     1. google_sub pehle se juda ho  -> seedha andar. Na number, na SMS.
+     2. naya Google, number khali     -> khaata ban jaata hai. SMS ki zaroorat nahi.
+     3. naya Google, par number kisi aur ka -> yahan bina sabut number maan lena
+        us aadmi ka khaata, uska wallet aur uski rides kisi aur ke haath me de
+        dena hai. Sirf yahi ek jagah hai jahan sabut zaroori hai.
+
+   Teesri haalat ka hal "Google par bhi OTP bhejo" NAHI hai - usse Google ka
+   maqsad hi khatm ho jaata (wo to isliye hai ki jab SMS na aaye tab kaam
+   aaye). Hal ye hai ki aadmi JAB ANDAR HO, TAB apna Google jod le. Uske baad
+   wo hamesha pehli haalat me rehta hai: SMS chale ya na chale, Google se
+   andar aa jaata hai.
+
+   Isliye ye raasta userAuth ke peeche hai - jodne wala pehle se apne khaate me
+   hai, aur Google ne uska email sabit kiya hai. Dono taraf sabut hai, isliye
+   yahan kisi OTP ki zaroorat nahi.
+
+   Doosre ke Google se jodna mana hai: agar wo google_sub kisi aur khaate par
+   hai to wahi rehta hai. Warna koi apna Google kisi aur ke khaate par chipka
+   kar us khaate me hamesha ke liye ghusne ka raasta bana leta. */
+router.post('/link-google', userAuth, async (req, res) => {
+  try {
+    const g = await verifyGoogleToken(String(req.body.idToken || ''));
+
+    const other = await db.query(
+      'SELECT id FROM users WHERE google_sub = $1 AND id <> $2', [g.sub, req.user.id]);
+    if (other.rows.length) return res.status(409).json({
+      error: 'Ye Google khaata kisi aur Sppero khaate se juda hai. Doosra Google chunein.',
+      google_taken: true,
+    });
+
+    const upd = await db.query(
+      'UPDATE users SET google_sub = $1, email = COALESCE($2, email) WHERE id = $3 RETURNING id, name, phone, email',
+      [g.sub, g.email || null, req.user.id]);
+    if (!upd.rows[0]) return res.status(404).json({ error: 'Khaata nahi mila' });
+
+    res.json({ success: true, email: g.email || null, user: upd.rows[0] });
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+/* GET /api/auth/google-link  - mera khaata Google se juda hai ya nahi.
+   App ise dekh kar tay karta hai ki "Google jodein" wala rasta dikhana hai ya
+   "juda hua hai" likhna hai. */
+router.get('/google-link', userAuth, async (req, res) => {
+  try {
+    const r = await db.query('SELECT email, google_sub IS NOT NULL AS linked FROM users WHERE id = $1', [req.user.id]);
+    res.json({ linked: !!r.rows[0]?.linked, email: r.rows[0]?.email || null });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
 // POST /api/auth/google/phone  { ticket, phone, name?, partner_code? }
 router.post('/google/phone', async (req, res) => {
   try {
@@ -476,8 +532,19 @@ router.post('/google/phone', async (req, res) => {
          kehta tha ("us number se sign in karo"), aur wo salah abhi kaam ki
          bhi nahi hai: prod par koi SMS provider nahi hai, to OTP wala raasta
          band pada hai. Aadmi ko wahi batao jo wo sach me kar sakta hai. */
-      error: 'This number is already registered to another account. Try a different number, or sign in with the Google account that already has it.',
+      /* Ye sandesh ab us raaste ki taraf bhejta hai jo sach me kaam karta hai.
+
+         Pehle ye kehta tha "doosra number try karo" - par aksar wo number
+         galat nahi hota, wo UNKA HI hota hai; unhone pehle OTP se khaata bana
+         rakha hota hai aur ab Google se aa rahe hain. Unhe doosra number
+         dhoondhne ko kehna unhe apne hi khaate se door bhejna tha.
+
+         Sahi raasta: ek baar OTP se andar aao, aur wahin se Google jod lo.
+         Uske baad Google hamesha seedha kaam karta hai - SMS chale ya na
+         chale. */
+      error: 'Is number par pehle se khaata hai. Ek baar OTP se login karke Profile me "Google jodein" dabaayein — uske baad Google se seedha andar aa jayenge.',
       phone_taken: true,
+      link_hint: true,
     });
 
     /* Already known to us: either a repeat submit, or an account whose number
