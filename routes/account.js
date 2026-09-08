@@ -1,4 +1,23 @@
 const express = require('express');
+const userAuth = require('../middleware/userAuth');
+const ownPhone = require('../middleware/ownPhone');
+/* Niji data ka pehra - ek switch ke peeche.
+
+   Ye raaste kisi ki apni jaankari dete hain, aur ab tak SIRF phone number par
+   de dete the: koi token nahi, koi jaanch nahi. Yaani kisi ka number jaanne
+   wala uska ghar ka pata, parivaar ke number aur shikayatein padh sakta tha -
+   aur number har us driver ko dikhta hai jisne kabhi uski ride li ho.
+
+   Switch isliye ki dono apps in calls par aaj token bhejti hi nahi. Ekdum se
+   chalu karne par har lage hue app par ye sab band ho jaata. Kram: pehle ye
+   inert jaaye -> phir apps token bhejein -> phir switch.
+
+   Yahi dhaancha rides.js me pehle se hai; wahi dohraya gaya hai. */
+const ENFORCE_PDATA = String(process.env.PDATA_AUTH_ENFORCE || '').trim().toLowerCase() === 'true';
+const openDoorPD = (_req, _res, next) => next();
+const gUser = ENFORCE_PDATA ? userAuth : openDoorPD;
+const gOwn  = () => (ENFORCE_PDATA ? ownPhone() : openDoorPD);
+
 const router  = express.Router();
 const db      = require('../config/db');
 const { sendFCM } = require('../config/firebase');
@@ -87,7 +106,7 @@ async function deletionBlockers(phone, role) {
 }
 
 // GET /api/account/deletion — current state, plus what would block it
-router.get('/deletion', async (req, res) => {
+router.get('/deletion', gUser, gOwn(), async (req, res) => {
   const { phone, role } = req.query;
   if (!phone) return res.status(400).json({ error: 'phone required' });
   try {
@@ -107,7 +126,7 @@ router.get('/deletion', async (req, res) => {
 });
 
 // POST /api/account/deletion — raise the request
-router.post('/deletion', async (req, res) => {
+router.post('/deletion', gUser, gOwn(), async (req, res) => {
   const { phone, role, reason } = req.body || {};
   if (!phone) return res.status(400).json({ error: 'phone required' });
   const roleVal = role === 'driver' ? 'driver' : 'customer';
@@ -146,7 +165,7 @@ router.post('/deletion', async (req, res) => {
 });
 
 // POST /api/account/deletion/cancel — change of mind, any time before it runs
-router.post('/deletion/cancel', async (req, res) => {
+router.post('/deletion/cancel', gUser, gOwn(), async (req, res) => {
   const { phone } = req.body || {};
   if (!phone) return res.status(400).json({ error: 'phone required' });
   try {

@@ -1,8 +1,27 @@
 const express = require('express');
 const router = express.Router();
+const ownPhone = require('../middleware/ownPhone');
+const userAuth = require('../middleware/userAuth');
 const db = require('../config/db');
 const { sendFCM } = require('../config/firebase');
 const cloudinary = require('../config/cloudinary');
+/* Niji data ka pehra - ek switch ke peeche.
+
+   Ye raaste kisi ki apni jaankari dete hain, aur ab tak SIRF phone number par
+   de dete the: koi token nahi, koi jaanch nahi. Yaani kisi ka number jaanne
+   wala uska ghar ka pata, parivaar ke number aur shikayatein padh sakta tha -
+   aur number har us driver ko dikhta hai jisne kabhi uski ride li ho.
+
+   Switch isliye ki dono apps in calls par aaj token bhejti hi nahi. Ekdum se
+   chalu karne par har lage hue app par ye sab band ho jaata. Kram: pehle ye
+   inert jaaye -> phir apps token bhejein -> phir switch.
+
+   Yahi dhaancha rides.js me pehle se hai; wahi dohraya gaya hai. */
+const ENFORCE_PDATA = String(process.env.PDATA_AUTH_ENFORCE || '').trim().toLowerCase() === 'true';
+const openDoorPD = (_req, _res, next) => next();
+const gUser = ENFORCE_PDATA ? userAuth : openDoorPD;
+const gOwn  = () => (ENFORCE_PDATA ? ownPhone() : openDoorPD);
+
 
 const CATEGORY_MAP = {
   // Customer categories
@@ -30,7 +49,7 @@ const CATEGORY_MAP = {
 const SLA_HOURS = { urgent: 4, high: 24, normal: 48, low: 72 };
 
 // POST /api/support/tickets — file a new ticket
-router.post('/tickets', async (req, res) => {
+router.post('/tickets', gUser, gOwn(), async (req, res) => {
   const { phone, role, category, description, ride_id, image_base64 } = req.body;
   if (!phone || !role || !category || !description)
     return res.status(400).json({ error: 'phone, role, category, description required' });
@@ -81,7 +100,7 @@ router.post('/tickets', async (req, res) => {
 });
 
 // GET /api/support/tickets — list my tickets
-router.get('/tickets', async (req, res) => {
+router.get('/tickets', gUser, gOwn(), async (req, res) => {
   const { phone, role } = req.query;
   if (!phone) return res.status(400).json({ error: 'phone required' });
   try {
@@ -110,7 +129,7 @@ router.get('/tickets', async (req, res) => {
 });
 
 // GET /api/support/tickets/:id — ticket detail with messages + attachments
-router.get('/tickets/:id', async (req, res) => {
+router.get('/tickets/:id', gUser, gOwn(), async (req, res) => {
   const { phone } = req.query;
   const { id } = req.params;
   if (!phone) return res.status(400).json({ error: 'phone required' });
@@ -137,7 +156,7 @@ router.get('/tickets/:id', async (req, res) => {
 });
 
 // POST /api/support/tickets/:id/reply — user adds a message
-router.post('/tickets/:id/reply', async (req, res) => {
+router.post('/tickets/:id/reply', gUser, gOwn(), async (req, res) => {
   const { phone, message } = req.body;
   const { id } = req.params;
   if (!phone || !message) return res.status(400).json({ error: 'phone and message required' });
