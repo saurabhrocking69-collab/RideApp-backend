@@ -246,7 +246,7 @@ router.get('/my-rides', gUser, gOwn(), async (req, res) => {
 });
 
 // ── DELETE /api/scheduled/:id — cancel a scheduled ride ───────────────────────
-router.delete('/:id', async (req, res) => {
+router.delete('/:id', gUser, gOwn(), async (req, res) => {
   const rideId = req.params.id;
   const { phone, reason } = req.body;
   if (!phone) return res.status(400).json({ error: 'phone required' });

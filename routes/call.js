@@ -1,10 +1,22 @@
 const express = require('express');
 const router = express.Router();
+const userAuth = require('../middleware/userAuth');
+const { ridePartyOrBooking } = require('../middleware/rideParty');
 const db = require('../config/db');
+/* Pehra ek switch ke peeche - wahi jo baaki niji data par hai.
+
+   Bina iske koi bhi ride id badal-badal kar kisi ki baat-cheet padh sakta
+   hai, uski ride me sandesh bhej sakta hai, aur uske driver ko phone bhi
+   laga sakta hai - jo Exotel par asli paisa kharch karta hai. */
+const ENFORCE_PDATA = String(process.env.PDATA_AUTH_ENFORCE || '').trim().toLowerCase() === 'true';
+const openDoorPD = (_req, _res, next) => next();
+const gUser = ENFORCE_PDATA ? userAuth : openDoorPD;
+const gParty = (f, b) => (ENFORCE_PDATA ? ridePartyOrBooking(f, b) : openDoorPD);
+
 
 // POST /api/call/initiate — Call initiation
 // Uses Exotel if configured; otherwise falls back to direct dial.
-router.post('/initiate', async (req, res) => {
+router.post('/initiate', gUser, gParty('ride_id'), async (req, res) => {
   const { ride_id, booking_id, caller_role } = req.body;
   if (!caller_role || !['customer', 'driver'].includes(caller_role))
     return res.status(400).json({ error: 'caller_role must be customer or driver' });

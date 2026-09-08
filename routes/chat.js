@@ -1,11 +1,23 @@
 const express = require('express');
 const router = express.Router();
+const userAuth = require('../middleware/userAuth');
+const { ridePartyOrBooking } = require('../middleware/rideParty');
 const db = require('../config/db');
 const { emitToRoom } = require('../config/socket');
 const { sendFCM } = require('../config/firebase');
+/* Pehra ek switch ke peeche - wahi jo baaki niji data par hai.
+
+   Bina iske koi bhi ride id badal-badal kar kisi ki baat-cheet padh sakta
+   hai, uski ride me sandesh bhej sakta hai, aur uske driver ko phone bhi
+   laga sakta hai - jo Exotel par asli paisa kharch karta hai. */
+const ENFORCE_PDATA = String(process.env.PDATA_AUTH_ENFORCE || '').trim().toLowerCase() === 'true';
+const openDoorPD = (_req, _res, next) => next();
+const gUser = ENFORCE_PDATA ? userAuth : openDoorPD;
+const gParty = (f, b) => (ENFORCE_PDATA ? ridePartyOrBooking(f, b) : openDoorPD);
+
 
 // POST /api/chat/send  (works for standard rides AND hourly rides via 'h_' prefix)
-router.post('/send', async (req, res) => {
+router.post('/send', gUser, gParty('ride_id'), async (req, res) => {
   const { ride_id, sender, message } = req.body;
   if (!ride_id || !sender || !message) return res.status(400).json({ error: 'ride_id, sender, message required' });
 
@@ -60,7 +72,7 @@ router.post('/send', async (req, res) => {
 });
 
 // GET /api/chat/:rideId  (works for both standard 'rideId' and hourly 'h_55')
-router.get('/:rideId', async (req, res) => {
+router.get('/:rideId', gUser, gParty('rideId'), async (req, res) => {
   try {
     const r = await db.query(
       'SELECT sender, message, created_at FROM chat_messages WHERE ride_id = $1 ORDER BY created_at ASC',

@@ -77,6 +77,52 @@ const extParty = (field = 'extension_id') => async (req, res, next) => {
   }
 };
 
+/* Ride ya ghanton wali booking - dono me se jo bhi ho.
+
+   chat aur call dono raaste dono tarah ki ride chalate hain: aam ride ki id,
+   aur ghanton wali booking (chat me "h_" lagi hui id, call me alag booking_id).
+   Sirf rides table dekhne wala pehra ghanton wali har chat ko 404 kar deta.
+
+   `field` aam ride ke liye, `bookingField` ghanton wali ke liye. Chat me dono
+   ek hi khet me aate hain ("h_" se pehchan hoti hai), isliye "h_" wali jaanch
+   yahan bhi hai. */
+const ridePartyOrBooking = (field = 'ride_id', bookingField = 'booking_id') => async (req, res, next) => {
+  const raw = pick(req, field);
+  const bookingDirect = pick(req, bookingField);
+  const isHourly = bookingDirect || (raw.startsWith('h_') ? raw.slice(2) : '');
+
+  const me = norm(req.user && req.user.phone);
+  try {
+    if (isHourly) {
+      const b = await db.query(
+        'SELECT id, customer_phone, driver_phone FROM hourly_bookings WHERE id = $1', [isHourly]);
+      if (!b.rows[0]) return res.status(404).json({ error: 'Booking not found' });
+      const row = b.rows[0];
+      if (me !== norm(row.customer_phone) && me !== norm(row.driver_phone))
+        return res.status(403).json({ error: 'This is not your ride' });
+      req.booking = row;
+      return next();
+    }
+    if (!raw) return res.status(400).json({ error: `${field} is required` });
+    const r = await db.query(
+      `SELECT r.id, r.status, p.phone AS passenger_phone, d.phone AS driver_phone
+         FROM rides r
+         LEFT JOIN users p ON p.id = r.passenger_id
+         LEFT JOIN users d ON d.id = r.driver_id
+        WHERE r.id = $1`, [raw]);
+    if (!r.rows[0]) return res.status(404).json({ error: 'Ride not found' });
+    const row = r.rows[0];
+    if (me !== norm(row.passenger_phone) && me !== norm(row.driver_phone))
+      return res.status(403).json({ error: 'This is not your ride' });
+    req.ride = row;
+    next();
+  } catch (e) {
+    console.error('[ridePartyOrBooking]', e.message);
+    res.status(500).json({ error: 'Something went wrong — please try again' });
+  }
+};
+
 module.exports = rideParty;
 module.exports.rideParty = rideParty;
 module.exports.extParty = extParty;
+module.exports.ridePartyOrBooking = ridePartyOrBooking;
