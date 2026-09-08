@@ -1,50 +1,30 @@
-/* "Ye data sirf uska hai jiska hai" - ek jagah likha hua.
- *
- * KYA KHULA PADA THA (2026-09-08 ko naapa gaya, live):
- * 60 raaste bilkul bina pehre ke the. Unme se sabse bure wo the jo NIJI
- * jaankari sirf phone number par de dete the - koi token nahi, koi jaanch
- * nahi. Apne hi number par jaanch kar dekha:
- *     GET /api/places/saved?phone=...        -> 200, ghar/office ka pata
- *     GET /api/emergency-contacts?phone=...  -> 200, parivaar ke naam-number
- *     GET /api/support/tickets?phone=...     -> 200, saari shikayatein
- *
- * Ye ride app me aur bhi bura hai: kisi ka number har us driver ko dikhta hai
- * jisne kabhi uski ride li ho. Yaani ek ride ke baad kisi ka ghar ka pata
- * nikalna bas ek request ki baat thi.
- *
- * DO PARTEIN, wahi jo uploadGuard me hain aur wahi wajah:
- *
- * 1. Pehchan aur maalikana - PDATA_AUTH_ENFORCE ke peeche, abhi BAND. Kyoki
- *    aaj dono apps in calls par token bhejti hi nahi (jaancha: places aur
- *    support par `fetch`, emergency-contacts par `apiGet` - koi token nahi).
- *    Abhi chalu kar dete to har lage hue app par ye sab kaam karna band kar
- *    deta - theek wahi outage jo is repo me 2026-07-29 ko ho chuka hai.
- *
- * 2. Isliye kram yahi hai aur isme koi shortcut nahi: pehle backend inert jaaye
- *    -> phir apps token bhejna shuru karein -> phir switch chalu ho.
- *
- * Maalikana ki jaanch `req.user.phone` se hoti hai, body/query ke `phone` se
- * nahi - warna pehra hota hi nahi: koi bhi kisi ka bhi number likh deta.
- */
-const userAuth = require('./userAuth');
+/* "The phone in this request must be the caller's own."
+   Most endpoints on this platform identify a person by a phone number in the
+   body or query. userAuth proves WHO is calling; this proves they are asking
+   about themselves. Both are needed — without this, any logged-in user can
+   read or spend any other account simply by typing their number.
 
-const enforce = () => String(process.env.PDATA_AUTH_ENFORCE || '').toLowerCase() === 'true';
+   Lives here rather than being copied into each router so the rule has one
+   definition. It was written four times in four files before this, which is
+   how a fifth file ends up quietly not having it.
 
-// Number kai roop me aata hai (+91, spaces, 0 se shuru) - aakhri 10 ank hi
-// asli pehchan hain. Isse "91xxxx" aur "xxxx" ko alag maan kar pehra galti se
-// kisi ko uske apne data se rok na de.
-const norm = (p) => String(p || '').replace(/\D/g, '').slice(-10);
-
-module.exports = function ownPhone(req, res, next) {
-  if (!enforce()) return next();
-  userAuth(req, res, () => {
-    const asked = norm(req.body?.phone ?? req.query?.phone);
-    // Koi phone maanga hi nahi (jaise soochi apne aap token se nikalti ho) -
-    // to token hi kaafi hai, aage jaane do.
-    if (!asked) return next();
-    if (norm(req.user?.phone) !== asked) {
-      return res.status(403).json({ error: 'This is not your account' });
-    }
-    next();
-  });
+   Usage:  router.post('/redeem', userAuth, ownPhone(), handler)
+           router.post('/accept', userAuth, ownPhone('driver_phone'), handler)
+*/
+module.exports = (field = 'phone') => (req, res, next) => {
+  // Body, query or path. /driver/level/:phone carries it in the URL, and a
+  // check that only read the body would pass it through untested.
+  const given = String(
+    (req.body && req.body[field]) ??
+    (req.query && req.query[field]) ??
+    (req.params && req.params[field]) ??
+    ''
+  ).trim();
+  if (!given) return res.status(400).json({ error: `${field} is required` });
+  // Compared on the last 10 digits, so a number stored or sent with +91 or
+  // spaces does not lock a legitimate caller out of their own account.
+  const norm = v => String(v).replace(/\D/g, '').slice(-10);
+  if (norm(req.user && req.user.phone) !== norm(given))
+    return res.status(403).json({ error: 'You can only act on your own account' });
+  next();
 };

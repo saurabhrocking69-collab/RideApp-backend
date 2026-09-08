@@ -1,7 +1,6 @@
 const express = require('express');
 const router  = express.Router();
 const db      = require('../config/db');
-const ownPhone = require('../middleware/ownPhone');
 const { sendFCM } = require('../config/firebase');
 
 // ── Account deletion ─────────────────────────────────────────────────────────
@@ -88,7 +87,7 @@ async function deletionBlockers(phone, role) {
 }
 
 // GET /api/account/deletion — current state, plus what would block it
-router.get('/deletion', ownPhone, async (req, res) => {
+router.get('/deletion', async (req, res) => {
   const { phone, role } = req.query;
   if (!phone) return res.status(400).json({ error: 'phone required' });
   try {
@@ -108,7 +107,7 @@ router.get('/deletion', ownPhone, async (req, res) => {
 });
 
 // POST /api/account/deletion — raise the request
-router.post('/deletion', ownPhone, async (req, res) => {
+router.post('/deletion', async (req, res) => {
   const { phone, role, reason } = req.body || {};
   if (!phone) return res.status(400).json({ error: 'phone required' });
   const roleVal = role === 'driver' ? 'driver' : 'customer';
@@ -147,7 +146,7 @@ router.post('/deletion', ownPhone, async (req, res) => {
 });
 
 // POST /api/account/deletion/cancel — change of mind, any time before it runs
-router.post('/deletion/cancel', ownPhone, async (req, res) => {
+router.post('/deletion/cancel', async (req, res) => {
   const { phone } = req.body || {};
   if (!phone) return res.status(400).json({ error: 'phone required' });
   try {
