@@ -6,6 +6,19 @@ const axios = require('axios');
 const db = require('../config/db');
 const userAuth = require('../middleware/userAuth');
 const ownPhone = require('../middleware/ownPhone');
+/* Niji data ka pehra - wahi switch jo misc/support/account par hai.
+
+   Ye raaste kisi ki apni cheez par kaam karte hain aur ab tak sirf phone
+   number par chalte the. Sabse bura save-fcm-token: koi bhi kisi ka push
+   token badal kar uski saari soochnayein apne phone par mod sakta tha.
+
+   Switch isliye ki apps ka token bhejna abhi-abhi nikla hai; ekdum se chalu
+   karne par purani app par sab band ho jaata. */
+const ENFORCE_PDATA = String(process.env.PDATA_AUTH_ENFORCE || '').trim().toLowerCase() === 'true';
+const openDoorPD = (_req, _res, next) => next();
+const gUser = ENFORCE_PDATA ? userAuth : openDoorPD;
+const gOwn  = (f) => (ENFORCE_PDATA ? ownPhone(f) : openDoorPD);
+
 const { redis } = require('../config/redis');
 // A number whose account was deleted is held closed for a while before it can
 // be used again — see routes/account.js. Checked in BOTH otp endpoints: the
@@ -246,7 +259,7 @@ router.post('/refresh', async (req, res) => {
 });
 
 // POST /api/auth/update-name
-router.post('/update-name', async (req, res) => {
+router.post('/update-name', gUser, gOwn(), async (req, res) => {
   const { phone, name, gender } = req.body;
   try {
     await db.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS gender VARCHAR(10)').catch(() => {});
@@ -303,7 +316,7 @@ router.get('/call-phone', userAuth, ownPhone(), async (req, res) => {
 });
 
 // POST /api/auth/save-fcm-token
-router.post('/save-fcm-token', async (req, res) => {
+router.post('/save-fcm-token', gUser, gOwn(), async (req, res) => {
   const { phone, token, role } = req.body;
   try {
     // Ensure driver_fcm_token column exists (idempotent migration)
@@ -318,7 +331,7 @@ router.post('/save-fcm-token', async (req, res) => {
 });
 
 // GET /api/auth/check-status
-router.get('/check-status', async (req, res) => {
+router.get('/check-status', gUser, gOwn(), async (req, res) => {
   const { phone } = req.query;
   try {
     const user = await db.query(

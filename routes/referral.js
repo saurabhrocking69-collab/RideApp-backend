@@ -1,6 +1,21 @@
 const express = require('express');
 const router = express.Router();
+const ownPhone = require('../middleware/ownPhone');
+const userAuth = require('../middleware/userAuth');
 const db = require('../config/db');
+/* Niji data ka pehra - wahi switch jo misc/support/account par hai.
+
+   Ye raaste kisi ki apni cheez par kaam karte hain aur ab tak sirf phone
+   number par chalte the. Sabse bura save-fcm-token: koi bhi kisi ka push
+   token badal kar uski saari soochnayein apne phone par mod sakta tha.
+
+   Switch isliye ki apps ka token bhejna abhi-abhi nikla hai; ekdum se chalu
+   karne par purani app par sab band ho jaata. */
+const ENFORCE_PDATA = String(process.env.PDATA_AUTH_ENFORCE || '').trim().toLowerCase() === 'true';
+const openDoorPD = (_req, _res, next) => next();
+const gUser = ENFORCE_PDATA ? userAuth : openDoorPD;
+const gOwn  = (f) => (ENFORCE_PDATA ? ownPhone(f) : openDoorPD);
+
 const { sendFCM } = require('../config/firebase');
 
 function genReferralCode(name) {
@@ -9,7 +24,7 @@ function genReferralCode(name) {
 }
 
 // GET /api/referral/my-code
-router.get('/my-code', async (req, res) => {
+router.get('/my-code', gUser, gOwn(), async (req, res) => {
   const { phone } = req.query;
   try {
     const user = await db.query('SELECT id, name, referral_code FROM users WHERE phone = $1', [phone]);
@@ -26,7 +41,7 @@ router.get('/my-code', async (req, res) => {
 });
 
 // POST /api/referral/apply
-router.post('/apply', async (req, res) => {
+router.post('/apply', gUser, gOwn(), async (req, res) => {
   const { phone, referral_code } = req.body;
   try {
     const newUser = await db.query('SELECT id FROM users WHERE phone = $1', [phone]);

@@ -1,5 +1,20 @@
 'use strict';
 const express = require('express');
+const userAuth = require('../middleware/userAuth');
+const ownPhone = require('../middleware/ownPhone');
+/* Niji data ka pehra - wahi switch jo misc/support/account par hai.
+
+   Ye raaste kisi ki apni cheez par kaam karte hain aur ab tak sirf phone
+   number par chalte the. Sabse bura save-fcm-token: koi bhi kisi ka push
+   token badal kar uski saari soochnayein apne phone par mod sakta tha.
+
+   Switch isliye ki apps ka token bhejna abhi-abhi nikla hai; ekdum se chalu
+   karne par purani app par sab band ho jaata. */
+const ENFORCE_PDATA = String(process.env.PDATA_AUTH_ENFORCE || '').trim().toLowerCase() === 'true';
+const openDoorPD = (_req, _res, next) => next();
+const gUser = ENFORCE_PDATA ? userAuth : openDoorPD;
+const gOwn  = (f) => (ENFORCE_PDATA ? ownPhone(f) : openDoorPD);
+
 const router  = express.Router();
 const db      = require('../config/db');
 const { sendFCM }        = require('../config/firebase');
@@ -204,7 +219,7 @@ router.post('/', async (req, res) => {
 });
 
 // ── GET /api/scheduled/my-rides?phone=xxx ─────────────────────────────────────
-router.get('/my-rides', async (req, res) => {
+router.get('/my-rides', gUser, gOwn(), async (req, res) => {
   const { phone } = req.query;
   if (!phone) return res.status(400).json({ error: 'phone required' });
   try {
