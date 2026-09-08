@@ -41,9 +41,21 @@ async function sendFCM(phone, title, body, data = {}, options = {}) {
   try {
     let token = options._token || null;
     if (!token) {
-      const col  = role === 'driver'
-        ? 'COALESCE(driver_fcm_token, fcm_token)'
-        : 'fcm_token';
+      /* Driver ka sandesh SIRF driver app ko - grahak wale token par nahi.
+
+         Pehle yahan COALESCE(driver_fcm_token, fcm_token) tha: driver ka token
+         na mile to grahak wale par bhej do. Wo "kuchh na jaane se behtar" wali
+         soch thi, par sach ulta nikla - ek captain ne registration bheja, uska
+         driver_fcm_token abhi saved hi nahi tha, aur "Aapka account approve ho
+         gaya" wali soochna SPPERO (grahak app) me aa gayi. Usne tap kiya to
+         Sppero Buddy ki jagah grahak app khul gayi, home page par.
+
+         Yaani wo fallback madad nahi karta - wo sandesh ko galat app me daal
+         deta hai, jahan uska koi matlab nahi aur tap karne par galat app
+         khulti hai. Token na ho to na bhejna hi theek hai; asli ilaaj ye hai
+         ki driver app apna token pehle hi save kare (registration ke turant
+         baad), aur wo alag se kiya gaya hai. */
+      const col  = role === 'driver' ? 'driver_fcm_token' : 'fcm_token';
       // Normalize: strip +91 or 91 prefix so DB lookup always uses 10-digit phone
       const normalizedPhone = String(phone).replace(/^\+?91(\d{10})$/, '$1');
       const user = await db.query(`SELECT ${col} AS fcm_token FROM users WHERE phone = $1`, [normalizedPhone]);
