@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const db = require('../config/db');
+const ownPhone = require('../middleware/ownPhone');
 const { sendFCM } = require('../config/firebase');
 const cloudinary = require('../config/cloudinary');
 
@@ -30,7 +31,7 @@ const CATEGORY_MAP = {
 const SLA_HOURS = { urgent: 4, high: 24, normal: 48, low: 72 };
 
 // POST /api/support/tickets — file a new ticket
-router.post('/tickets', async (req, res) => {
+router.post('/tickets', ownPhone, async (req, res) => {
   const { phone, role, category, description, ride_id, image_base64 } = req.body;
   if (!phone || !role || !category || !description)
     return res.status(400).json({ error: 'phone, role, category, description required' });
@@ -81,7 +82,7 @@ router.post('/tickets', async (req, res) => {
 });
 
 // GET /api/support/tickets — list my tickets
-router.get('/tickets', async (req, res) => {
+router.get('/tickets', ownPhone, async (req, res) => {
   const { phone, role } = req.query;
   if (!phone) return res.status(400).json({ error: 'phone required' });
   try {
@@ -110,7 +111,7 @@ router.get('/tickets', async (req, res) => {
 });
 
 // GET /api/support/tickets/:id — ticket detail with messages + attachments
-router.get('/tickets/:id', async (req, res) => {
+router.get('/tickets/:id', ownPhone, async (req, res) => {
   const { phone } = req.query;
   const { id } = req.params;
   if (!phone) return res.status(400).json({ error: 'phone required' });
@@ -137,7 +138,7 @@ router.get('/tickets/:id', async (req, res) => {
 });
 
 // POST /api/support/tickets/:id/reply — user adds a message
-router.post('/tickets/:id/reply', async (req, res) => {
+router.post('/tickets/:id/reply', ownPhone, async (req, res) => {
   const { phone, message } = req.body;
   const { id } = req.params;
   if (!phone || !message) return res.status(400).json({ error: 'phone and message required' });

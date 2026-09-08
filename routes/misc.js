@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const db = require('../config/db');
+const ownPhone = require('../middleware/ownPhone');
 const { shortRideId } = require('../services/rideId');
 const { sendFCM } = require('../config/firebase');
 const { suggestPickupPoints, suggestDropPoints, landmarkFor, venueFor } = require('../services/pickupPoints');
@@ -168,7 +169,7 @@ router.post('/sos', async (req, res) => {
 });
 
 // GET /api/emergency-contacts?phone=X — backend-synced, survives reinstall/device change
-router.get('/emergency-contacts', async (req, res) => {
+router.get('/emergency-contacts', ownPhone, async (req, res) => {
   const { phone } = req.query;
   try {
     const user = await db.query('SELECT id FROM users WHERE phone = $1', [phone]);
@@ -182,7 +183,7 @@ router.get('/emergency-contacts', async (req, res) => {
 });
 
 // POST /api/emergency-contacts/save
-router.post('/emergency-contacts/save', async (req, res) => {
+router.post('/emergency-contacts/save', ownPhone, async (req, res) => {
   const { phone, name, contact_phone } = req.body;
   if (!name || !contact_phone) return res.status(400).json({ error: 'name and contact_phone required' });
   try {
@@ -199,7 +200,7 @@ router.post('/emergency-contacts/save', async (req, res) => {
 });
 
 // POST /api/emergency-contacts/delete
-router.post('/emergency-contacts/delete', async (req, res) => {
+router.post('/emergency-contacts/delete', ownPhone, async (req, res) => {
   const { id } = req.body;
   try {
     await db.query('DELETE FROM emergency_contacts WHERE id = $1', [id]);
@@ -208,7 +209,7 @@ router.post('/emergency-contacts/delete', async (req, res) => {
 });
 
 // GET /api/places/saved
-router.get('/places/saved', async (req, res) => {
+router.get('/places/saved', ownPhone, async (req, res) => {
   const { phone } = req.query;
   try {
     const user = await db.query('SELECT id FROM users WHERE phone = $1', [phone]);
@@ -219,7 +220,7 @@ router.get('/places/saved', async (req, res) => {
 });
 
 // POST /api/places/save
-router.post('/places/save', async (req, res) => {
+router.post('/places/save', ownPhone, async (req, res) => {
   const { phone, label, address, lat, lng } = req.body;
   try {
     const user = await db.query('SELECT id FROM users WHERE phone = $1', [phone]);
@@ -231,7 +232,7 @@ router.post('/places/save', async (req, res) => {
 });
 
 // POST /api/places/delete
-router.post('/places/delete', async (req, res) => {
+router.post('/places/delete', ownPhone, async (req, res) => {
   const { id } = req.body;
   try {
     await db.query('DELETE FROM saved_places WHERE id = $1', [id]);
@@ -240,7 +241,7 @@ router.post('/places/delete', async (req, res) => {
 });
 
 // POST /api/scratch-card/create
-router.post('/scratch-card/create', async (req, res) => {
+router.post('/scratch-card/create', ownPhone, async (req, res) => {
   const { phone, ride_id } = req.body;
   try {
     const user = await db.query('SELECT id FROM users WHERE phone = $1', [phone]);
@@ -259,7 +260,7 @@ router.post('/scratch-card/create', async (req, res) => {
 });
 
 // POST /api/scratch-card/scratch
-router.post('/scratch-card/scratch', async (req, res) => {
+router.post('/scratch-card/scratch', ownPhone, async (req, res) => {
   const { card_id, phone } = req.body;
   try {
     const card = await db.query('SELECT * FROM scratch_cards WHERE id = $1', [card_id]);
@@ -276,7 +277,7 @@ router.post('/scratch-card/scratch', async (req, res) => {
 });
 
 // GET /api/loyalty/my-points
-router.get('/loyalty/my-points', async (req, res) => {
+router.get('/loyalty/my-points', ownPhone, async (req, res) => {
   const { phone } = req.query;
   try {
     const user = await db.query('SELECT id FROM users WHERE phone = $1', [phone]);
@@ -291,7 +292,7 @@ router.get('/loyalty/my-points', async (req, res) => {
 });
 
 // POST /api/loyalty/redeem
-router.post('/loyalty/redeem', async (req, res) => {
+router.post('/loyalty/redeem', ownPhone, async (req, res) => {
   const { phone, points } = req.body;
   if (!phone || !points || points < 100) return res.status(400).json({ error: 'Minimum 100 points required' });
   if (points % 100 !== 0) return res.status(400).json({ error: 'Points must be a multiple of 100' });
@@ -318,7 +319,7 @@ router.post('/loyalty/redeem', async (req, res) => {
 });
 
 // GET /api/rewards/dashboard?phone=X
-router.get('/rewards/dashboard', async (req, res) => {
+router.get('/rewards/dashboard', ownPhone, async (req, res) => {
   const { phone } = req.query;
   try {
     const user = await db.query('SELECT id FROM users WHERE phone=$1', [phone]);
@@ -405,7 +406,7 @@ router.get('/app-download', async (_req, res) => {
 
 // GET /api/notifications (in-app notifications)
 // ?target=PHONE&role=customer|driver
-router.get('/notifications', async (req, res) => {
+router.get('/notifications', ownPhone, async (req, res) => {
   const { role } = req.query;
   const mine = phoneFromToken(req);
   if (!mine && NOTIF_ENFORCE) return res.status(401).json({ error: 'Login required' });
@@ -432,7 +433,7 @@ router.get('/notifications', async (req, res) => {
 });
 
 // GET /api/notifications/latest
-router.get('/notifications/latest', async (req, res) => {
+router.get('/notifications/latest', ownPhone, async (req, res) => {
   const mine = phoneFromToken(req);
   if (!mine && NOTIF_ENFORCE) return res.status(401).json({ error: 'Login required' });
   const phone = mine || req.query.phone;
@@ -526,7 +527,7 @@ router.post('/rides/check-range', async (req, res) => {
 });
 
 // GET /api/customer/rating?phone=X
-router.get('/customer/rating', async (req, res) => {
+router.get('/customer/rating', ownPhone, async (req, res) => {
   const { phone } = req.query;
   if (!phone) return res.status(400).json({ error: 'phone required' });
   try {
@@ -544,7 +545,7 @@ router.get('/customer/rating', async (req, res) => {
 });
 
 // GET /api/customer/tier?phone=X — loyalty tier based on all-time completed rides
-router.get('/customer/tier', async (req, res) => {
+router.get('/customer/tier', ownPhone, async (req, res) => {
   const { phone } = req.query;
   if (!phone) return res.status(400).json({ error: 'phone required' });
   try {
