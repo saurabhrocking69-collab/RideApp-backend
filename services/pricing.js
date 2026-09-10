@@ -131,9 +131,25 @@ const DIST_T1 = 8;
 const DIST_T2 = 20;
 
 /**
- * Calculate fare using the full Sppero fare model:
- * base + tiered distance + time component, with night multiplier.
- * Platform fee added flat on top (not subject to night/surge).
+ * Shehri ride ka kiraya.
+ *
+ *     tiered distance + time, night multiplier, phir min_fare ka FARSH,
+ *     aur uske upar flat platform fee (jo night/surge se nahi badalti).
+ *
+ * `base_fare` is jod me NAHI hai - jaan boojh kar. Ye docstring pehle "base +
+ * tiered distance + time" kehti thi, jo galat tha: baseFare neeche padha jaata
+ * hai, jawab me laut a diya jaata hai, aur jod me kabhi nahi aata. Live naap
+ * (5 km): hisse jodne par bike 65 / auto 98 / car 137.5, par asal me liya
+ * jaata hai 50 / 73 / 98 - farak har baar theek base_fare jitna.
+ *
+ * Jo kaam base_fare se ummeed ki jaati hai - "chahe 100 meter ki ride ho, itna
+ * to lagega hi" - wo `min_fare` karta hai, neeche Math.max wali line me. Do
+ * khaane ek hi kaam ke lagte hain; kaam sirf min_fare karta hai.
+ *
+ * Yahan base_fare ko jod dena ek DAAM ka faisla hoga (har shehri ride Rs 15-40
+ * mehngi), code ka nahi - isliye wo nahi kiya gaya. Intercity aur parcel ke
+ * apne model me base_fare sach me judta hai; unka is function se koi lena-dena
+ * nahi.
  *
  * @param {object} f          - fare_settings row
  * @param {number} distKm     - trip distance in km
@@ -142,6 +158,7 @@ const DIST_T2 = 20;
  * @returns {object} fare breakdown
  */
 function calculateFare(f, distKm, durationMin = 0, isNight = false) {
+  // Sirf jawab me lautane ke liye - jod me nahi. Upar wali tippani dekhein.
   const baseFare  = parseFloat(f.base_fare)     || 0;
   const r1        = parseFloat(f.per_km_rate)   || 0;
   const r2        = f.per_km_rate_t2 != null ? parseFloat(f.per_km_rate_t2) : r1;
@@ -162,6 +179,9 @@ function calculateFare(f, distKm, durationMin = 0, isNight = false) {
 
   const timeFare  = durationMin * timeRate;
   const meterFare = Math.round((distFare + timeFare) * nightMult);
+  /* Yahi wo farsh hai jiski dukaan ko zaroorat hai: 100 meter ki ride ho ya
+     2 km ki, ismein se kam kabhi nahi. Live naapa (bike, min_fare 30): 0.1 /
+     0.5 / 2 km - teeno par 32 rupaye. */
   const tripFare  = Math.max(minFare, meterFare);
   const totalFare = tripFare + platFee;
 
