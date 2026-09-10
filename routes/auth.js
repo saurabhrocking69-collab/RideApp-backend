@@ -46,6 +46,36 @@ const testPhones = () => String(process.env.TEST_OTP_PHONES || '')
   .split(',').map(s => s.trim()).filter(s => /^[0-9]{10}$/.test(s));
 const isTestPhone = (phone) => testPhones().includes(String(phone || ''));
 
+/* ── Google ke reviewer ka darwaza ───────────────────────────────────────────
+
+   Play ki sabse aam asweekriti: "We were unable to access your app." Reviewer
+   Bharat ke bahar hota hai, bharatiya SMS nahi pa sakta, aur andar aane ka ek
+   hi raasta hai - OTP.
+
+   Ye TEST_OTP_PHONES se jaan-boojh kar ALAG hai, aur yahi sabse zaroori baat
+   hai: usme dukaan ke apne ASLI number pade hain (ek driver ka bhi). Us switch
+   ko provider ke bawajood khol dena matlab wo asli khaate kisi ke bhi liye khol
+   dena - wallet, kamai, itihaas samet. Ek chhed band karke doosra kholna.
+
+   Yahan sirf EK number chalta hai, aur wo aisa number hona chahiye jo kisi ka ho
+   hi na sake: bharatiya mobile 6-9 se shuru hote hain, to 1000000001 jaisa
+   number kabhi kisi asli aadmi ka nahi hoga. Chhed leak bhi ho jaye to kisi ka
+   kuchh nahi jaata.
+
+   Code yahan likha NAHI hai - wo REVIEW_OTP me rehta hai, taaki badalne ke liye
+   kisi ko code chhoona na pade.
+
+   Dono me se ek bhi na ho to ye darwaza HAI HI NAHI. Koi default nahi. */
+const reviewPhone = () => String(process.env.REVIEW_PHONE || '').trim();
+const reviewOtp   = () => String(process.env.REVIEW_OTP   || '').trim();
+function isReviewLogin(phone, otp) {
+  const rp = reviewPhone(), ro = reviewOtp();
+  // Dono set hone chahiye, aur code khali nahi ho sakta - warna khali OTP
+  // bhejne wala andar aa jaata.
+  if (!rp || !ro || ro.length < 4) return false;
+  return String(phone || '').trim() === rp && String(otp || '').trim() === ro;
+}
+
 /* One place that turns a PROVEN phone number into a logged-in session.
    Only verify-otp uses it today, but it stays factored out on purpose: the
    account rules — what counts as a new signup, when a partner may claim one,
@@ -146,6 +176,16 @@ router.post('/send-otp', async (req, res) => {
        number ko bhi asli SMS milega, baaki sabki tarah. TEST_OTP_PHONES aur
        ALLOW_TEST_OTP ko hataya nahi gaya - agar kabhi provider band ho jaye to
        wo aakhri sahara bane rahe. */
+    /* Reviewer ke number par SMS bhejne ki koshish hi nahi.
+
+       Wo number kisi ka hai hi nahi, to provider use thukra dega aur send-otp
+       502 de dega - yaani reviewer pehle hi kadam par atak jayega. Yahan seedha
+       "bhej diya" keh dena hi sach ke sabse kareeb hai: uska code SMS se nahi,
+       Play Console ke App access wale khaane se aata hai. */
+    if (isReviewLogin(phone, reviewOtp())) {
+      console.warn('[review] send-otp us number par jo Play review ke liye rakha hai');
+      return res.json({ message: 'OTP sent', success: true });
+    }
     if (!provider && isTestPhone(phone)) {
       return res.json({ message: 'Test number — OTP returned here', success: true, otp });
     }
@@ -198,9 +238,17 @@ router.post('/verify-otp', async (req, res) => {
        Ab SMS sach me jaata hai, to iski koi wajah nahi bachi. Provider band ho
        jaye to ye wapas aa jaata hai - taaki aakhri sahara bana rahe. */
     const isTestOtp = otp === '000000' && isTestPhone(phone) && !smsProviderName();
+    /* Reviewer ka darwaza - provider ho ya na ho, ye khulta hai. Wahi iska
+       maqsad hai: SMS ke bina andar aana.
+
+       Har baar log me ek line, kyoki ye ek jaan-boojh kar chhoda hua raasta hai
+       aur jo raasta dikhta nahi wo ek din bhula diya jaata hai. Agar kabhi koi
+       aur ise chhue, ye line hi batayegi. */
+    const isReview = isReviewLogin(phone, otp);
+    if (isReview) console.warn('[review] Play review wale khaate se login');
     const savedOtp = await redis.get('otp:' + phone);
-    if (!savedOtp && !isTestOtp) return res.status(400).json({ error: 'OTP has expired! Please request a new one' });
-    if (!isTestOtp && savedOtp !== otp) {
+    if (!savedOtp && !isTestOtp && !isReview) return res.status(400).json({ error: 'OTP has expired! Please request a new one' });
+    if (!isTestOtp && !isReview && savedOtp !== otp) {
       const attempts = await redis.incr('otp:attempts:' + phone);
       await redis.expire('otp:attempts:' + phone, 300);
       if (attempts >= 3) {
