@@ -11,6 +11,8 @@
    Usage:  router.post('/redeem', userAuth, ownPhone(), handler)
            router.post('/accept', userAuth, ownPhone('driver_phone'), handler)
 */
+const { authDenied } = require('./authDenied');
+
 module.exports = (field = 'phone') => (req, res, next) => {
   // Body, query or path. /driver/level/:phone carries it in the URL, and a
   // check that only read the body would pass it through untested.
@@ -24,7 +26,13 @@ module.exports = (field = 'phone') => (req, res, next) => {
   // Compared on the last 10 digits, so a number stored or sent with +91 or
   // spaces does not lock a legitimate caller out of their own account.
   const norm = v => String(v).replace(/\D/g, '').slice(-10);
-  if (norm(req.user && req.user.phone) !== norm(given))
+  if (norm(req.user && req.user.phone) !== norm(given)) {
+    /* Ye 401 se alag aur zyada gambhir hai: aadmi LOGGED IN hai aur kisi AUR ka
+       number maang raha hai. Ya to app me koi purani jagah galat number bhej
+       rahi hai, ya sach me koi doosre ka data padhne ki koshish kar raha hai.
+       Dono soorat me ye dikhna chahiye. Number phir bhi nahi likha jaata. */
+    authDenied(req, 'kisi-aur-ka-number');
     return res.status(403).json({ error: 'You can only act on your own account' });
+  }
   next();
 };
