@@ -22,6 +22,14 @@
    par usne li nahi, uske liye ye pehra nahi lagta (/accept par ownPhone
    ('driver_phone') hai) — warna naya offer lete hi matching tut jaati. */
 const db = require('../config/db');
+/* Ye 403 bhi dikhna chahiye.
+
+   Chat par pehra do parton ka hai: userAuth (token hai?) aur ye (ye ride
+   tumhari hai?). Pehli parat ka inkaar log me jaata tha, doosri ka nahi - to
+   agar koi driver yahan atke to log bilkul saaf dikhta aur wajah phir se
+   andaaze se dhoondhni padti. Aadhi jagah par roshni rakhna poore andhere se
+   thoda hi behtar hai. */
+const { authDenied } = require('./authDenied');
 
 // Aakhri 10 ank par milaan, taaki +91 ya space wala number khud ko hi na roke
 const norm = v => String(v || '').replace(/\D/g, '').slice(-10);
@@ -46,8 +54,10 @@ const rideParty = (field = 'ride_id') => async (req, res, next) => {
     if (!r.rows[0]) return res.status(404).json({ error: 'Ride not found' });
     const me = norm(req.user && req.user.phone);
     const row = r.rows[0];
-    if (me !== norm(row.passenger_phone) && me !== norm(row.driver_phone))
+    if (me !== norm(row.passenger_phone) && me !== norm(row.driver_phone)) {
+      authDenied(req, 'ride-tumhari-nahi');
       return res.status(403).json({ error: 'This is not your ride' });
+    }
     req.ride = row;          // handler ko dobara query na karni pade
     next();
   } catch (e) {
@@ -67,8 +77,10 @@ const extParty = (field = 'extension_id') => async (req, res, next) => {
     if (!r.rows[0]) return res.status(404).json({ error: 'Extension not found' });
     const me = norm(req.user && req.user.phone);
     const row = r.rows[0];
-    if (me !== norm(row.customer_phone) && me !== norm(row.driver_phone))
+    if (me !== norm(row.customer_phone) && me !== norm(row.driver_phone)) {
+      authDenied(req, 'extension-tumhari-nahi');
       return res.status(403).json({ error: 'This is not your ride' });
+    }
     req.extension = row;
     next();
   } catch (e) {
@@ -98,8 +110,10 @@ const ridePartyOrBooking = (field = 'ride_id', bookingField = 'booking_id') => a
         'SELECT id, customer_phone, driver_phone FROM hourly_bookings WHERE id = $1', [isHourly]);
       if (!b.rows[0]) return res.status(404).json({ error: 'Booking not found' });
       const row = b.rows[0];
-      if (me !== norm(row.customer_phone) && me !== norm(row.driver_phone))
+      if (me !== norm(row.customer_phone) && me !== norm(row.driver_phone)) {
+        authDenied(req, 'booking-tumhari-nahi');
         return res.status(403).json({ error: 'This is not your ride' });
+      }
       req.booking = row;
       return next();
     }
@@ -112,8 +126,10 @@ const ridePartyOrBooking = (field = 'ride_id', bookingField = 'booking_id') => a
         WHERE r.id = $1`, [raw]);
     if (!r.rows[0]) return res.status(404).json({ error: 'Ride not found' });
     const row = r.rows[0];
-    if (me !== norm(row.passenger_phone) && me !== norm(row.driver_phone))
+    if (me !== norm(row.passenger_phone) && me !== norm(row.driver_phone)) {
+      authDenied(req, 'ride-tumhari-nahi');
       return res.status(403).json({ error: 'This is not your ride' });
+    }
     req.ride = row;
     next();
   } catch (e) {

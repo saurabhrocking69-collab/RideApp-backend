@@ -20,11 +20,22 @@ function authDenied(req, reason) {
     // req.route abhi tay nahi hota, isliye originalUrl - par sirf raasta,
     // query ke bina: query me phone number hota hai aur wo log me nahi jaana.
     const path = String(req.originalUrl || req.url || '').split('?')[0].slice(0, 120);
+    /* App ka naam bhi - warna log ye batata hi nahi ki kaun si app toot rahi
+       hai. Do baar iski wajah se raaste ke naam se ANDAAZA lagana pada
+       (favourites/driver-count sirf driver app bulati hai - us ek sanyog se
+       pata chala). Expo app apne User-Agent me apna naam aur version bhejti
+       hai, to ek nazar me pata chal jaata hai.
+
+       Sirf pehla hissa, aur wo bhi 60 akshar tak: usme app ka naam aur version
+       aa jaate hain, aur baaki sirf shor hai. Koi nijee baat ismein hoti hi
+       nahi - na naam, na number. */
+    const ua = String(req.headers['user-agent'] || '').split(' ').slice(0, 3).join(' ').slice(0, 60);
     const key = reason + ' ' + req.method + ' ' + path;
     const now = Date.now();
     if ((seen.get(key) || 0) > now - GAP_MS) return;
     seen.set(key, now);
-    console.warn('[auth 401] ' + reason + '  ' + req.method + ' ' + path);
+    console.warn('[auth 401] ' + reason + '  ' + req.method + ' ' + path
+               + (ua ? '   [' + ua + ']' : ''));
   } catch (_e) { /* log kabhi kisi request ko na rok paye */ }
 }
 
