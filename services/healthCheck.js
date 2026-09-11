@@ -17,8 +17,24 @@ const failing = new Set();
 
 // ─── Individual Checks ────────────────────────────────────────────────────────
 
+/* DB kitni door hai - sarvar ke ANDAR se naapa hua.
+
+   Bahar se naapna kaam nahi karta: mere apne network ka shor (+-150ms) usi
+   dayre ka hai jis farak ko dhoondhna hai. Yahan container aur Postgres ke
+   beech ka akela waqt milta hai.
+
+   Ye ek hi baat batata hai aur roz batata rehta hai: agar kabhi DB door ho
+   jaye (jaise sarvajanik proxy par chala jaye, jo hua tha), to ye line turant
+   dikha degi. Naapa hua: sarvajanik raaste par ~180ms prati chakkar.
+
+   Har 5 minute me ek baar, aur likhta SIRF tab hai jab 25ms se upar jaye -
+   theek chalne par log bharne ki koi wajah nahi. */
 async function checkDatabase() {
+  const t = Date.now();
   await db.query('SELECT 1');
+  const ms = Date.now() - t;
+  if (ms > 25) console.warn('[HEALTH] DB dheemi hai: ' + ms + 'ms ek chakkar');
+  else console.log('[HEALTH] DB: ' + ms + 'ms');
 }
 
 async function checkFareSettingsIntegrity() {
