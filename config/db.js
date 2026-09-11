@@ -26,7 +26,24 @@ const opts = (url) => ({
   connectionTimeoutMillis: 5000,
 });
 
-let db = new Pool(opts(PRIVATE_URL || PUBLIC_URL));
+/* Pool ka apna 'error' sunne wala.
+
+   `pg` ka Pool tab 'error' phenkta hai jab koi BEKAAR pada client toot jaye -
+   network girne par, ya DB ke restart par. Uska koi sunne wala na ho to Node
+   use uncaught exception bana deta hai.
+
+   Sarvar phir bhi gir nahi raha tha (server.js me uncaughtException ka pehra
+   hai), par wo log me "UNCAUGHT EXCEPTION" banकर aata - jo asli wajah nahi
+   batata, aur jisse DB ki dikkat kisi aur cheez jaisi dikhti. Ek saaf line us
+   raat bahut kaam aati hai jab kuchh galat ho.
+
+   Har naye pool par lagana padta hai, kyoki girawat me pool badal jaata hai. */
+const watch = (pool) => {
+  pool.on('error', e => console.error('❌ DB pool (bekaar pada client):', e.message));
+  return pool;
+};
+
+let db = watch(new Pool(opts(PRIVATE_URL || PUBLIC_URL)));
 
 /* Ek surakshit girawat.
 
@@ -43,7 +60,7 @@ db.connect()
     console.log('❌ PostgreSQL error:', err.message);
     if (PRIVATE_URL && PUBLIC_URL && PRIVATE_URL !== PUBLIC_URL) {
       console.warn('⚠️  niji pata nahi chala - sarvajanik par laut rahe hain (dheema, par chalu). Wajah upar likhi hai.');
-      db = new Pool(opts(PUBLIC_URL));
+      db = watch(new Pool(opts(PUBLIC_URL)));
       db.connect()
         .then(c => { c.release?.(); console.log('✅ PostgreSQL connected! (sarvajanik raasta)'); })
         .catch(e2 => console.log('❌ PostgreSQL (sarvajanik) bhi nahi:', e2.message));
