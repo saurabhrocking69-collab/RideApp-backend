@@ -158,7 +158,20 @@ router.get('/pending-ride', userAuth, ownPhone(), async (req, res) => {
     if (assigned.rows[0]) {
       const r = assigned.rows[0];
       const secLeft = Math.max(0, Math.ceil((new Date(r.assignment_expires_at).getTime() - Date.now()) / 1000));
-      const tripKm = (r.pickup_lat && r.drop_lat) ? haversineKm(parseFloat(r.pickup_lat), parseFloat(r.pickup_lng), parseFloat(r.drop_lat), parseFloat(r.drop_lng)) : null;
+      /* SADAK ki doori, udaan ki nahi.
+
+         Yahan sirf haversine tha - seedhi rekha. Asli ride par usne 14.6 km
+         dikhaya jabki sadak 22.391 km thi (aur fare usi 22.391 par bana tha).
+         Driver 14.6 maankar faisla karta aur 22.4 chalata; wo farq uski jeb ka
+         hai. r.distance_km wahi number hai jis par kiraya gina gaya - yaani
+         offer aur kiraya ab ek hi doori ki baat karte hain.
+
+         Haversine fallback rehne diya: purani rides me distance_km khali ho
+         sakta hai, aur tab kuchh dikhana na-dikhane se behtar hai. */
+      const roadKm = parseFloat(r.distance_km);
+      const tripKm = roadKm > 0
+        ? roadKm
+        : ((r.pickup_lat && r.drop_lat) ? haversineKm(parseFloat(r.pickup_lat), parseFloat(r.pickup_lng), parseFloat(r.drop_lat), parseFloat(r.drop_lng)) : null);
       const isFavRequest = r.assigned_to_phone === phone || directFavouriteRideIds.has(String(r.id));
       return res.json({ ride: { ...r, seconds_to_accept: secLeft, distance: tripKm ? tripKm.toFixed(1) : null, is_favourite_request: isFavRequest }, pending_commission: pendingComm });
     }
@@ -190,7 +203,11 @@ router.get('/pending-ride', userAuth, ownPhone(), async (req, res) => {
          WHERE id=$2 AND status='requested' AND driver_id IS NULL AND (assigned_to_phone IS NULL OR assignment_expires_at < NOW())`,
         [phone, fb.id]
       );
-      const fbKm = (fb.pickup_lat && fb.drop_lat) ? haversineKm(parseFloat(fb.pickup_lat), parseFloat(fb.pickup_lng), parseFloat(fb.drop_lat), parseFloat(fb.drop_lng)) : null;
+      // Wahi baat jo upar tripKm par - sadak ki doori, udaan ki nahi.
+      const fbRoadKm = parseFloat(fb.distance_km);
+      const fbKm = fbRoadKm > 0
+        ? fbRoadKm
+        : ((fb.pickup_lat && fb.drop_lat) ? haversineKm(parseFloat(fb.pickup_lat), parseFloat(fb.pickup_lng), parseFloat(fb.drop_lat), parseFloat(fb.drop_lng)) : null);
       return res.json({ ride: { ...fb, seconds_to_accept: fb.is_scheduled ? 120 : 30, distance: fbKm ? fbKm.toFixed(1) : null }, pending_commission: pendingComm });
     }
     return res.json({ ride: null });
