@@ -428,6 +428,10 @@ router.post('/accept', gUser, gOwn('driver_phone'), async (req, res) => {
   // Naapne ke liye - "tez lagta hai" aur "tez hai" do alag baatein hain, aur
   // log me likha hua number hi doosri wali sabit karta hai.
   const t0 = Date.now();
+  // Har padaav ka apna waqt. Andaaze se optimise karna galat jagah mehnat
+  // karne ka sabse aam tarika hai - pehle dekho waqt jaata kahan hai.
+  const mark = {};
+  const at = (k) => { mark[k] = Date.now() - t0; };
   const { ride_id, driver_phone } = req.body;
   if (!ride_id || !driver_phone) return res.status(400).json({ success: false, message: 'ride_id and driver_phone required' });
   try {
@@ -445,6 +449,7 @@ router.post('/accept', gUser, gOwn('driver_phone'), async (req, res) => {
         `SELECT offered_phones FROM rides WHERE id=$1 AND status='requested' AND driver_id IS NULL`,
         [ride_id]),
     ]);
+    at('lookup');
     if (!driver.rows[0]) return res.status(404).json({ success: false, message: 'Driver not found' });
 
     const otp = Math.floor(1000 + Math.random() * 9000).toString();
@@ -462,6 +467,7 @@ router.post('/accept', gUser, gOwn('driver_phone'), async (req, res) => {
        RETURNING id`,
       [ride_id, driver_phone]
     );
+    at('claim');
     if (!claim.rows[0]) return res.json({ success: false, message: 'Ride window expired or claimed by another driver — check the next one!' });
 
     /* Baaki drivers ko ABHI batao - yahi wo pal hai jab ride li ja chuki hai.
@@ -487,6 +493,7 @@ router.post('/accept', gUser, gOwn('driver_phone'), async (req, res) => {
          FROM users u JOIN drivers d ON u.id=d.id WHERE u.id=$1`, [driver.rows[0].id]),
       db.query(`SELECT pickup_lat, pickup_lng, ride_type, is_parcel, receiver_phone FROM rides WHERE id=$1`, [ride_id]),
     ]);
+    at('card');
     const di = dInfo.rows[0];
     const driverCard = di
       ? { name: di.name, vehicle_no: di.vehicle_no, vehicle_brand: di.vehicle_brand, vehicle_model: di.vehicle_model, rating: di.rating, verified: di.verification_status === 'approved', photo: di.face_photo || null, vehicle_photo: di.vehicle_photo || null, upi_id: di.upi_id || null }
@@ -524,10 +531,18 @@ router.post('/accept', gUser, gOwn('driver_phone'), async (req, res) => {
         : { start_otp: otp, driver: driverCard },
     });
 
+    at('transition');
     // Driver ko ab bata do - ride uski ho chuki hai. Neeche jo bacha hai wo
     // hisaab-kitaab hai, khabar nahi, aur uska intezaar karane ki wajah nahi.
     res.json({ success: true, message: 'Ride accepted!', otp });
-    console.log('[accept] ' + ride_id + ' -> ' + driver_phone + '  ' + (Date.now() - t0) + 'ms');
+    const total = Date.now() - t0;
+    /* Padaav-war todkar SIRF tab jab dher ho - warna har ride ke saath ek lambi
+       line log bhar degi aur asli baat usi shor me doob jayegi. */
+    console.log('[accept] ' + ride_id + ' -> ' + driver_phone + '  ' + total + 'ms'
+      + (total > 400
+          ? '  | lookup ' + mark.lookup + '  claim ' + (mark.claim - mark.lookup)
+            + '  card ' + (mark.card - mark.claim) + '  transition ' + (mark.transition - mark.card)
+          : ''));
 
     /* Jawab ke BAAD. Ye chaar query kisi ke phone tak nahi jaati:
 
