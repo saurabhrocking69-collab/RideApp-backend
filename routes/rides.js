@@ -425,20 +425,29 @@ router.get('/status/:rideId', gUser, gRide('rideId'), async (req, res) => {
 
 // POST /api/rides/accept
 router.post('/accept', gUser, gOwn('driver_phone'), async (req, res) => {
+  // Naapne ke liye - "tez lagta hai" aur "tez hai" do alag baatein hain, aur
+  // log me likha hua number hi doosri wali sabit karta hai.
+  const t0 = Date.now();
   const { ride_id, driver_phone } = req.body;
   if (!ride_id || !driver_phone) return res.status(400).json({ success: false, message: 'ride_id and driver_phone required' });
   try {
-    const driver = await db.query('SELECT id FROM users WHERE phone=$1', [driver_phone]);
+    /* Dono saath-saath - ek doosre se koi lena-dena nahi hai.
+
+       Pehle ye ek ke baad ek chalte the, aur doosra pehle ka intezaar karta tha
+       bina kisi wajah ke. Accept ke raaste par har chakkar seedha us waqt me
+       judta hai jo driver ungli uthaye baitha rehta hai. */
+    const [driver, offerInfo] = await Promise.all([
+      db.query('SELECT id FROM users WHERE phone=$1', [driver_phone]),
+      // Broadcast: offered_phones me pada koi bhi driver window ke andar le
+      // sakta hai. Claim se PEHLE padh rahe hain, taaki baaki ko turant bataya
+      // ja sake ki ride chali gayi.
+      db.query(
+        `SELECT offered_phones FROM rides WHERE id=$1 AND status='requested' AND driver_id IS NULL`,
+        [ride_id]),
+    ]);
     if (!driver.rows[0]) return res.status(404).json({ success: false, message: 'Driver not found' });
 
     const otp = Math.floor(1000 + Math.random() * 9000).toString();
-
-    // ── Broadcast system: any driver in offered_phones can claim within the window ──
-    // Fetch offered_phones before claim so we can notify others after success
-    const offerInfo = await db.query(
-      `SELECT offered_phones FROM rides WHERE id=$1 AND status='requested' AND driver_id IS NULL`,
-      [ride_id]
-    );
     const offeredPhones = offerInfo.rows[0]?.offered_phones || [];
 
     // Eligibility: driver must be in offered_phones OR directly assigned (favourite buddy), AND window still open
@@ -455,17 +464,35 @@ router.post('/accept', gUser, gOwn('driver_phone'), async (req, res) => {
     );
     if (!claim.rows[0]) return res.json({ success: false, message: 'Ride window expired or claimed by another driver — check the next one!' });
 
-    const dInfo = await db.query(
-      `SELECT u.name, d.vehicle_no, d.vehicle_brand, d.vehicle_model, d.rating, d.verification_status, d.face_photo, d.vehicle_photo, d.upi_id
-       FROM users u JOIN drivers d ON u.id=d.id WHERE u.id=$1`, [driver.rows[0].id]
-    );
+    /* Baaki drivers ko ABHI batao - yahi wo pal hai jab ride li ja chuki hai.
+
+       Ye pehle transitionRide aur metrics ke BAAD jaata tha, yaani paanch aur
+       DB chakkar baad. Tab tak doosre driver apni screen par ek aisi ride ka
+       popup dekhte rehte the jo unke haath se ja chuki thi - aur us par ungli
+       maarte the. Claim jeet chuka hai; is baat ko rokne ki koi wajah nahi.
+
+       Socket par, FCM par nahi: ye ek popup band karne ki khabar hai, phone
+       bajane ki nahi. */
+    const otherDrivers = offeredPhones.filter(p => p !== driver_phone);
+    for (const phone of otherDrivers) {
+      emitToRoom('driver_' + phone, 'rideTaken', { rideId: ride_id, message: 'Ride was taken by another driver' });
+    }
+
+    /* Dono sirf PADHTE hain aur ek doosre se koi lena-dena nahi rakhte - to
+       saath-saath. Ek ke baad ek chalane par driver do chakkar ka intezaar
+       karta tha jahan ek kaafi tha. */
+    const [dInfo, rideForEta] = await Promise.all([
+      db.query(
+        `SELECT u.name, d.vehicle_no, d.vehicle_brand, d.vehicle_model, d.rating, d.verification_status, d.face_photo, d.vehicle_photo, d.upi_id
+         FROM users u JOIN drivers d ON u.id=d.id WHERE u.id=$1`, [driver.rows[0].id]),
+      db.query(`SELECT pickup_lat, pickup_lng, ride_type, is_parcel, receiver_phone FROM rides WHERE id=$1`, [ride_id]),
+    ]);
     const di = dInfo.rows[0];
     const driverCard = di
       ? { name: di.name, vehicle_no: di.vehicle_no, vehicle_brand: di.vehicle_brand, vehicle_model: di.vehicle_model, rating: di.rating, verified: di.verification_status === 'approved', photo: di.face_photo || null, vehicle_photo: di.vehicle_photo || null, upi_id: di.upi_id || null }
       : null;
 
-    // Compute estimated ETA for dynamic correction tracking
-    const rideForEta = await db.query(`SELECT pickup_lat, pickup_lng, ride_type, is_parcel, receiver_phone FROM rides WHERE id=$1`, [ride_id]);
+    // Estimated ETA - upar wale Promise.all se aayi jankari par
     let etaEstimateMin = null;
     if (rideForEta.rows[0]) {
       const { pickup_lat, pickup_lng, ride_type } = rideForEta.rows[0];
@@ -497,30 +524,34 @@ router.post('/accept', gUser, gOwn('driver_phone'), async (req, res) => {
         : { start_otp: otp, driver: driverCard },
     });
 
-    // Record match time + estimated ETA for dynamic ETA correction
-    await db.query(
-      `UPDATE rides SET driver_matched_at=NOW()${etaEstimateMin ? ', eta_estimate_min=$2' : ''} WHERE id=$1`,
-      etaEstimateMin ? [ride_id, etaEstimateMin] : [ride_id]
-    ).catch(() => {});
-
-    // ── Notify all OTHER offered drivers: ride has been taken ─────────────────
-    const otherDrivers = offeredPhones.filter(p => p !== driver_phone);
-    for (const phone of otherDrivers) {
-      emitToRoom('driver_' + phone, 'rideTaken', { rideId: ride_id, message: 'Ride was taken by another driver' });
-    }
-
-    await db.query(
-      `INSERT INTO driver_metrics (phone, rides_accepted, idle_since) VALUES ($1, 1, NOW())
-       ON CONFLICT (phone) DO UPDATE SET rides_accepted=driver_metrics.rides_accepted+1, idle_since=NOW()`,
-      [driver_phone]
-    );
-    const dm = await db.query('SELECT rides_offered, rides_accepted FROM driver_metrics WHERE phone=$1', [driver_phone]);
-    if (dm.rows[0] && dm.rows[0].rides_offered > 0) {
-      const rate = (parseFloat(dm.rows[0].rides_accepted) / parseFloat(dm.rows[0].rides_offered)) * 100;
-      await db.query('UPDATE driver_metrics SET acceptance_rate=$1 WHERE phone=$2', [Math.min(100, rate).toFixed(2), driver_phone]);
-    }
-
+    // Driver ko ab bata do - ride uski ho chuki hai. Neeche jo bacha hai wo
+    // hisaab-kitaab hai, khabar nahi, aur uska intezaar karane ki wajah nahi.
     res.json({ success: true, message: 'Ride accepted!', otp });
+    console.log('[accept] ' + ride_id + ' -> ' + driver_phone + '  ' + (Date.now() - t0) + 'ms');
+
+    /* Jawab ke BAAD. Ye chaar query kisi ke phone tak nahi jaati:
+
+         driver_matched_at + eta   - baad me ETA sudharne ke liye
+         driver_metrics x3         - acceptance rate ka hisaab
+
+       Inme se koi bhi gir jaye to ride par koi asar nahi padta, isliye har ek
+       apna catch rakhti hai. Pehle ye chaaron driver ko rok kar rakhti thi. */
+    (async () => {
+      await db.query(
+        `UPDATE rides SET driver_matched_at=NOW()${etaEstimateMin ? ', eta_estimate_min=$2' : ''} WHERE id=$1`,
+        etaEstimateMin ? [ride_id, etaEstimateMin] : [ride_id]
+      ).catch(() => {});
+      await db.query(
+        `INSERT INTO driver_metrics (phone, rides_accepted, idle_since) VALUES ($1, 1, NOW())
+         ON CONFLICT (phone) DO UPDATE SET rides_accepted=driver_metrics.rides_accepted+1, idle_since=NOW()`,
+        [driver_phone]
+      );
+      const dm = await db.query('SELECT rides_offered, rides_accepted FROM driver_metrics WHERE phone=$1', [driver_phone]);
+      if (dm.rows[0] && dm.rows[0].rides_offered > 0) {
+        const rate = (parseFloat(dm.rows[0].rides_accepted) / parseFloat(dm.rows[0].rides_offered)) * 100;
+        await db.query('UPDATE driver_metrics SET acceptance_rate=$1 WHERE phone=$2', [Math.min(100, rate).toFixed(2), driver_phone]);
+      }
+    })().catch(e => console.error('[accept] baad ka hisaab:', e.message));
   } catch (err) {
     if (err.message && err.message.includes('Concurrent transition')) {
       return res.json({ success: false, message: 'Ride was taken by another driver — check the next one!' });
