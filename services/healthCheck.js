@@ -35,6 +35,26 @@ async function checkDatabase() {
   const ms = Date.now() - t;
   if (ms > 25) console.warn('[HEALTH] DB dheemi hai: ' + ms + 'ms ek chakkar');
   else console.log('[HEALTH] DB: ' + ms + 'ms');
+
+  /* Redis bhi naapo - wahi sawal, wahi keemat.
+
+     Postgres ke naapne par pata chala ki wo doosre region me hai (backend
+     Singapore, Postgres California = 179ms prati chakkar). Redis usi project
+     me hai aur OTP tatha ride ki haalat rakhta hai - yaani wo bhi har ride ke
+     raaste me hai. Agar wo bhi door hua to ek doosra, abhi tak andekha tax
+     chal raha hai.
+
+     Apni koshish khud sambhalta hai: hisaab rakhne ki wajah se health check
+     kabhi fail na ho. */
+  try {
+    const { redis } = require('../config/redis');
+    const t2 = Date.now();
+    await redis.set('health:ping', '1');
+    await redis.get('health:ping');
+    const rms = Math.round((Date.now() - t2) / 2);
+    if (rms > 25) console.warn('[HEALTH] Redis dheemi hai: ' + rms + 'ms ek chakkar');
+    else console.log('[HEALTH] Redis: ' + rms + 'ms');
+  } catch (e) { console.warn('[HEALTH] Redis naapi nahi ja saki:', e.message); }
 }
 
 async function checkFareSettingsIntegrity() {
