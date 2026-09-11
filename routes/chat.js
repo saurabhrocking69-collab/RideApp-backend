@@ -11,9 +11,38 @@ const { sendFCM } = require('../config/firebase');
    hai, uski ride me sandesh bhej sakta hai, aur uske driver ko phone bhi
    laga sakta hai - jo Exotel par asli paisa kharch karta hai. */
 const ENFORCE_PDATA = String(process.env.PDATA_AUTH_ENFORCE || '').trim().toLowerCase() === 'true';
+
+/* Chat ka apna switch - aur uske hone ki ek thos wajah hai.
+
+   PDATA chalu karte hi driver ki chat toot gayi. Live log ne pakda:
+
+       [auth 401] token-nahi  GET /api/chat/<ride>
+       [auth 401] token-nahi  POST /api/chat/send
+
+   Source me `authFetch` hai (commit 345556c, 8 sept), par driver ke phone par
+   usse PURANA build pada hai jo saada `fetch` karta hai. Source theek hona aur
+   LOGON KE PHONE par theek hona do alag baatein hain, aur ek pehra doosri wali
+   par girta hai.
+
+   Poora PDATA band kar dena sabse aasan hota - aur teen darjan darwaze dobara
+   khol deta. Ek chhoti toot ke badle ek badi. Isliye sirf yahi ek raasta.
+
+   Default PDATA hi hai: kuchh set na ho to bartaav aaj jaisa. Ise 'false'
+   karna SIRF utni der ke liye hai jab tak naya build phone tak na pahunche,
+   aur uske baad ye env line hata deni hai. */
+const CHAT_ENFORCE = (() => {
+  const v = String(process.env.CHAT_AUTH_ENFORCE || '').trim().toLowerCase();
+  if (v === 'true')  return true;
+  if (v === 'false') return false;
+  return ENFORCE_PDATA;
+})();
+if (!CHAT_ENFORCE && ENFORCE_PDATA)
+  console.warn('[chat] pehra ASTHAYI ROOP SE BAND hai (CHAT_AUTH_ENFORCE=false) '
+             + '- purane driver build ke liye. Naya build pahunchte hi ise hataao.');
+
 const openDoorPD = (_req, _res, next) => next();
-const gUser = ENFORCE_PDATA ? userAuth : openDoorPD;
-const gParty = (f, b) => (ENFORCE_PDATA ? ridePartyOrBooking(f, b) : openDoorPD);
+const gUser = CHAT_ENFORCE ? userAuth : openDoorPD;
+const gParty = (f, b) => (CHAT_ENFORCE ? ridePartyOrBooking(f, b) : openDoorPD);
 
 
 // POST /api/chat/send  (works for standard rides AND hourly rides via 'h_' prefix)
